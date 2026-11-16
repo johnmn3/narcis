@@ -25,6 +25,7 @@
    Eve *values* keeps it loadable on every host today and storable in
    the disk atom unchanged; re-homing node storage onto eve/deftype is
    a storage-layer swap behind this same API when Eve-on-jolt lands."
+  (:refer-clojure :exclude [chars concat])
   (:require [clojure.string :as str]))
 
 (def ^:const max-fanout 32)
@@ -127,8 +128,8 @@
                   (let [c (nth kids i) cc (:chars c)]
                     (if (or (< offset (+ acc cc)) (= i (dec (count kids))))
                       (let [[cl cr] (split c (- offset acc))
-                            left (mk-node (concat (subvec kids 0 i) (when cl [cl])))
-                            right (mk-node (concat (when cr [cr]) (subvec kids (inc i))))]
+                            left (mk-node (into (subvec kids 0 i) (when cl [cl])))
+                            right (mk-node (into (if cr [cr] []) (subvec kids (inc i))))]
                         [left right])
                       (recur (inc i) (+ acc cc))))))))
 
