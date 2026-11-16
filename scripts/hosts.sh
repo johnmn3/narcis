@@ -7,6 +7,7 @@ COHOST=${COHOST:-/home/hatch/src/cohost}
 BIN=${BIN:-/home/hatch/.local/bin}
 BB_NEW=${BB_NEW:-$HOME/workspace/narcis-lane/tools/bb}
 export CLJ_CONFIG=${CLJ_CONFIG:-/home/hatch/workspace/eve-env/cljconfig}
+export EVE_RELEASE COHOST BIN BB_NEW
 
 eve_bb_classpath() {
   (cd "$EVE_RELEASE" && PATH="$BIN:$PATH" bb classpath bb)
@@ -17,3 +18,4 @@ run_jvm() {
   CLJ_CONFIG="$CLJ_CONFIG" PATH="$BIN:$PATH" \
     clojure -Sdeps "{:deps {eve/eve {:local/root \"$EVE_RELEASE\"} cohost/cohost {:local/root \"$COHOST\"}}}" "$@"
 }
+export -f run_jvm

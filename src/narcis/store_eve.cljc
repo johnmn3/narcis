@@ -15,21 +15,19 @@
    :default
    (do
      (defn open [{:keys [dir name]}]
-       (let [base (str dir "/" name)]
-         (.mkdirs (.getParentFile (java.io.File. base))))
+       (let [base (str dir "/" name)
+             _ (.mkdirs (.getParentFile (java.io.File. base)))
              a (e/atom {:id (keyword name) :persistent base} {:buffers {}})]
          {:impl :eve :base base :atom a}))
 
      (defn put! [{:keys [atom]} buffer-name value]
-       (let [idx (atom nil)]
-         (swap! atom
-                (fn [s]
-                  (let [versions (get-in s [:buffers buffer-name :versions] [])]
-                    (reset! idx (count versions))
-                    (assoc-in s [:buffers buffer-name]
-                              {:current value
-                               :versions (conj versions value)}))))
-         @idx))
+       (let [new-state (swap! atom
+                              (fn [s]
+                                (assoc-in s [:buffers buffer-name]
+                                          {:current value
+                                           :versions (conj (get-in s [:buffers buffer-name :versions] [])
+                                                           value)})))]
+         (dec (count (get-in new-state [:buffers buffer-name :versions])))))
 
      (defn current [{:keys [atom]} buffer-name]
        (get-in @atom [:buffers buffer-name :current]))

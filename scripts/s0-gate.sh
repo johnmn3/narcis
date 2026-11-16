@@ -14,7 +14,7 @@ run_launcher() {
   case "$HOST" in
     bb)     PATH="$BIN:$PATH" timeout 60 bb -cp "$ROOT/src" -m narcis.launcher --dir "$DATA" --port $PORT --serve-secs "${SERVE_SECS:-12}" ;;
     bb-eve) PATH="$BIN:$PATH" timeout 120 "$BB_NEW" -cp "$(eve_bb_classpath):$ROOT/src" -m narcis.launcher --dir "$DATA" --port $PORT --serve-secs "${SERVE_SECS:-12}" ;;
-    jvm)    timeout 120 run_jvm -M -m narcis.launcher --dir "$DATA" --port $PORT --serve-secs "${SERVE_SECS:-12}" ;;
+    jvm)    timeout 120 bash -c "run_jvm -M -m narcis.launcher --dir $DATA --port $PORT --serve-secs ${SERVE_SECS:-12}" ;;
     jolt)   (cd "$ROOT/run/jolt" && PATH="$BIN:$PATH" timeout 60 jolt run -m narcis.launcher --dir "$DATA" --port $PORT --serve-secs "${SERVE_SECS:-12}") ;;
   esac
 }
@@ -22,11 +22,15 @@ run_launcher() {
 echo "== S0 gate host=$HOST data=$DATA"
 run_launcher > "$DATA/run1.log" 2>&1 &
 LPID=$!
-for i in $(seq 1 40); do
-  curl -fsS "http://127.0.0.1:$PORT/" -o "$DATA/page.html" 2>/dev/null && break
-  sleep 0.5
+# Poll for the whole life of the process: slow hosts (JVM compiling Eve)
+# may take minutes before the serve window opens.
+DEADLINE=$(( $(date +%s) + 420 ))
+while kill -0 $LPID 2>/dev/null && [ "$(date +%s)" -lt $DEADLINE ]; do
+  if curl -fsS "http://127.0.0.1:$PORT/" -o "$DATA/page.html" 2>/dev/null; then
+    curl -fsS "http://127.0.0.1:$PORT/buffer" -o "$DATA/buffer.txt" 2>/dev/null && break
+  fi
+  sleep 1
 done
-curl -fsS "http://127.0.0.1:$PORT/buffer" -o "$DATA/buffer.txt" 2>/dev/null
 wait $LPID
 cat "$DATA/run1.log"
 grep -q "<title>Narcis</title>" "$DATA/page.html" && echo "S0-PAGE OK" || echo "S0-PAGE FAIL"

@@ -9,7 +9,7 @@ DATA=$(mktemp -d /tmp/narcis-store-gate.XXXXXX)
 
 run_phase() {
   case "$HOST" in
-    jvm)    timeout 300 run_jvm -M:test -m narcis.store-test "$1" "$DATA/db" ;;
+    jvm)    timeout 300 bash -c "run_jvm -M:test -m narcis.store-test $1 $DATA/db" ;;
     bb-eve) PATH="$BIN:$PATH" timeout 300 "$BB_NEW" -cp "$(eve_bb_classpath):$ROOT/src:$ROOT/test" -m narcis.store-test "$1" "$DATA/db" ;;
   esac
 }
