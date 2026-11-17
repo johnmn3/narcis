@@ -107,3 +107,35 @@ new tab, save-as writes the file); new test/narcis/app_test.clj
 new/save-as, find wrap both directions); view 4/15, ops 2/26,
 corpus 38/644, buffer gate — all green. web/app.js rebuilt
 (1,724,905 bytes).
+
+## Page interaction fixes (2026-11-17, coordinator)
+
+John's Mac test of the app surface found the page unusable in three
+ways the HTTP gates could not see (they never drove the page itself).
+All three reproduced and fixed against the real page in headless
+Chromium (CDP probe: real mouse events, real key events, op traffic
+and DOM read back):
+
+- **Clicking killed editing.** on-mousedown focused the hidden input
+  but never preventDefault'd, so the browser's own mousedown default
+  moved focus to the clicked (non-focusable) element after the
+  handler ran — the caret moved, then typing went nowhere and the
+  caret hid. Fix: preventDefault in on-mousedown (and on drag
+  mousemove). Verified: focus stays on the input, caret visible.
+- **Fast typing inserted in reverse.** Ops were fired concurrently,
+  each carrying the caret read at send time; three quick keystrokes
+  all carried the same caret and landed in reverse order ("zyx").
+  Fix: op! is serialized through a promise chain and reads the
+  caret/sel when the op actually runs. Verified: xyz types as "xyz",
+  caret advancing 29→30→31.
+- **Menus rendered transparent over the text.** The dropdown panel
+  never received its .menu-panel class, so the themed background
+  rule never applied. Verified: computed background is the theme's.
+- Also: apply-theme! replaced #app's whole cssText with just colors,
+  wiping the flex layout (page fell back to one tall block, scroll
+  area unbounded) — now sets background/color as properties; and
+  op failures were invisible (after-op! dropped them, and the
+  status atom's "" init shadowed the status line) — failures now
+  land in the status bar, init is nil.
+
+web/app.js rebuilt (1,725,867 bytes).

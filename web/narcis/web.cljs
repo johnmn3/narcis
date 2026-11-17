@@ -40,7 +40,7 @@
          :theme-choice "light" ; the stored choice ("auto" included)
          :themes []          ; /api/themes entries {:name :label :dark?}
          :tabs []
-         :status ""
+         :status nil
          :fetching false
          :want-start nil
          :sync-timer nil
@@ -98,19 +98,29 @@
 
 (defn get-edn [url] (fetch-edn url nil))
 
+(defonce op-chain (atom (js/Promise.resolve nil)))
+
 (defn op! [msg]
   ;; Ops on the current buffer carry the client's caret/sel (the sync
   ;; narcis.ops applies before the op). Ops that name their own :path
   ;; (:activate, :open) go as-is — another buffer's caret is not theirs.
-  (let [s @state
-        msg (if (contains? msg :path)
-              msg
-              (assoc msg :path (:path s) :caret (:caret s) :sel (:sel s)))]
-    (-> (fetch-edn "/api/op" #js {:method "POST" :body (pr-str msg)})
-        (.then (fn [res]
-                 (when (and (:ok res) (= (:path msg) (:path @state)))
-                   (swap! state assoc :caret (:caret res) :sel (:sel res)))
-                 res)))))
+  ;; SERIALIZED through op-chain, and the caret/sel assoc happens when
+  ;; the op actually runs, not when it is queued: three fast keystrokes
+  ;; otherwise all read the same stale caret and insert in reverse
+  ;; order at one spot (measured: typing xyz produced "zyx").
+  (let [run (fn []
+              (let [s @state
+                    msg (if (contains? msg :path)
+                          msg
+                          (assoc msg :path (:path s) :caret (:caret s) :sel (:sel s)))]
+                (-> (fetch-edn "/api/op" #js {:method "POST" :body (pr-str msg)})
+                    (.then (fn [res]
+                             (when (and (:ok res) (= (:path msg) (:path @state)))
+                               (swap! state assoc :caret (:caret res) :sel (:sel res)))
+                             res)))))
+        p (.then @op-chain run run)]
+    (reset! op-chain (.catch p (fn [_] nil)))
+    p))
 
 ;; ---------------------------------------------------------------------------
 ;; window management
@@ -181,10 +191,13 @@
     (fetch-window! around)))
 
 (defn after-op! [res]
-  (when (:ok res)
-    (ensure-caret-visible!)
-    (refresh-window!)
-    (update-status!)))
+  (if (:ok res)
+    (do (swap! state assoc :status nil)
+        (ensure-caret-visible!)
+        (refresh-window!)
+        (update-status!))
+    (do (swap! state assoc :status (str "op failed: " (:error res)))
+        (update-status!))))
 
 (defn refresh-state!
   "Re-read /api/state (tabs, active buffer, caret/sel of the active
@@ -330,13 +343,15 @@
   (let [s @state
         win (:win s)
         pos (caret-pos win (:caret s))
-        txt (if (and win pos)
+        txt (if (:status s)
+              (:status s)
+              (if (and win pos)
               (str (:path s) "  line " (inc (:n (nth (:lines win) (first pos))))
                    ", col " (inc (second pos))
                    "  ·  " (:total-lines win) " lines, " (:total-chars win) " chars"
                    "  ·  spans " (:spans-mode win)
                    (when win (str "  ·  rev " (:rev win))))
-              (str (:path s) ""))
+              (str (:path s) "")))
         bar (by-id "status")]
     (when bar (set! (.-textContent bar) txt))))
 
@@ -386,8 +401,12 @@
                ".menu-item:hover{background:" (:selection t) ";}"
                "#findbar{border-bottom:1px solid " (:selection t) ";}"
                "@keyframes narcis-blink{0%,55%{opacity:1}56%,100%{opacity:0}}"))
-    (set! (.-cssText (.-style (by-id "app")))
-          (str "background:" (:background t) ";color:" (:text t) ";"))
+    ;; colors only, as properties: replacing #app's cssText here would
+    ;; wipe the flex column layout build-dom! gave it (it did — the
+    ;; page fell back to one tall block and the scroll area lost its
+    ;; bounded height).
+    (set! (.-backgroundColor (.-style (by-id "app"))) (:background t))
+    (set! (.-color (.-style (by-id "app"))) (:text t))
     (render!)))
 
 (defn apply-theme-choice!
@@ -885,6 +904,11 @@
       (+ (:start line) (min col (count (:text line)))))))
 
 (defn on-mousedown [e]
+  ;; preventDefault first: the browser's own mousedown default moves
+  ;; focus to the clicked (non-focusable) element AFTER this handler
+  ;; runs, undoing the programmatic focus — the click moved the caret
+  ;; but typing went nowhere and the caret hid. Every editor does this.
+  (.preventDefault e)
   (.focus (by-id "input"))
   (when-let [off (event-pos e)]
     (swap! state assoc :drag-anchor off)
@@ -892,6 +916,7 @@
 
 (defn on-mousemove [e]
   (when (:drag-anchor @state)
+    (.preventDefault e)
     (when-let [off (event-pos e)]
       (let [a (:drag-anchor @state)]
         (swap! state assoc :caret off :sel [(min a off) (max a off)])
@@ -961,6 +986,7 @@
           (.appendChild hdr c)))
       (let [panel (el "div" "display:none;" nil)]
         (set! (.-id panel) "menu-panel")
+        (set! (.-className panel) "menu-panel")
         (.appendChild hdr panel))
       (.appendChild app hdr))
     ;; find bar (hidden until Ctrl/Cmd+F)
