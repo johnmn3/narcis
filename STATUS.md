@@ -42,7 +42,7 @@ stays out of those. If S3 lands first, rebase onto it.)
   the restart. All texts/fields exact.
 
 ## Step 2 — the swap (IN PROGRESS)
-- [ ] narcis.rope: nodes are RopeNode eve.deftype values (leaf text +
+- [x] narcis.rope: nodes are RopeNode eve.deftype values (leaf text +
       EveArray children + counts); unchanged public API; construction
       context = caller's binding, else the root's own domain, else a
       standalone heap domain.
