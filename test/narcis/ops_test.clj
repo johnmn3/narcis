@@ -3,7 +3,8 @@
    browser sends, driven against a real editor on a real store —
    typing with auto-pair, smart enter, paredit motion, undo — with
    the buffer text checked after every step."
-  (:require [clojure.test :as t]
+  (:require [clojure.string :as str]
+            [clojure.test :as t]
             [narcis.buffer :as buffer]
             [narcis.ops :as ops]
             [narcis.store :as store]))
@@ -94,6 +95,28 @@
     (ops/apply-op ed {:op :set-caret :path path :offset 0})
     (let [res (ops/apply-op ed {:op :barf-forward :path path})]
       (t/is (not (:ok res))))))
+
+(t/deftest completion-and-doc-ops
+  ;; :complete answers candidates for the prefix at the caret (buffer
+  ;; definitions + clojure.core via narcis.docs); :doc formats the
+  ;; symbol-doc for a core var and for a buffer definition.
+  (let [ed (fresh-editor)
+        path "cmp.clj"
+        src "(defn hello \"Says hi.\" [who] who)\n(map inc [1])\n(hel"]
+    (buffer/open-buffer! ed path src)
+    (ops/apply-op ed {:op :set-caret :path path :offset (count src)})
+    (let [res (ops/apply-op ed {:op :complete :path path})]
+      (t/is (:ok res))
+      (t/is (= "hel" (:prefix res)))
+      (t/is (some #(= "hello" (:symbol %)) (:candidates res))))
+    (let [res (ops/apply-op ed {:op :doc :path path :symbol "map"})]
+      (t/is (:ok res))
+      (t/is (str/includes? (:doc res) "clojure.core/map"))
+      (t/is (str/includes? (:doc res) "Returns a lazy sequence")))
+    (let [res (ops/apply-op ed {:op :doc :path path :symbol "hello"})]
+      (t/is (:ok res))
+      (t/is (str/includes? (:doc res) "Says hi."))
+      (t/is (str/includes? (:doc res) "buffer def")))))
 
 (t/deftest comment-and-indent-ops
   ;; jonquil's own semantics, as the S2 corpus pins them: indent with a

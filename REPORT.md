@@ -168,3 +168,34 @@ jonquil's Calva keyset adapted where Narcis already had a binding
 are Ctrl+Alt+. / Ctrl+Alt+,). Verified in the real page: clicking a
 form and pressing Ctrl+Alt+Shift+P wraps it. web/app.js rebuilt
 (1,743,677 bytes).
+
+## Completion + doc lookup (2026-11-17, coordinator)
+
+The last piece of jonquil's editing surface that was still missing:
+`narcis.docs` is jonquil.docs ported whole (symbol-doc memoised,
+resolved in the buffer's (ns ...) namespace with `user` fallback;
+candidates in that namespace) over narcis.syntax's
+get-autocomplete-candidates / get-symbol-doc / format-autocomplete-doc,
+which were already in the S2 corpus. Jonquil's docs suite ports with
+it: **11 tests / 28 assertions, all green**. Before S4 there is no
+user program running, so lookups resolve against clojure.core (real
+docs from the server's runtime) and buffer definitions — exactly
+what the ops gate pins: :doc "map" gives clojure.core/map's doc,
+:doc "hello" gives the buffer def with its arglists.
+
+Ops: :complete (candidates for the prefix at the caret, with the
+replacement range) and :doc (formatted doc for the symbol at the
+caret or a named symbol); both whole-buffer under the exact limit,
+like rename. Ops gate grows to **4 tests / 49 assertions**.
+
+Page: typing a symbol char (or Ctrl+Space) opens the completion
+popup at the caret — candidates, Up/Down, Enter/Tab accepts by
+replacing the prefix range, Esc closes — with the highlighted
+candidate's documentation beside the list; F1 (Help > Documentation
+for Symbol) shows the doc in a pane. One real bug found by the page
+probe along the way: op! copied :caret/:sel out of EVERY ok result,
+so a read-only op's caret-less answer erased the client's caret —
+the popup's doc pane was its first visible victim. op! now only
+adopts a caret the result actually carries. Verified in the real
+page: click after "(hel", type "l", popup offers hello with its
+doc, Enter completes to (hello. web/app.js rebuilt.

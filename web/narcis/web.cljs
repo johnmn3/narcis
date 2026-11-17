@@ -40,6 +40,9 @@
          :theme-choice "light" ; the stored choice ("auto" included)
          :themes []          ; /api/themes entries {:name :label :dark?}
          :tabs []
+         :completion nil     ; {:items [...] :sel n :start n :word-end n}
+         :completion-doc nil ; doc text for the highlighted candidate
+         :doc nil            ; F1 doc pane text
          :status nil
          :fetching false
          :want-start nil
@@ -115,7 +118,12 @@
                           (assoc msg :path (:path s) :caret (:caret s) :sel (:sel s)))]
                 (-> (fetch-edn "/api/op" #js {:method "POST" :body (pr-str msg)})
                     (.then (fn [res]
-                             (when (and (:ok res) (= (:path msg) (:path @state)))
+                             ;; only caret-carrying results move the
+                             ;; client's caret: read-only ops (:complete,
+                             ;; :doc, :theme/use) answer without :caret,
+                             ;; and assoc'ing their nil would erase it.
+                             (when (and (:ok res) (= (:path msg) (:path @state))
+                                        (contains? res :caret))
                                (swap! state assoc :caret (:caret res) :sel (:sel res)))
                              res)))))
         p (.then @op-chain run run)]
@@ -530,7 +538,9 @@
    {:id :palette/open :label "Command Palette…" :keys "Ctrl+Shift+P" :run (fn [] (open-palette!))}
    {:id :find/open :label "Find…" :keys "Ctrl+F" :run (fn [] (open-find!))}
    {:id :find/next :label "Find Next" :keys "Ctrl+G" :run (fn [] (find-step! :next))}
-   {:id :find/previous :label "Find Previous" :keys "Ctrl+Shift+G" :run (fn [] (find-step! :prev))}])
+   {:id :find/previous :label "Find Previous" :keys "Ctrl+Shift+G" :run (fn [] (find-step! :prev))}
+   {:id :help/doc :label "Documentation for Symbol" :keys "F1" :run (fn [] (show-doc!))}
+   {:id :edit/complete :label "Complete" :keys "Ctrl+Space" :run (fn [] (request-completion!))}])
 
 (def command-by-id (into {} (map (fn [c] [(:id c) c])) commands))
 
@@ -566,7 +576,8 @@
                [:find/next :find/previous]]}
    {:label "Theme" :theme-menu true}
    {:label "Help"
-    :sections [[:help/about]]}])
+    :sections [[:help/doc]
+               [:help/about]]}])
 
 (defn close-menus! []
   (swap! state assoc :menu-open nil)
@@ -916,6 +927,128 @@
       (and ctrl (not alt) (not shift) (= k "Home")) :list-start
       :else nil)))
 
+;; ---------------------------------------------------------------------------
+;; completion popup + doc lookup — the server answers :complete /
+;; :doc (narcis.docs over narcis.syntax); the page only displays.
+
+(defn close-completion! []
+  (swap! state assoc :completion nil :completion-doc nil)
+  (when-let [p (by-id "completion")]
+    (set! (.-cssText (.-style p)) "display:none;")))
+
+(defn render-completion! []
+  (let [s @state
+        comp (:completion s)
+        pop (by-id "completion")]
+    (when pop
+      (if-not (and comp (:win s) (caret-pos (:win s) (:caret s)))
+        (set! (.-cssText (.-style pop)) "display:none;")
+        (let [[_i col line] (caret-pos (:win s) (:caret s))
+              gw (gutter-w (:total-lines (:win s)))
+              x (+ gw (* col (:char-w @metrics)))
+              y (* (inc (:n line)) line-h)
+              bg (get-in s [:theme :theme :bg])
+              fg (get-in s [:theme :theme :text])
+              sel-bg (get-in s [:theme :theme :selection])]
+          (set! (.-cssText (.-style pop))
+                (str "position:absolute;top:" y "px;left:" x "px;z-index:30;display:flex;"
+                     "background:" bg ";color:" fg ";border:1px solid " sel-bg
+                     ";box-shadow:0 4px 14px rgba(0,0,0,0.35);font-size:12px;max-height:252px;"))
+          (set! (.-innerHTML pop) "")
+          (let [list (el "div" "overflow-y:auto;min-width:180px;" nil)]
+            (doseq [[j c] (map-indexed vector (:items comp))]
+              (let [row (el "div"
+                            (str "padding:2px 8px;cursor:pointer;white-space:nowrap;"
+                                 (when (= j (:sel comp)) (str "background:" sel-bg ";")))
+                            (:symbol c))]
+                (.addEventListener row "mousedown"
+                                   (fn [e] (.preventDefault e) (accept-completion! j)))
+                (.appendChild list row)))
+            (.appendChild pop list))
+          (when (:completion-doc s)
+            (.appendChild pop
+                          (el "pre"
+                              (str "margin:0;padding:6px 8px;max-width:360px;overflow:auto;"
+                                   "white-space:pre-wrap;font-size:11px;border-left:1px solid " sel-bg ";")
+                              (:completion-doc s)))))))))
+
+(defn completion-doc! [sym]
+  (-> (op! {:op :doc :symbol sym})
+      (.then (fn [res]
+               (when (and (:ok res) (:completion @state))
+                 (swap! state assoc :completion-doc (:doc res))
+                 (render-completion!))))))
+
+(defn request-completion! []
+  (-> (op! {:op :complete})
+      (.then (fn [res]
+               (if (and (:ok res) (seq (:candidates res)) (not (str/blank? (:prefix res))))
+                 (do (swap! state assoc
+                            :completion {:items (:candidates res) :sel 0
+                                         :start (:start res) :word-end (:word-end res)}
+                            :completion-doc nil)
+                     (render-completion!)
+                     (completion-doc! (:symbol (first (:candidates res)))))
+                 (close-completion!))))))
+
+(defn accept-completion! [j]
+  (let [comp (:completion @state)
+        item (nth (:items comp) j nil)]
+    (when item
+      (close-completion!)
+      (swap! state assoc :caret (:start comp) :sel [(:start comp) (:word-end comp)])
+      (do-op! {:op :set-caret :offset (:start comp)})
+      (do-op! {:op :insert-text :text (:symbol item)}))))
+
+(defn completion-key!
+  "While the popup is open: Up/Down navigate (doc preview follows),
+   Enter/Tab accept, Esc closes. Returns true when the key was used."
+  [e k]
+  (let [comp (:completion @state)]
+    (when comp
+      (cond
+        (= k "ArrowDown")
+        (do (.preventDefault e)
+            (let [n (mod (inc (:sel comp)) (count (:items comp)))]
+              (swap! state assoc-in [:completion :sel] n)
+              (render-completion!)
+              (completion-doc! (:symbol (nth (:items comp) n))))
+            true)
+        (= k "ArrowUp")
+        (do (.preventDefault e)
+            (let [n (mod (dec (:sel comp)) (count (:items comp)))]
+              (swap! state assoc-in [:completion :sel] n)
+              (render-completion!)
+              (completion-doc! (:symbol (nth (:items comp) n))))
+            true)
+        (or (= k "Enter") (= k "Tab"))
+        (do (.preventDefault e) (accept-completion! (:sel comp)) true)
+        (= k "Escape")
+        (do (.preventDefault e) (close-completion!) true)
+        :else false))))
+
+(defn close-doc! []
+  (swap! state assoc :doc nil)
+  (when-let [p (by-id "docpane")]
+    (set! (.-cssText (.-style p)) "display:none;")))
+
+(defn show-doc! []
+  (-> (op! {:op :doc})
+      (.then (fn [res]
+               (when (:ok res)
+                 (swap! state assoc :doc (:doc res))
+                 (let [p (by-id "docpane")
+                       s @state]
+                   (set! (.-cssText (.-style p))
+                         (str "position:fixed;top:44px;right:14px;z-index:40;max-width:440px;"
+                              "max-height:70vh;overflow:auto;white-space:pre-wrap;"
+                              "padding:10px 12px;font-size:12px;"
+                              "background:" (get-in s [:theme :theme :bg])
+                              ";color:" (get-in s [:theme :theme :text])
+                              ";border:1px solid " (get-in s [:theme :theme :selection])
+                              ";box-shadow:0 4px 14px rgba(0,0,0,0.35);"))
+                   (set! (.-textContent p) (:doc res))))))))
+
 (defn on-keydown [e]
   (when-not (.-isComposing e)
     (let [k (.-key e)
@@ -927,6 +1060,20 @@
         ;; an open menu takes Escape first
         (and (:menu-open s) (= k "Escape"))
         (do (.preventDefault e) (close-menus!))
+
+        ;; the completion popup takes its keys while it is open
+        (completion-key! e k) nil
+
+        ;; the F1 doc pane closes on Escape
+        (and (:doc s) (= k "Escape"))
+        (do (.preventDefault e) (close-doc!))
+
+        ;; F1: documentation for the symbol at the caret
+        (= k "F1") (do (.preventDefault e) (show-doc!))
+
+        ;; Ctrl+Space: completion on demand
+        (and (.-ctrlKey e) (= k " "))
+        (do (.preventDefault e) (request-completion!))
 
         ;; command palette: Cmd/Ctrl+Shift+P or Cmd/Ctrl+K
         (and cmd shift (not alt) (or (= k "P") (= k "p")))
@@ -957,7 +1104,8 @@
 
         (= k "Enter") (do (.preventDefault e) (do-op! {:op :smart-enter}))
         (= k "Tab") (do (.preventDefault e) (do-op! {:op (if shift :unindent :indent)}))
-        (= k "Backspace") (do (.preventDefault e) (do-op! {:op :backspace}))
+        (= k "Backspace") (do (.preventDefault e) (do-op! {:op :backspace})
+                              (when (:completion @state) (request-completion!)))
         (= k "Delete") (do (.preventDefault e) (do-op! {:op :delete-forward}))
 
         (= k "ArrowLeft") (do (.preventDefault e) (move-horizontal! -1 shift))
@@ -985,7 +1133,10 @@
                                     (when shift [(min anchor target) (max anchor target)]))))))
 
         (and (not cmd) (not alt) (= 1 (count k)))
-        (do (.preventDefault e) (do-op! {:op :type-char :ch k}))
+        (do (.preventDefault e) (do-op! {:op :type-char :ch k})
+            (if (re-find #"^[A-Za-z0-9_\-\*\+\!\?\/\<\>\=\.\$\%\&\:\#\']$" k)
+              (request-completion!)
+              (close-completion!)))
 
         :else nil))))
 
@@ -1138,16 +1289,22 @@
           sizer (el "div" "position:relative;min-height:100%;" nil)
           win (el "div" "" nil)
           caret (el "div" "display:none;" nil)
+          completion (el "div" "display:none;" nil)
+          docpane (el "div" "display:none;" nil)
           ta (el "textarea" "position:absolute;opacity:0;" nil)]
       (set! (.-id tree) "tree")
       (set! (.-id sc) "scroll")
       (set! (.-id sizer) "sizer")
       (set! (.-id win) "win")
       (set! (.-id caret) "caret")
+      (set! (.-id completion) "completion")
+      (set! (.-id docpane) "docpane")
       (set! (.-id ta) "input")
       (set! (.-spellcheck ta) false)
       (.appendChild sizer win)
       (.appendChild sizer caret)
+      (.appendChild sizer completion)
+      (.appendChild sizer docpane)
       (.appendChild sizer ta)
       (.appendChild sc sizer)
       (.appendChild row tree)

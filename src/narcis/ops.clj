@@ -11,10 +11,12 @@
    narcis.buffer/edit-buffer!; caret/selection moves persist through
    buffer's setters. Nothing here knows about HTTP or the page."
   (:require [narcis.buffer :as buffer]
+            [narcis.docs :as docs]
             [narcis.edit :as edit]
             [narcis.nav :as nav]
             [narcis.rope :as rope]
             [narcis.structural :as structural]
+            [narcis.syntax :as syntax]
             [narcis.theme :as theme]
             [narcis.view :as view]
             [clojure.string :as str]))
@@ -103,7 +105,7 @@
           end (rope/line-start-offset root to)]
       [(rope/slice-string root base end) base])))
 
-(declare rope-op clamp-caret structural-op structural-ops)
+(declare rope-op clamp-caret structural-op structural-ops complete-op doc-op)
 
 (defn- find-in-text
   "Index of query in text for a find from offset `from`: direction
@@ -193,6 +195,8 @@
                                (assoc (result ed np) :path np))))
         :find-next (find-op ed path msg :next)
         :find-prev (find-op ed path msg :prev)
+        :complete (complete-op ed path msg)
+        :doc (doc-op ed path msg)
 
         :insert-text (plain-insert ed path (:text msg))
         :type-char (type-char ed path (first (:ch msg)))
@@ -311,6 +315,48 @@
    :rewrap-square structural/rewrap-square
    :rewrap-curly structural/rewrap-curly
    :rewrap-set structural/rewrap-set})
+
+(defn- buffer-ns-sym
+  "The buffer's (ns ...) name as a symbol, or 'user when it has none.
+   Doc/completion lookups resolve in that namespace (narcis.docs);
+   before S4 the namespace usually doesn't exist on the server, and
+   docs falls back to `user` + clojure.core + buffer definitions."
+  [text]
+  (if-let [m (re-find #"\(ns\s+([a-zA-Z0-9_.\-]+)" (subs text 0 (min (count text) 4000)))]
+    (symbol (second m))
+    'user))
+
+(defn- whole-text
+  "The buffer's full text when it is at or under the exact limit,
+   else nil (completion and doc scans are whole-buffer, like rename)."
+  [ed path]
+  (let [root (buffer/buffer-root ed path)]
+    (when (<= (rope/chars root) view/exact-limit)
+      (rope/to-string root))))
+
+(defn- complete-op [ed path _msg]
+  (if-let [text (whole-text ed path)]
+    (let [caret (buffer/cursor ed path)
+          {:keys [prefix start word-end]} (syntax/get-symbol-prefix-at-pos text caret)
+          cands (docs/candidates (buffer-ns-sym text)
+                                 {:prefix prefix :text text :pos caret})]
+      {:ok true :prefix prefix :start start :end caret :word-end word-end
+       :candidates (mapv (fn [c] {:symbol (:symbol c) :category (name (:category c))})
+                         (take 50 cands))})
+    {:ok false :error "completion needs the whole text; buffer is over the exact limit"}))
+
+(defn- doc-op [ed path msg]
+  (if-let [text (whole-text ed path)]
+    (let [caret (buffer/cursor ed path)
+          {:keys [start word-end]} (syntax/get-symbol-prefix-at-pos text caret)
+          sym (or (:symbol msg)
+                  (when (< start word-end) (subs text start word-end)))]
+      (if (or (nil? sym) (str/blank? sym))
+        {:ok false :error "no symbol at the caret"}
+        (let [info (docs/symbol-doc (buffer-ns-sym text) sym text caret)]
+          {:ok true :symbol sym :status (when info (name (:status info)))
+           :doc (syntax/format-autocomplete-doc info)})))
+    {:ok false :error "doc lookup needs the whole text; buffer is over the exact limit"}))
 
 (defn- structural-op [ed path f]
   (let [root (buffer/buffer-root ed path)
