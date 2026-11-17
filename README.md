@@ -25,9 +25,9 @@ the window drawn in a browser page the launcher serves.
 ## Running it
 
 Narcis runs on [Jolt](https://github.com/jolt-lang/jolt) (v0.8.23 or later)
-over Eve's own Jolt classpath. You need a checkout of Eve's 0.9.3.2 release
-line (`johnmn3/atom.broker`, branch `release/eve-0.9.3.2`; Narcis is verified
-at `84bfc7c8`) and `bb` on your `PATH` (Eve's classpath task runs on it).
+over Eve's own Jolt classpath. You need a checkout of Eve 0.9.3.2
+(`SeniorCareMarket/eve`, tag `v0.9.3.2`) and `bb` on your `PATH`
+(Eve's classpath task runs on it).
 
 ```bash
 git clone https://github.com/johnmn3/narcis.git ~/narcis-app

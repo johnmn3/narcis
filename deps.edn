@@ -1,9 +1,10 @@
 {:paths ["src"]
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
-        ;; Eve — johnmn3/atom.broker branch release/eve-0.9.3.2 (the Eve repo
-        ;; lives at that branch's root; sha = tip as cloned 2026-11-16).
-        eve/eve {:git/url "https://github.com/johnmn3/atom.broker.git"
-                 :git/sha "84bfc7c817075498fbab3c45811ced5e8cf3f0f7"}
+        ;; Eve — SeniorCareMarket/eve, the public Eve repo (the Eve repo
+        ;; lives at that repo's root; sha = tag v0.9.3.2, the 0.9.3.2
+        ;; release merge commit).
+        eve/eve {:git/url "https://github.com/SeniorCareMarket/eve"
+                 :git/sha "e6cddc906da3620b912287f30046ffb67058ac4e"}
         ;; cohost — johnmn3/cohost.cljc main tip as cloned 2026-11-16.
         cohost/cohost {:git/url "https://github.com/johnmn3/cohost.cljc.git"
                        :git/sha "99dc255d22997009f4b5d3d2a93469412e3010d8"}}
