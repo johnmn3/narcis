@@ -2,7 +2,7 @@
 # Shared host/classpath setup for the spike's gate scripts.
 # Local checkouts stand in for the git deps in deps.edn (proxy git
 # resolution of atom.broker is slow); the pins in deps.edn are the record.
-EVE_RELEASE=${EVE_RELEASE:-/home/hatch/workspace/git/atom.broker-eve}
+EVE_RELEASE=${EVE_RELEASE:-/home/hatch/workspace/narcis-s2-lane/eve}
 COHOST=${COHOST:-/home/hatch/src/cohost}
 BIN=${BIN:-/home/hatch/.local/bin}
 BB_NEW=${BB_NEW:-$HOME/workspace/narcis-lane/tools/bb}

@@ -7,11 +7,15 @@
 
    Implementations, tried in order:
    1. Eve disk atom (narcis.store-eve) — an eve.alpha disk atom opened by
-      :id in the domain at :dir, when eve.atom loads on this host.
+      :id in the domain at :dir, when eve.atom loads on this host. This is
+      the default on jolt (Eve @84bfc7c8, W1b: flat handles fixed in Eve's
+      shared code) and on the JVM.
    2. File fallback (this namespace) — the same value shape in an EDN file,
-      written atomically (tmp + rename) on every put. This is the seam arm
-      for hosts where Eve does not load yet (jolt v0.8.23, see REPORT.md);
-      app code cannot tell the difference except via (:impl store)."
+      written atomically (tmp + rename) on every put. This arm remains
+      ONLY for hosts where Eve genuinely cannot run yet — today bb,
+      whose SCI blocks the ByteBuffer put Eve's vector path needs (W2,
+      see REPORT.md) — and this seam is the one place that says so.
+      App code cannot tell the difference except via (:impl store)."
   (:require [clojure.string :as str]
             [clojure.edn :as edn]))
 

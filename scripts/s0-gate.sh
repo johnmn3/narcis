@@ -7,7 +7,7 @@ set -u
 HOST=${1:-bb}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 source "$ROOT/scripts/hosts.sh"
-DATA=$(mktemp -d /tmp/narcis-s0-gate.XXXXXX)
+DATA=$(mktemp -d ${TMPDIR:-/tmp}/narcis-s0-gate.XXXXXX)
 PORT=8377
 
 run_launcher() {
