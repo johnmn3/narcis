@@ -58,9 +58,20 @@ gate passes with wide margins.
 
 ## Running it
 
-Same dedicated-clone shape as S2: clone johnmn3/narcis, switch to
-lane/narcis-s3-joined, then
-`jolt run -m narcis.launcher --dir <data> --port 8377 --file <path>`
+The launcher runs on **Eve's own jolt seat classpath**, never through
+deps.edn: a bare `jolt run` in this clone resolves Eve via gitlibs,
+which puts the JVM region adapters on jolt's classpath and dies with
+"No dependency provides java.lang.invoke.MethodHandles" (the W1
+invocation artifact). You need an Eve checkout on
+release/eve-0.9.3.2 (any recent tip; Narcis is verified at 84bfc7c8):
+
+```
+git clone https://github.com/johnmn3/narcis.git ~/narcis-app
+cd ~/narcis-app && git switch lane/narcis-s3-joined
+EVE_RELEASE=<eve-checkout> bash scripts/jolt-run.sh narcis.launcher \
+  --dir ~/narcis-app/data --port 8377 --file <path>
+```
+
 — the page that opens is the actual editor now (caret, selection,
 structural editing), its state in the Eve disk atom.
 
