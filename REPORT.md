@@ -199,3 +199,39 @@ the popup's doc pane was its first visible victim. op! now only
 adopts a caret the result actually carries. Verified in the real
 page: click after "(hel", type "l", popup offers hello with its
 doc, Enter completes to (hello. web/app.js rebuilt.
+
+## S4: Run/Stop + console (2026-11-17, coordinator)
+
+The DrRacket loop. `narcis.eval` is jonquil.eval ported whole —
+eval-string under jolt's run-interruptible, captured *out*/*err*,
+the stdin queue, *1/*2/*3/*e carried across evaluations, and Stop
+via jolt.host/interrupt! + thread interrupt under the context lock.
+Jonquil's eval suite ports with it: **34 tests / 160 assertions,
+all green**. `narcis.console` (jonquil's pure console decisions)
+ports too: **9 tests / 44 assertions**.
+
+`narcis.session` is new and deliberately thin: jonquil.session's
+reset semantics (a Run removes the namespaces its session's
+evaluations created, plus `user`, then evaluates into a fresh
+`user`; libraries are never removed) and its prompt rule (the REPL
+continues in the namespace the last evaluation left), without
+jonquil's debugger/trace/world runtime stack — that port is the
+debugger step, still to come. Sessions live server-side, not in
+the Eve atom: a running evaluation and its half-printed output are
+process state, not document state.
+
+Ops: :run (the buffer's whole text, with the file as source path),
+:stop, :repl, :stdin (for a program blocked on read-line), :console
+(entries since an index + status + prompt namespace). The ops gate
+drives the whole loop headlessly, including a runaway (loop)
+interrupted by :stop and a second Run resetting the first run's
+definitions away: **5 tests / 59 assertions**.
+
+Page: a Run menu (Run F5, Stop Shift+F5), a View > Console toggle,
+and the Interactions pane — output streamed by polling :console,
+the prompt showing the session namespace, REPL input with history
+(Up/Down), and stdin submission when the program is waiting for
+input. Verified in the real page end to end: F5 prints the run's
+output, (hello "Page") at the prompt answers "Hi Page", a runaway
+(loop [] (recur)) shows Running… and Shift+F5 lands "Evaluation
+interrupted". web/app.js rebuilt (1,774,018 bytes).

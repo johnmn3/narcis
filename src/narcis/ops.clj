@@ -15,6 +15,7 @@
             [narcis.edit :as edit]
             [narcis.nav :as nav]
             [narcis.rope :as rope]
+            [narcis.session :as session]
             [narcis.structural :as structural]
             [narcis.syntax :as syntax]
             [narcis.theme :as theme]
@@ -105,7 +106,8 @@
           end (rope/line-start-offset root to)]
       [(rope/slice-string root base end) base])))
 
-(declare rope-op clamp-caret structural-op structural-ops complete-op doc-op)
+(declare rope-op clamp-caret structural-op structural-ops complete-op doc-op
+         session-for run-op repl-op console-op)
 
 (defn- find-in-text
   "Index of query in text for a find from offset `from`: direction
@@ -197,6 +199,11 @@
         :find-prev (find-op ed path msg :prev)
         :complete (complete-op ed path msg)
         :doc (doc-op ed path msg)
+        :run (run-op ed path msg)
+        :stop (session/stop! (session-for ed))
+        :repl (repl-op ed msg)
+        :stdin (session/push-stdin! (session-for ed) (:text msg))
+        :console (console-op ed msg)
 
         :insert-text (plain-insert ed path (:text msg))
         :type-char (type-char ed path (first (:ch msg)))
@@ -357,6 +364,41 @@
           {:ok true :symbol sym :status (when info (name (:status info)))
            :doc (syntax/format-autocomplete-doc info)})))
     {:ok false :error "doc lookup needs the whole text; buffer is over the exact limit"}))
+
+;; ---------------------------------------------------------------------------
+;; evaluation (S4): one narcis.session per editor, held server-side
+
+(defonce ^:private sessions (atom {}))
+
+(defn- session-for
+  "The editor's evaluation session, created on first use. Keyed by
+   the editor handle's identity: one server process serves one
+   editor per store, and tests build an editor per case."
+  [ed]
+  (let [k (System/identityHashCode ed)]
+    (or (get @sessions k)
+        (let [s (session/make-session)]
+          (swap! sessions assoc k s)
+          s))))
+
+(defn- run-op [ed path _msg]
+  ;; Run evaluates the buffer's whole text. Unlike the whole-text
+  ;; editing ops it is not capped by view/exact-limit: running the
+  ;; file is the explicit request, and the text is what would be
+  ;; loaded from disk in any case.
+  (let [text (rope/to-string (buffer/buffer-root ed path))]
+    (session/run! (session-for ed) text path)))
+
+(defn- repl-op [ed msg]
+  (let [input (:input msg)]
+    (if (or (nil? input) (str/blank? input))
+      {:ok false :error "empty REPL input"}
+      (session/repl! (session-for ed) input))))
+
+(defn- console-op [ed msg]
+  (let [c (session/console (session-for ed) (long (or (:since msg) 0)))]
+    {:ok true :entries (:entries c) :total (:total c)
+     :status (name (:status c)) :ns (str (:ns c))}))
 
 (defn- structural-op [ed path f]
   (let [root (buffer/buffer-root ed path)

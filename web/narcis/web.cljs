@@ -40,6 +40,12 @@
          :theme-choice "light" ; the stored choice ("auto" included)
          :themes []          ; /api/themes entries {:name :label :dark?}
          :tabs []
+         :console-open false
+         :console-since 0
+         :console-status "idle"
+         :console-ns "user"
+         :console-history []
+         :console-hist-idx nil
          :completion nil     ; {:items [...] :sel n :start n :word-end n}
          :completion-doc nil ; doc text for the highlighted candidate
          :doc nil            ; F1 doc pane text
@@ -539,6 +545,9 @@
    {:id :find/open :label "Find…" :keys "Ctrl+F" :run (fn [] (open-find!))}
    {:id :find/next :label "Find Next" :keys "Ctrl+G" :run (fn [] (find-step! :next))}
    {:id :find/previous :label "Find Previous" :keys "Ctrl+Shift+G" :run (fn [] (find-step! :prev))}
+   {:id :run/run :label "Run" :keys "F5" :run (fn [] (run-current!))}
+   {:id :run/stop :label "Stop" :keys "Shift+F5" :run (fn [] (stop-run!))}
+   {:id :view/console :label "Console" :run (fn [] (toggle-console!))}
    {:id :help/doc :label "Documentation for Symbol" :keys "F1" :run (fn [] (show-doc!))}
    {:id :edit/complete :label "Complete" :keys "Ctrl+Space" :run (fn [] (request-completion!))}])
 
@@ -570,10 +579,13 @@
    {:label "View"
     :sections [[:tree/toggle]
                [:tab/next :tab/previous]
+               [:view/console]
                [:view/cycle-theme :palette/open]]}
    {:label "Search"
     :sections [[:find/open]
                [:find/next :find/previous]]}
+   {:label "Run"
+    :sections [[:run/run :run/stop]]}
    {:label "Theme" :theme-menu true}
    {:label "Help"
     :sections [[:help/doc]
@@ -928,6 +940,111 @@
       :else nil)))
 
 ;; ---------------------------------------------------------------------------
+;; console — Run/Stop and the REPL prompt over narcis.session. The
+;; server owns the session and the console entries; the page polls
+;; :console for new entries while the pane is open.
+
+(defn console-open? [] (:console-open @state))
+
+(defn render-console-entry! [e]
+  (let [out (by-id "console-out")
+        s @state
+        color (case (:kind e)
+                (:err :error) (or (get-in s [:theme :styles "error" :fg]) "#d33")
+                :system (or (get-in s [:theme :styles "comment" :fg]) "#888")
+                :in (get-in s [:theme :theme :caret])
+                nil)
+        div (el "div"
+                (str "white-space:pre-wrap;"
+                     (when color (str "color:" color ";"))
+                     (when (= :in (:kind e)) "font-weight:bold;")
+                     (when (= :result (:kind e)) "font-style:italic;"))
+                (:text e))]
+    (.appendChild out div)
+    (set! (.-scrollTop out) (.-scrollHeight out))))
+
+(defn poll-console! []
+  (when (console-open?)
+    (-> (op! {:op :console :since (:console-since @state)})
+        (.then (fn [res]
+                 (when (and (:ok res) (console-open?))
+                   (doseq [e (:entries res)] (render-console-entry! e))
+                   (swap! state assoc :console-since (:total res)
+                          :console-status (:status res) :console-ns (:ns res))
+                   (let [p (by-id "console-prompt")]
+                     (when p (set! (.-textContent p) (str (:ns res) "=>"))))
+                   (let [st (by-id "console-status")]
+                     (when st (set! (.-textContent st)
+                                    (case (:status res)
+                                      "running" "Running…"
+                                      "waiting-input" "Waiting for input…"
+                                      ""))))
+                   (js/setTimeout poll-console! (if (= (:status res) "idle") 900 350)))))
+        (.catch (fn [_] (js/setTimeout poll-console! 1200))))))
+
+(defn open-console! []
+  (when-not (console-open?)
+    (swap! state assoc :console-open true)
+    (let [p (by-id "console")]
+      (set! (.-cssText (.-style p))
+            "display:flex;flex-direction:column;height:190px;border-top:1px solid #888;"))
+    (poll-console!)
+    (when-let [i (by-id "console-in")] (.focus i))))
+
+(defn close-console! []
+  (swap! state assoc :console-open false)
+  (let [p (by-id "console")]
+    (set! (.-cssText (.-style p)) "display:none;")))
+
+(defn toggle-console! []
+  (if (console-open?) (close-console!) (open-console!)))
+
+(defn run-current! []
+  (open-console!)
+  (let [out (by-id "console-out")]
+    (when out (set! (.-innerHTML out) "")))
+  (swap! state assoc :console-since 0)
+  (do-op! {:op :run}))
+
+(defn stop-run! []
+  (do-op! {:op :stop}))
+
+(defn console-submit! []
+  (let [input (by-id "console-in")
+        v (.-value input)]
+    (when (not (str/blank? v))
+      (set! (.-value input) "")
+      (swap! state update :console-history (fn [h] (conj (or h []) v)))
+      (swap! state assoc :console-hist-idx nil)
+      (if (= (:console-status @state) "waiting-input")
+        (op! {:op :stdin :text v})
+        (op! {:op :repl :input v})))))
+
+(defn console-input-key! [e]
+  (let [k (.-key e)
+        h (:console-history @state)]
+    (cond
+      (= k "Enter") (do (.preventDefault e) (console-submit!))
+      (= k "ArrowUp")
+      (when (seq h)
+        (.preventDefault e)
+        (let [idx (min (dec (count h)) (inc (or (:console-hist-idx @state) -1)))
+              from-end (nth h (- (count h) 1 idx))]
+          (swap! state assoc :console-hist-idx idx)
+          (set! (.-value (by-id "console-in")) from-end)))
+      (= k "ArrowDown")
+      (when (seq h)
+        (.preventDefault e)
+        (let [idx (dec (or (:console-hist-idx @state) 0))]
+          (if (neg? idx)
+            (do (swap! state assoc :console-hist-idx nil)
+                (set! (.-value (by-id "console-in")) ""))
+            (do (swap! state assoc :console-hist-idx idx)
+                (set! (.-value (by-id "console-in"))
+                      (nth h (- (count h) 1 idx)))))))
+      :else nil)))
+
+;; ---------------------------------------------------------------------------
 ;; completion popup + doc lookup — the server answers :complete /
 ;; :doc (narcis.docs over narcis.syntax); the page only displays.
 
@@ -1070,6 +1187,9 @@
 
         ;; F1: documentation for the symbol at the caret
         (= k "F1") (do (.preventDefault e) (show-doc!))
+
+        ;; F5 runs, Shift+F5 stops
+        (= k "F5") (do (.preventDefault e) (if shift (stop-run!) (run-current!)))
 
         ;; Ctrl+Space: completion on demand
         (and (.-ctrlKey e) (= k " "))
@@ -1310,6 +1430,32 @@
       (.appendChild row tree)
       (.appendChild row sc)
       (.appendChild app row)
+      ;; the console pane: header (title + status + close), output,
+      ;; and the REPL input row
+      (let [pane (el "div" "display:none;" nil)
+            head (el "div" "display:flex;align-items:center;gap:10px;padding:2px 8px;font-size:12px;" nil)
+            out (el "div" "flex:1 1 auto;overflow-y:auto;padding:4px 8px;font-family:monospace;font-size:12px;" nil)
+            inrow (el "div" "display:flex;align-items:center;gap:6px;padding:2px 8px;" nil)
+            prompt (el "span" "font-family:monospace;font-size:12px;font-weight:bold;" "user=>")
+            cin (el "input" "flex:1 1 auto;font-family:monospace;font-size:12px;background:transparent;border:0;outline:none;color:inherit;" nil)
+            status (el "span" "" "")
+            closeb (el "button" "font:inherit;font-size:12px;" "×")]
+        (set! (.-id pane) "console")
+        (set! (.-id out) "console-out")
+        (set! (.-id prompt) "console-prompt")
+        (set! (.-id cin) "console-in")
+        (set! (.-id status) "console-status")
+        (.appendChild head (el "span" "font-weight:bold;" "Interactions"))
+        (.appendChild head status)
+        (.appendChild head closeb)
+        (.addEventListener closeb "click" (fn [_] (close-console!)))
+        (.appendChild inrow prompt)
+        (.appendChild inrow cin)
+        (.addEventListener cin "keydown" console-input-key!)
+        (.appendChild pane head)
+        (.appendChild pane out)
+        (.appendChild pane inrow)
+        (.appendChild app pane))
       (.addEventListener sc "scroll"
                          (fn [_]
                            (let [win (:win @state)

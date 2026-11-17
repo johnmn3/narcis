@@ -118,6 +118,46 @@
       (t/is (str/includes? (:doc res) "Says hi."))
       (t/is (str/includes? (:doc res) "buffer def")))))
 
+(defn- console-until-idle [ed]
+  (loop [n 0]
+    (let [c (ops/apply-op ed {:op :console :since 0})]
+      (if (or (= "idle" (:status c)) (> n 100))
+        c
+        (do (Thread/sleep 100) (recur (inc n)))))))
+
+(defn- console-text [c]
+  (str/join "\n" (map :text (:entries c))))
+
+(t/deftest eval-session-ops
+  ;; S4: Run evaluates the buffer (output lands in the console), the
+  ;; REPL continues in the run's namespace, a second Run resets the
+  ;; first run's definitions away, and Stop interrupts a runaway.
+  (let [ed (fresh-editor)
+        path "prog.clj"]
+    (buffer/open-buffer! ed path
+                         "(ns demo.core) (defn hello [who] (str \"Hi \" who)) (println (hello \"World\"))")
+    (t/is (:ok (ops/apply-op ed {:op :run :path path})))
+    (let [c (console-until-idle ed)]
+      (t/is (str/includes? (console-text c) "Hi World")))
+    (t/is (:ok (ops/apply-op ed {:op :repl :input "(hello \"REPL\")"})))
+    (let [c (console-until-idle ed)]
+      (t/is (str/includes? (console-text c) "\"Hi REPL\""))
+      (t/is (= "demo.core" (:ns c))))
+    ;; runaway + Stop
+    (buffer/open-buffer! ed "loop.clj" "(loop [] (recur))")
+    (t/is (:ok (ops/apply-op ed {:op :run :path "loop.clj"})))
+    (loop [n 0]
+      (when (and (not= "running" (:status (ops/apply-op ed {:op :console :since 0})))
+                 (< n 50))
+        (Thread/sleep 100) (recur (inc n))))
+    (t/is (:ok (ops/apply-op ed {:op :stop})))
+    (let [c (console-until-idle ed)]
+      (t/is (str/includes? (console-text c) "Evaluation interrupted")))
+    ;; the second Run reset demo.core away: hello no longer resolves
+    (t/is (:ok (ops/apply-op ed {:op :repl :input "(hello \"x\")"})))
+    (let [c (console-until-idle ed)]
+      (t/is (some #(= :error (:kind %)) (:entries c))))))
+
 (t/deftest comment-and-indent-ops
   ;; jonquil's own semantics, as the S2 corpus pins them: indent with a
   ;; selection block-indents every spanned line by two spaces;
