@@ -28,7 +28,7 @@ JOLT_TIMEOUT=1200 setsid bash "$ROOT/scripts/jolt-run.sh" narcis.launcher \
   --dir "$DATA/db" --port $PORT --file "$BIG" --web-dir "$ROOT/web" \
   > "$DATA/server.log" 2>&1 &
 SRV=$!
-deadline=$(( $(date +%s) + 600 ))
+deadline=$(( $(date +%s) + ${VIEWPORT_UP_BUDGET_SECS:-600} ))
 UP=1
 while [ "$(date +%s)" -lt $deadline ]; do
   if curl -fsS "http://127.0.0.1:$PORT/api/state" -o "$DATA/state.out" 2>/dev/null; then UP=0; break; fi

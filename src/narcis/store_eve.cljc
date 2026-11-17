@@ -85,9 +85,20 @@
      (defn open [{:keys [dir name]}]
        (let [base (str dir "/" name)
              _ (.mkdirs (.getParentFile (java.io.File. base)))
-             ;; force the domain into existence now (S2 lifecycle:
-             ;; the domain is created at open, closed at close!)
-             _ (ea/persistent-atom-domain base)]
+             ;; Force the domain into existence now (S2 lifecycle:
+             ;; the domain is created at open, closed at close!),
+             ;; sized for editor-scale trees: the same capacities +
+             ;; coalescing-descriptor count narcis.rope's standalone
+             ;; heap domain measured out — with Eve's defaults a
+             ;; 1e6-line ingest spends its time growing regions and
+             ;; walls at ~450k lines (Eve's error names the parameter;
+             ;; sizing a domain for its workload is the opener's job).
+             _ (ea/persistent-atom-domain
+                 base
+                 :capacities {0 (* 16 1024 1024) 1 (* 8 1024 1024)
+                              2 (* 8 1024 1024) 3 (* 32 1024 1024)
+                              4 (* 8 1024 1024) 5 (* 8 1024 1024)}
+                 :coalesc-descriptors 262144)]
          {:impl :eve :base base :atoms (atom {})}))
 
      (defn put! [store buffer-name value]
