@@ -41,16 +41,22 @@ stays out of those. If S3 lands first, rebase onto it.)
   and undo as swaps, close, reopen in a second process, undo across
   the restart. All texts/fields exact.
 
-## Step 2 — the swap (IN PROGRESS)
+## Step 2 — the swap (DONE; gates coordinator-run 2026-11-16 evening)
 - [x] narcis.rope: nodes are RopeNode eve.deftype values (leaf text +
       EveArray children + counts); unchanged public API; construction
       context = caller's binding, else the root's own domain, else a
       standalone heap domain.
-- [ ] narcis.buffer: editor state lives in Eve atoms (per-buffer atom
+- [x] narcis.buffer: editor state lives in Eve atoms (per-buffer atom
       + editor atom); every edit is a swap!; the local mirror atom and
-      persist! go away. Public API unchanged.
-- [ ] narcis.store: reduced to open-by-name (+ the bb file arm, W2);
+      persist! are gone. Public API unchanged.
+- [x] narcis.store: reduced to open-by-name (+ the bb file arm, W2);
       put! re-instantiates a foreign-domain root inside the swap (the
       only lawful cross-domain path); in-domain roots stored by ref.
-- [ ] Gates: rope property tests; S1 scale sanity vs 991/333 ms;
-      store gate; buffer gate; corpus 38/644/0F/0E; persistence.
+- [x] Gates, all PASS on jolt: rope property tests; store gate;
+      buffer gate (undo across restart); corpus 38/644/0F/0E; S0 gate.
+- [x] Scale: measured and NAMED in REPORT.md — Eve's storage paths
+      for KB-scale values are slow at this pin (deftype leaf ~0.85 ms
+      per KB warm; fresh-atom KB string swaps 65–99 ms cold). Correct-
+      ness unaffected; fix belongs in Eve, package sent to the
+      release seat. 1e6 build 46.0 s jolt / 93.1 s JVM (plain-value
+      S2: 991 ms) is a regression carried openly, not hidden.

@@ -65,12 +65,20 @@
 
 (def ^:private standalone-sio
   ;; The domain standalone ropes (tests, benches, pre-atom ingest) are
-  ;; built in: a heap domain sized like Eve's own deftype test fixture,
-  ;; with the large-block class roomy enough for editor-scale trees.
+  ;; built in: a heap domain sized like Eve's own deftype test fixture
+  ;; for the fixed classes, plus a coalescing-descriptor table sized
+  ;; for editor-scale trees — every leaf's text block (>1 KB) takes
+  ;; one class-6 descriptor, and the heap default (16384) walls a
+  ;; build at ~450k lines (measured; Eve's error names the parameter).
+  ;; 2^18 descriptors ≈ 260k leaves ≈ 7M lines at the default leaf
+  ;; size (and ~10^8 lines at ingest's 8192) — and 2^20 descriptors
+  ;; breaks jolt's region path outright (measured: invalid memory
+  ;; reference; 2^18 works), so 2^18 it is.
   (delay (alloc/heap-domain-sio!
-           {:capacities {0 (* 64 1024 1024) 1 (* 16 1024 1024)
-                         2 (* 16 1024 1024) 3 (* 192 1024 1024)
-                         4 (* 16 1024 1024) 5 (* 16 1024 1024)}})))
+           {:capacities {0 (* 16 1024 1024) 1 (* 8 1024 1024)
+                         2 (* 8 1024 1024) 3 (* 32 1024 1024)
+                         4 (* 8 1024 1024) 5 (* 8 1024 1024)}
+            :coalesc-descriptors 262144})))
 
 (defn- root-sio
   "The slab sio a persistent RopeNode lives in, or nil for a flat
@@ -327,8 +335,28 @@
            [mid _] (split* tmp (- end start))]
        (or mid (empty-leaf)))))
 
+(defn- range-text
+  "Append t's chars in [start end) to sb; t's span begins at base
+   (chars before t). A pure read: descends only into overlapping
+   children and constructs nothing — reads by offsets, never by
+   leaf-local index, so a range spanning leaves reads correctly."
+  [t base start end ^StringBuilder sb]
+  (when (and (some? t) (< base end) (< start (+ base (chars t))))
+    (if (leaf? t)
+      (let [s (-leaf-text t)
+            a (max 0 (- start base))
+            b (min (count s) (- end base))]
+        (when (< a b) (.append sb (subs s a b))))
+      (loop [kids (kids-vec t) acc base]
+        (when (seq kids)
+          (let [c (first kids)]
+            (range-text c acc start end sb)
+            (recur (next kids) (+ acc (chars c)))))))))
+
 (defn slice-string [t start end]
-  (to-string (slice-rope t start end)))
+  (let [sb (StringBuilder.)]
+    (range-text t 0 start end sb)
+    (str sb)))
 
 ;; ---------------------------------------------------------------------------
 ;; line index

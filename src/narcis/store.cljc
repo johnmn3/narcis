@@ -1,20 +1,25 @@
 (ns narcis.store
   "Buffer store seam: open-by-name persistence for editor/buffer state.
 
-   The store holds buffer VALUES (rope roots are plain data) under a name
-   like \"narcis/buffers\", keeping every version:
-     {:buffers {<buffer-name> {:current <value> :versions [<value> ...]}}}
+   The store is opened by name (\"narcis/buffers\") in a directory.
+   On the Eve arm the store is a disk DOMAIN holding named Eve atoms:
+   one versions atom per buffer name (value: a Versioned eve.deftype —
+   current value + history — at the atom's root), plus generic named
+   atoms for narcis.buffer's editor state. Buffer values are swapped
+   on those atoms; nothing is serialized in or out.
 
    Implementations, tried in order:
-   1. Eve disk atom (narcis.store-eve) — an eve.alpha disk atom opened by
-      :id in the domain at :dir, when eve.atom loads on this host. This is
-      the default on jolt (Eve @84bfc7c8, W1b: flat handles fixed in Eve's
-      shared code) and on the JVM.
-   2. File fallback (this namespace) — the same value shape in an EDN file,
-      written atomically (tmp + rename) on every put. This arm remains
-      ONLY for hosts where Eve genuinely cannot run yet — today bb,
-      whose SCI blocks the ByteBuffer put Eve's vector path needs (W2,
-      see REPORT.md) — and this seam is the one place that says so.
+   1. Eve disk atoms (narcis.store-eve) — when eve.atom loads on this
+      host. This is the default on jolt (Eve @84bfc7c8) and the JVM.
+   2. File fallback (this namespace) — buffer values in an EDN file,
+      written atomically (tmp + rename) on every put, in the shape
+        {:buffers {<buffer-name> {:current <value> :versions [...]}}}
+      This arm remains ONLY for hosts where Eve genuinely cannot run
+      yet — today bb, whose SCI blocks the ByteBuffer put Eve's vector
+      path needs (W2, see REPORT.md) — and this seam is the one place
+      that says so. It holds EDN-representable values (the launcher's
+      text buffers); eve.deftype rope values require the Eve arm —
+      narcis.buffer says so when opened on a file store.
       App code cannot tell the difference except via (:impl store)."
   (:require [clojure.string :as str]
             [clojure.edn :as edn]))
@@ -91,6 +96,44 @@
        (if (= :eve (:impl store))
          ((resolve 'narcis.store-eve/version-count) store buffer-name)
          (count (get-in @(:state store) [:buffers buffer-name :versions]))))
+
+     (defn open-atom
+       "Open the store's atom named key, with initial value init when
+        the atom has never been set. Returns a handle for atom-deref /
+        atom-swap!. On the Eve arm this is a named Eve atom in the
+        store's disk domain — swaps on it are Eve swaps, and a swap
+        fn that constructs eve.deftype values constructs them in the
+        domain. On the file arm it is an EDN-backed atom (values must
+        be EDN-representable)."
+       [store key init]
+       (if (= :eve (:impl store))
+         ((resolve 'narcis.store-eve/open-atom) store key init)
+         (do (swap! (:state store)
+                    (fn [s] (if (contains? (:atoms s) key)
+                              s
+                              (assoc-in s [:atoms key] init))))
+             (file-persist! store)
+             {:kind :file :store store :key key})))
+
+     (defn atom-deref [handle]
+       (if (= :eve (:kind handle))
+         ((resolve 'narcis.store-eve/atom-deref) handle)
+         (get-in @(:state (:store handle)) [:atoms (:key handle)])))
+
+     (defn atom-swap!
+       "Swap the atom behind handle with f (a fn of its current value).
+        Returns the new value."
+       [handle f]
+       (if (= :eve (:kind handle))
+         ((resolve 'narcis.store-eve/atom-swap!) handle f)
+         (let [store (:store handle)
+               new (atom nil)]
+           (swap! (:state store)
+                  (fn [s] (let [v (f (get-in s [:atoms (:key handle)]))]
+                            (reset! new v)
+                            (assoc-in s [:atoms (:key handle)] v))))
+           (file-persist! store)
+           @new)))
 
      (defn close-store [store]
        (when (= :eve (:impl store))
