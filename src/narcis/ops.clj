@@ -13,6 +13,7 @@
    Nothing here knows about HTTP or the page."
   (:require [narcis.buffer :as buffer]
             [narcis.commands :as commands]
+            [narcis.docs :as docs]
             [narcis.edit :as edit]
             [narcis.nav :as nav]
             [narcis.structural :as structural]
@@ -199,6 +200,16 @@
                        [text base] (region doc key caret)]
                    (f text base caret)))))
 
+(defn- buffer-ns-sym
+  "The buffer's (ns ...) name as a symbol, or 'user when it has none:
+   completion and documentation are looked up in that namespace
+   (narcis.docs), so what a Run defined there is found; a namespace that
+   does not exist yet reads as `user`."
+  [text]
+  (if-let [m (re-find #"\(ns\s+([a-zA-Z0-9_.\-]+)" (subs text 0 (min (count text) 4000)))]
+    (symbol (second m))
+    'user))
+
 (defn- complete-op
   "The candidates for the word before the caret: {:prefix s :start n
    :end n :candidates [{:symbol s :category c} ...]} (offsets into the
@@ -207,7 +218,8 @@
   (reading ed path msg
            (fn [text base caret]
              (let [{:keys [prefix start word-end]} (syntax/get-symbol-prefix-at-pos text (- caret base))
-                   cands (syntax/get-autocomplete-candidates prefix text (- caret base))]
+                   cands (docs/candidates (buffer-ns-sym text)
+                                          {:prefix prefix :text text :pos (- caret base)})]
                {:ok true
                 :prefix prefix
                 :start (+ base start)
@@ -228,7 +240,7 @@
                  {:ok false :error "no symbol there"}
                  {:ok true
                   :symbol sym
-                  :doc (syntax/format-autocomplete-doc (syntax/get-symbol-doc sym text (- caret base))
+                  :doc (syntax/format-autocomplete-doc (docs/symbol-doc (buffer-ns-sym text) sym text (- caret base))
                                                        {:symbol sym
                                                         :category (some-> (:category msg) keyword)})})))))
 
@@ -410,4 +422,7 @@
                      (move-caret! ed path (in (or (:offset msg) (:caret msg) 0)) sel))
         :rename (whole-text-op ed path msg "no symbol to rename there"
                                (fn [s] (edit/rename s (:name msg))))
-        {:ok false :error (str "unknown op: " op)}))))
+        ;; a structural command may be sent by its own name
+        (if-let [f (and (keyword? op) (get structural-ops (name op)))]
+          (snapshot-op ed path msg "does not apply here" f)
+          {:ok false :error (str "unknown op: " op)})))))

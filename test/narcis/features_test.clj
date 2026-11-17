@@ -193,6 +193,15 @@
       (t/is (= {:action "eval"} (interactions/input! con "(twice 21)" false)))
       (let [out (settle con 10000)]
         (t/is (str/ends-with? out "user=> (twice 21)\n=> 42\n"))))
+    (t/testing "Run resets: a definition gone from the text is gone from the program"
+      (interactions/run! con "(defn thrice [x] (* 3 x))\n(thrice 2)" "demo.clj" nil)
+      (t/is (str/ends-with? (settle con 10000) "=> 6\n"))
+      (interactions/input! con "(twice 1)" false)
+      (t/is (str/includes? (settle con 10000) "Unable to resolve symbol: twice"))
+      (interactions/run! con "(defn twice [x] (* 2 x))\n(twice 21)" "demo.clj" nil)
+      (settle con 10000)
+      (interactions/input! con "(twice 21)" false)
+      (t/is (str/ends-with? (settle con 10000) "user=> (twice 21)\n=> 42\n")))
     (t/testing "kinds: each entry says what it is"
       (let [kinds (set (map first (:entries (interactions/read-from con 0))))]
         (t/is (every? kinds ["system" "out" "result" "prompt" "input"]))))

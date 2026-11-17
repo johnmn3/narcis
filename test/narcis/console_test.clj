@@ -1,5 +1,5 @@
 (ns narcis.console-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.test :as t :refer [deftest is testing]]
             [narcis.console :as console]
             [narcis.theme :as theme]))
 
@@ -92,3 +92,8 @@
     (is (= {:fg "#f07178"} (console/style navy :err)))
     (is (= {:fg "#6f7390" :italic true} (console/style navy :system)))
     (is (nil? (console/style light :bogus)))))
+
+(defn -main [& _]
+  (let [{:keys [fail error] :as m} (t/run-tests 'narcis.console-test)]
+    (println "TEST-SUMMARY" m)
+    (System/exit (if (zero? (+ fail error)) 0 1))))

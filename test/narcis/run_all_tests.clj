@@ -15,6 +15,7 @@
             [narcis.commands-test]
             [narcis.console-test]
             [narcis.eval-test]
+            [narcis.docs-test]
             [narcis.view-test]
             [narcis.ops-test]
             [narcis.app-test]
@@ -26,7 +27,7 @@
         (t/run-tests 'narcis.syntax-test 'narcis.upstream-syntax-test
                      'narcis.edit-test 'narcis.edit-doc-test
                      'narcis.structural-test 'narcis.commands-test
-                     'narcis.console-test 'narcis.eval-test
+                     'narcis.console-test 'narcis.eval-test 'narcis.docs-test
                      'narcis.view-test 'narcis.ops-test 'narcis.app-test
                      'narcis.features-test)]
     (println "TEST-SUMMARY" m)

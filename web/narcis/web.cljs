@@ -780,15 +780,67 @@
    "help/quick-doc" {:run (fn [] (quick-doc!)) :keys "Ctrl+Q"}
    "help/version" {:run (fn [] (about!))}})
 
-(def structural-keys
-  {"paredit/slurp-forward" "Ctrl+→"
-   "paredit/barf-forward" "Ctrl+←"
-   "paredit/forward" "Ctrl+Alt+→"
-   "paredit/backward" "Ctrl+Alt+←"
-   "paredit/up" "Ctrl+Alt+↑"
-   "paredit/down" "Ctrl+Alt+↓"
-   "paredit/expand-selection" "Alt+↑"
-   "paredit/shrink-selection" "Alt+↓"})
+(def structural-chords
+  "Structural editing's chords — jonquil's Calva set as it adapts to a
+   browser (the chords the lane's page already used) — chord -> the
+   structural op's name."
+  {"Ctrl+Alt+." "slurp-forward"
+   "Ctrl+Alt+," "barf-forward"
+   "Ctrl+Alt+Shift+←" "slurp-backward"
+   "Ctrl+Alt+Shift+→" "barf-backward"
+   "Ctrl+Alt+S" "splice"
+   "Ctrl+Alt+Shift+P" "wrap-round"
+   "Ctrl+Alt+Shift+S" "wrap-square"
+   "Ctrl+Alt+Shift+C" "wrap-curly"
+   "Ctrl+Alt+Shift+E" "wrap-set"
+   "Ctrl+Alt+Shift+Q" "wrap-quote"
+   "Ctrl+Shift+Del" "kill-form"
+   "Ctrl+Alt+Bksp" "kill-form-backward"
+   "Ctrl+Del" "kill-list-forward"
+   "Ctrl+Bksp" "kill-list-backward"
+   "Ctrl+Alt+Shift+Del" "splice-killing-forward"
+   "Ctrl+Alt+Shift+Bksp" "splice-killing-backward"
+   "Alt+↓" "drag-forward"
+   "Alt+↑" "drag-backward"
+   "Ctrl+Alt+T" "transpose"
+   "Ctrl+Shift+J" "join"
+   "Ctrl+Shift+C" "convolute"
+   "Alt+Shift+→" "expand-selection"
+   "Alt+Shift+←" "shrink-selection"
+   "Ctrl+Shift+→" "select-forward"
+   "Ctrl+Shift+←" "select-backward"
+   "Ctrl+Alt+→" "forward"
+   "Ctrl+Alt+←" "backward"
+   "Ctrl+↑" "up"
+   "Ctrl+↓" "down"
+   "Ctrl+Alt+↓" "forward-up"
+   "Ctrl+Alt+↑" "backward-down"
+   "Ctrl+End" "list-end"
+   "Ctrl+Home" "list-start"})
+
+(def chord-of-op (into {} (map (fn [[chord op]] [op chord])) structural-chords))
+
+(defn chord-of
+  "The chord of key event e as structural-chords writes it, or nil for a
+   key that is in none. The key is named by its position (e.code), so
+   Alt changing the character it types does not change the chord."
+  [e]
+  (let [code (.-code e)
+        k (cond
+            (str/starts-with? code "Key") (subs code 3)
+            (= code "Period") "."
+            (= code "Comma") ","
+            (= code "ArrowRight") "→"
+            (= code "ArrowLeft") "←"
+            (= code "ArrowUp") "↑"
+            (= code "ArrowDown") "↓"
+            (= code "Delete") "Del"
+            (= code "Backspace") "Bksp"
+            (= code "End") "End"
+            (= code "Home") "Home"
+            :else nil)]
+    (when (and k (or (.-ctrlKey e) (.-altKey e)))
+      (str (when (.-ctrlKey e) "Ctrl+") (when (.-altKey e) "Alt+") (when (.-shiftKey e) "Shift+") k))))
 
 (defn command
   "The table entry for command id: the table's own, or a structural
@@ -797,7 +849,7 @@
   [id]
   (or (get command-table id)
       (when (str/starts-with? id "paredit/")
-        {:run (fn [] (structural! (subs id 8))) :keys (get structural-keys id)})))
+        {:run (fn [] (structural! (subs id 8))) :keys (get chord-of-op (subs id 8))})))
 
 (defn run-command! [id]
   (when-let [c (command id)]
@@ -1421,9 +1473,10 @@
         lower (str/lower-case k)
         run (fn [id] (.preventDefault e) (run-command! id) true)]
     (cond
+      (and (= k "F5") shift) (run "run/stop")
       (= k "F5") (run "run/run")
       (and cmd (not shift) (not alt) (= lower "r")) (run "run/run")
-      (and cmd shift (= lower "p")) (run "palette/open")
+      (and cmd shift (not alt) (= lower "p")) (run "palette/open")
       (and cmd (not shift) (= lower "k")) (run "palette/open")
       (and cmd (not shift) (not alt) (= lower "o")) (run "file/open")
       (and cmd shift (not alt) (= lower "s")) (run "file/save-as")
@@ -1482,7 +1535,7 @@
         (and cmd (= k "Enter")) (do (.preventDefault e) (run-command! "run/form"))
         (and ctrl (= k " ")) (do (.preventDefault e) (open-complete!))
         (and ctrl (not (.-metaKey e)) (= lower "q")) (do (.preventDefault e) (quick-doc!))
-        (and shift (= k "F1")) (do (.preventDefault e) (quick-doc!))
+        (= k "F1") (do (.preventDefault e) (quick-doc!))
         (and cmd (or (= k "/") (= k ";"))) (do (.preventDefault e) (do-op! {:op :toggle-comment}))
         (and cmd shift (= lower "f")) (do (.preventDefault e) (do-op! {:op :format-all}))
         (and cmd alt (or (= lower "f") (= lower "l"))) (do (.preventDefault e) (do-op! {:op :format-selection}))
@@ -1497,14 +1550,8 @@
         (or (= k "F2") (and (= k "F6") shift)) (do (.preventDefault e) (rename-ui!))
 
         ;; structural editing
-        (and ctrl alt (= k "ArrowRight")) (do (.preventDefault e) (structural! "forward"))
-        (and ctrl alt (= k "ArrowLeft")) (do (.preventDefault e) (structural! "backward"))
-        (and ctrl alt (= k "ArrowUp")) (do (.preventDefault e) (structural! "up"))
-        (and ctrl alt (= k "ArrowDown")) (do (.preventDefault e) (structural! "down"))
-        (and ctrl (not alt) (not shift) (= k "ArrowRight")) (do (.preventDefault e) (structural! "slurp-forward"))
-        (and ctrl (not alt) (not shift) (= k "ArrowLeft")) (do (.preventDefault e) (structural! "barf-forward"))
-        (and alt (not ctrl) (= k "ArrowUp")) (do (.preventDefault e) (structural! "expand-selection"))
-        (and alt (not ctrl) (= k "ArrowDown")) (do (.preventDefault e) (structural! "shrink-selection"))
+        (get structural-chords (chord-of e))
+        (do (.preventDefault e) (close-complete!) (structural! (get structural-chords (chord-of e))))
 
         (= k "Enter") (typed! {:op :smart-enter})
         (= k "Tab") (do (.preventDefault e) (do-op! {:op (if shift :unindent :indent)}))

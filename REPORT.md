@@ -139,3 +139,198 @@ and DOM read back):
   land in the status bar, init is nil.
 
 web/app.js rebuilt (1,725,867 bytes).
+
+## Paredit set (2026-11-17, coordinator)
+
+Jonquil's structural editing is in, whole: `narcis.structural` is
+jonquil.structural ported namespace-for-namespace (slurp/barf ×4,
+raise, splice, wrap ×5, rewrap ×4, copy/kill-form, kill-list,
+kill-right/left, splice-killing ×2, convolute, drag ×2, transpose,
+join, split, forward/backward/up/down by form, forward-up,
+backward-down, list-start/end, expand/shrink/select by form — 42
+ops), over `narcis.forms`, which is jonquil.commands' form-tree
+extracted (jonquil.commands itself stays behind; it carries the
+console/Run machinery). Jonquil's own structural suite ports with
+it: **21 tests / 154 assertions, all green**.
+
+Ops: one dispatch arm in narcis.ops applies a structural op's
+{:edits :caret :sel :copy} over the rope as ONE undo step, driven
+over the same windowed text as the nav ops (whole buffer under the
+exact limit, else ±400 lines). kill/copy return :copy, which the
+page puts on the clipboard. Op-level gate: ops-test grows a
+structural deftest (slurp/barf round-trip as two undo steps, wrap,
+kill-form's :copy, expand-selection, inapplicable → not-ok) —
+**3 tests / 40 assertions**.
+
+Page: every command is in the palette and the Edit menu; chords are
+jonquil's Calva keyset adapted where Narcis already had a binding
+(Ctrl+Alt+arrows stay forward/backward-sexp, so slurp/barf forward
+are Ctrl+Alt+. / Ctrl+Alt+,). Verified in the real page: clicking a
+form and pressing Ctrl+Alt+Shift+P wraps it. web/app.js rebuilt
+(1,743,677 bytes).
+
+## Completion + doc lookup (2026-11-17, coordinator)
+
+The last piece of jonquil's editing surface that was still missing:
+`narcis.docs` is jonquil.docs ported whole (symbol-doc memoised,
+resolved in the buffer's (ns ...) namespace with `user` fallback;
+candidates in that namespace) over narcis.syntax's
+get-autocomplete-candidates / get-symbol-doc / format-autocomplete-doc,
+which were already in the S2 corpus. Jonquil's docs suite ports with
+it: **11 tests / 28 assertions, all green**. Before S4 there is no
+user program running, so lookups resolve against clojure.core (real
+docs from the server's runtime) and buffer definitions — exactly
+what the ops gate pins: :doc "map" gives clojure.core/map's doc,
+:doc "hello" gives the buffer def with its arglists.
+
+Ops: :complete (candidates for the prefix at the caret, with the
+replacement range) and :doc (formatted doc for the symbol at the
+caret or a named symbol); both whole-buffer under the exact limit,
+like rename. Ops gate grows to **4 tests / 49 assertions**.
+
+Page: typing a symbol char (or Ctrl+Space) opens the completion
+popup at the caret — candidates, Up/Down, Enter/Tab accepts by
+replacing the prefix range, Esc closes — with the highlighted
+candidate's documentation beside the list; F1 (Help > Documentation
+for Symbol) shows the doc in a pane. One real bug found by the page
+probe along the way: op! copied :caret/:sel out of EVERY ok result,
+so a read-only op's caret-less answer erased the client's caret —
+the popup's doc pane was its first visible victim. op! now only
+adopts a caret the result actually carries. Verified in the real
+page: click after "(hel", type "l", popup offers hello with its
+doc, Enter completes to (hello. web/app.js rebuilt.
+
+## S4: Run/Stop + console (2026-11-17, coordinator)
+
+The DrRacket loop. `narcis.eval` is jonquil.eval ported whole —
+eval-string under jolt's run-interruptible, captured *out*/*err*,
+the stdin queue, *1/*2/*3/*e carried across evaluations, and Stop
+via jolt.host/interrupt! + thread interrupt under the context lock.
+Jonquil's eval suite ports with it: **34 tests / 160 assertions,
+all green**. `narcis.console` (jonquil's pure console decisions)
+ports too: **9 tests / 44 assertions**.
+
+`narcis.session` is new and deliberately thin: jonquil.session's
+reset semantics (a Run removes the namespaces its session's
+evaluations created, plus `user`, then evaluates into a fresh
+`user`; libraries are never removed) and its prompt rule (the REPL
+continues in the namespace the last evaluation left), without
+jonquil's debugger/trace/world runtime stack — that port is the
+debugger step, still to come. Sessions live server-side, not in
+the Eve atom: a running evaluation and its half-printed output are
+process state, not document state.
+
+Ops: :run (the buffer's whole text, with the file as source path),
+:stop, :repl, :stdin (for a program blocked on read-line), :console
+(entries since an index + status + prompt namespace). The ops gate
+drives the whole loop headlessly, including a runaway (loop)
+interrupted by :stop and a second Run resetting the first run's
+definitions away: **5 tests / 59 assertions**.
+
+Page: a Run menu (Run F5, Stop Shift+F5), a View > Console toggle,
+and the Interactions pane — output streamed by polling :console,
+the prompt showing the session namespace, REPL input with history
+(Up/Down), and stdin submission when the program is waiting for
+input. Verified in the real page end to end: F5 prints the run's
+output, (hello "Page") at the prompt answers "Hi Page", a runaway
+(loop [] (recur)) shows Running… and Shift+F5 lands "Evaluation
+interrupted". web/app.js rebuilt (1,774,018 bytes).
+
+## The eve.text rope, reads in place, Jonquil's window (2026-11-17, session 018km5Ww)
+
+Asked: finish the app in this lane, with the fast rope in it, looking like
+Jonquil. While this was being done the lane also received the three
+sections above (paredit, completion, S4) from the coordinator's seat, built
+on the old rope; the two lines of work were merged, and where both had
+built the same thing one was kept — said below.
+
+### What the lane's page and server cost before
+
+Measured on this lane at `0a1f758`, Jolt v0.8.23, Eve @84bfc7c8, one 4-core
+box, a 4,000-line file over HTTP (medians): a 100-line window 981 ms; a
+keystroke 1.8 s and growing with every edit; a keystroke with its repaint
+7.8 s; Enter 9.9 s; `/api/state` 3.1 s. Its gates were green (editor 27/27,
+corpus 38/644) — they checked answers, not time. Four causes, each
+measured:
+
+1. **A deref copies.** At this Eve pin `@atom` hands back the value as a
+   flat object that owns its bytes — for a buffer, the whole document.
+   Every question asked of a buffer (its caret, its undo depth, its window)
+   paid for a copy of it: 100 ms at 4,000 lines, 200 ms at 12,000. Inside a
+   read region (`eve.alpha/$`) the value is read where it is: 0.2 ms.
+   `narcis.buffer/read` is now the one door.
+2. **The undo stack was read whole** (an Eve array turned into a vector)
+   for every one of those questions, and copied on every edit. It is a
+   linked history now: a step makes or drops one cell.
+3. **The painter filtered the whole plan once per line** of the window
+   (spans × lines), and the whole text was materialized and tokenized for
+   every window fetch and again for every edit op. Now: one analysis per
+   text, remembered under the buffer's text key and shared by the painter
+   and the ops; a window's spans found by binary search; buffers over
+   24,000 chars analysed a window at a time from the top-level form above.
+4. **The rope re-encoded a leaf's whole text** on every path copy
+   (REPORT-ROPE-DEFTYPE.md's 0.85 ms/KB). `eve.text` writes only the lines
+   an edit made; the rest of a touched leaf moves as slot references.
+
+And one of Eve's: with the journal (Eve's default for a disk domain) 600
+keystrokes took 72.9 s — 73 of them over 50 ms, the worst 1.6 s; with
+`:journal? false` (durable commits by sweep + root force) 5.5 s, none over
+40 ms; `:durable? false` the same 5.5 s. The store opens with
+`:journal? false`. The journal's cost on Jolt is the release seat's, with
+these runs.
+
+### What is there now
+
+- `eve.text` (johnmn3/atom.broker `libs/eve-text` @`03f5277a9`) is the
+  buffer's text, carried unchanged (UPSTREAM.md has the hashes): made to
+  load on this Eve line, with a builder (a file read in chunks, never held
+  whole — `narcis.text/ingest-file`), a window read (`text-window`) and
+  node identity. At this pin its own suite: Jolt 44 tests / 647 assertions,
+  JVM the same, 0 failures. `narcis.rope` is deleted.
+- `narcis.buffer`: `BufferState` at the atom's root (document, caret,
+  selection, undo and redo histories, the file's line ending, revisions);
+  `edit!` is one swap with the op inside it; `read` is the read region.
+- The window is Jonquil's (docs/images): header bar, Definitions over
+  Interactions, status bar, file tree, tabs; its menus are Jonquil's
+  `menus.edn` narrowed by `narcis.menus`.
+- Run, Run Form, Run Selection, Stop, Reset on Run, the prompt, history,
+  stdin: `narcis.interactions` over `narcis.eval`. The transcript is in an
+  Eve atom, read by position, there after a restart.
+- Structural editing (42 ops), the formatter, completion and docs.
+
+### How the two lines of work were joined
+
+Both seats lifted `jonquil.eval`, `jonquil.console` and
+`jonquil.structural` from the same commit; the copies differed by a word
+or a namespace name, and one of each is kept. Kept from the coordinator's
+seat: `narcis.docs` (jonquil.docs: lookups resolved in the buffer's
+namespace, memoised) and its tests, now what `:complete` and `:doc` call;
+the structural chords (Ctrl+Alt+. slurp, Ctrl+Alt+Shift+P wrap, …);
+Reset on Run's rule (a Run removes the namespaces the console's
+evaluations made, and `user`); Shift+F5 and F1; the `-main` of the ported
+test namespaces. Not kept, and why:
+
+- `narcis.session`: its console was a vector in the server's memory; the
+  transcript is state and lives in an Eve atom (`narcis.interactions`).
+  Its Run cleared the console and showed no value; Jonquil's Run keeps the
+  transcript, prints `; --- Running <name> ---` and the last form's value.
+  Its reset rule is in `narcis.interactions`.
+- `narcis.forms` (jonquil.commands' form-tree, extracted):
+  `narcis.commands` is jonquil.commands lifted whole, form-tree with it,
+  and brings Run Form, Run Selection, the bracket check before Run and the
+  formatter.
+- Their arms of `narcis.ops` and their page: written against `narcis.rope`
+  and the old buffer. The ops they added exist here under the same names
+  (`:complete`, `:doc`; a structural command by its own name or as
+  `{:op :structural :name n}`); Run, Stop and the prompt are the console's
+  messages (`/api/console`), not ops. Their three ops tests are covered by
+  `narcis.features-test`.
+
+### Gates and measurements
+
+See STATUS.md for the table as last run (it is the ledger). Two things the
+numbers do not say: the page gate is new — the earlier gates never drove
+the page, which is how the menu drawn over the text and a caret sync that
+misplaced fast typing got through — and the viewport gate's 1,000,000-line
+open is no longer walled on the rope (the line ingest is Eve's per-line
+string write: see STATUS.md's row for what it took here).

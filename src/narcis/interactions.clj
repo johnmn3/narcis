@@ -16,11 +16,19 @@
    server calls with its one lock held — so every Eve write, the
    editor's and the console's, happens under that lock.
 
+   Run resets (jonquil.session's rule, DrRacket's): every namespace an
+   evaluation creates belongs to this console; a Run removes those and
+   `user`, then evaluates into a fresh `user`, so a definition deleted
+   from the buffer is gone from the program too. Namespaces that existed
+   when the console was opened, and clojure.*, are never removed. The
+   prompt continues where the last evaluation left *ns*.
+
    This is Jolt's evaluator: narcis.eval drives jolt.host's interrupt
    token, which is what lets Stop end a loop that never blocks."
   (:require [clojure.string :as str]
             [narcis.commands :as commands]
             [narcis.console :as console]
+            [narcis.docs :as docs]
             [narcis.eval :as eval]
             [narcis.store :as store])
   (:import [java.util.concurrent LinkedBlockingQueue]))
@@ -38,7 +46,11 @@
   {:ctx (eval/make-eval-context)
    :atom (store/open-atom st atom-name {:entries [] :dropped 0 :ns "user"})
    :pending (LinkedBlockingQueue.)
-   :ns (atom nil)})
+   :ns (atom nil)
+   ;; what was here before the user's program: never reset
+   :base-ns (set (map ns-name (all-ns)))
+   ;; the namespaces evaluations have made since: a Run removes them
+   :owned (atom #{})})
 
 (defn- value [con] (store/atom-deref (:atom con)))
 
@@ -146,6 +158,23 @@
 ;; ---------------------------------------------------------------------------
 ;; evaluating
 
+(defn- track-namespaces!
+  "After an evaluation: the namespaces that appeared since the console
+   was opened (clojure.* apart) are this console's to reset."
+  [con]
+  (let [created (remove (:base-ns con) (map ns-name (all-ns)))
+        created (remove (fn [n] (str/starts-with? (str n) "clojure.")) created)]
+    (swap! (:owned con) into created)))
+
+(defn- reset-namespaces!
+  "Remove this console's namespaces and `user`; the next evaluation
+   makes what it needs."
+  [con]
+  (doseq [n (conj @(:owned con) 'user)]
+    (when (find-ns n) (remove-ns n)))
+  (reset! (:owned con) #{})
+  (reset! (:ns con) 'user))
+
 (defn- evaluate!
   "Start code on the evaluator in the prompt's namespace; its output and
    its result line go to the transcript. opts are narcis.eval/eval-async's."
@@ -155,6 +184,7 @@
                  (merge {:ns-name (symbol (current-ns con))
                          :on-output (fn [kind chunk] (say! con kind chunk))
                          :on-complete (fn [result]
+                                        (track-namespaces! con)
                                         (when-let [n (:ns result)] (reset! (:ns con) n))
                                         (let [[kind text] (console/result-line result)]
                                           (say! con kind text)))}
@@ -168,11 +198,19 @@
    bracket that does not match is said before anything runs. source-path
    is the file the text is, when it is one."
   [con text label source-path]
-  (say! con :system (str "; --- Running " label " ---\n"))
-  (if-let [problem (commands/pre-run-problem text)]
-    (say! con :error (str problem "\n"))
-    (evaluate! con text (cond-> {:ns-name 'user}
-                          source-path (assoc :source-path source-path))))
+  (cond
+    (eval/evaluating? (:ctx con))
+    (say! con :system "; a program is still running: Stop it first\n")
+
+    :else
+    (do (say! con :system (str "; --- Running " label " ---\n"))
+        (if-let [problem (commands/pre-run-problem text)]
+          (say! con :error (str problem "\n"))
+          (do (reset-namespaces! con)
+              ;; names are about to be redefined: no remembered doc is theirs
+              (docs/clear-doc-cache!)
+              (evaluate! con text (cond-> {:ns-name 'user}
+                                    source-path (assoc :source-path source-path)))))))
   nil)
 
 (defn run-code!

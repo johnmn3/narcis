@@ -1,62 +1,71 @@
-# Status — lane/narcis-rope-deftype
+# Status — lane/narcis-s3-joined
 
-Rope re-home onto eve/deftype + the swap-on-atom editing model
-(John's law, 2026-11-16 ~20:02 ET: "an eve based editor will involve
-swapping on eve atoms with eve deftyped data").
-Branch: lane/narcis-rope-deftype off lane/narcis-s2 @54c856e.
-Eve pin: release/eve-0.9.3.2 @84bfc7c8. No merges.
-(S3 is in flight off the same base on web/launcher files; this lane
-stays out of those. If S3 lands first, rebase onto it.)
+Narcis: Jonquil on Eve. The window is Jonquil's, the buffer is an `eve.text`
+document in an Eve disk atom, the evaluator is Jonquil's on Jolt.
+Eve pin: `release/eve-0.9.3.2` @`84bfc7c8`. Jolt v0.8.23. Jonquil pin
+`0ac90991` (v0.4.4). eve.text pin: johnmn3/atom.broker `03f5277a9`.
 
-## Step 1 — census at the pin (DONE; probes A–D on jolt v0.8.23,
-## Eve's jolt seat classpath, lane-local probe/ — outputs in REPORT.md)
+## What is in (2026-11-17)
 
-- eve/deftype at @84bfc7c8 is a real slab-backed user type macro for
-  every host (the S1 "slab-offset machinery, :clj/:cljs arms" claim is
-  dead at this pin). Fields: primitives, ^:Type refs (offsets),
-  serialized any-value fields, ^:host. Instances are atom-storable.
-- Construction law, measured: ->Type outside a domain yields the FLAT
-  SISTER (RopeNode__Flat); inside swap! (or a *domain-sio* binding) it
-  allocates in that domain. eve.deftype.array/make-array has no flat
-  form — bare it throws :no-domain-context.
-- swap! runs its fn under the atom's domain binding
-  (eve.atom/swap-attempt!): deftype nodes constructed inside a swap
-  allocate in the atom's own storage; a swap path-copies the tree
-  there. THE model maps directly.
-- Cross-domain persistent values are refused by Eve itself ("build it
-  inside swap! (or with the atom's domain sio, eve.atom/atom-sio)").
-  No freeze transfer for deftype instances.
-- THE GAP (measured, probe B/C2): a deftype with a by-reference field
-  (a kids EveArray) cannot be NESTED inside a collection value of an
-  atom — freeze packs its plain field view and dies: "flat chunk: a
-  value held by reference cannot be packed"
-  (:eve.flat.chunk/unwritable). At an atom's ROOT it is owned and
-  works (probe C1/D; eve.dataset is Eve's own precedent). Flat sisters
-  likewise cannot be stored through persistent EveArray slots.
-  => Design: one atom per buffer, value = a BufferState deftype at
-  root (root ref + undo/redo EveArrays + cursor/sel); a separate
-  plain-data editor atom for tabs/active. No Eve fix is required for
-  Narcis; the gap is named with repros in REPORT.md.
-- Probe D proved the whole shape on jolt: BufferState at root, edit
-  and undo as swaps, close, reopen in a second process, undo across
-  the restart. All texts/fields exact.
+- **The rope**: `eve.text` (carried unchanged, `UPSTREAM.md`) read through
+  `narcis.text`; `narcis.rope` is deleted. A file is read in through the
+  library's builder; its line ending is kept and written back on save.
+- **The buffer**: `BufferState` at the root of the buffer's atom; every edit is
+  one `swap!` with the text op inside it; undo/redo are linked histories of
+  roots; every read is in place (Eve's `$`).
+- **The window**: header bar, Definitions over Interactions, status bar, file
+  tree, tabs, Jonquil's menus (narrowed to what Narcis has), dialogs for
+  Open / Save As / Open Folder, command palette, find bar, themes, zoom.
+- **Editing**: Jonquil's edit ops (auto-pair, smart enter, comment, indent,
+  rename), structural editing (42 ops), the formatter, find at any size.
+- **Running**: Run, Run Form, Run Selection, Stop, Reset on Run, the prompt
+  with history, stdin for a program that reads, the transcript in an Eve atom.
+- **Help**: completion with a doc preview, docs for the symbol — looked up in
+  the buffer's namespace (`narcis.docs`).
 
-## Step 2 — the swap (DONE; gates coordinator-run 2026-11-16 evening)
-- [x] narcis.rope: nodes are RopeNode eve.deftype values (leaf text +
-      EveArray children + counts); unchanged public API; construction
-      context = caller's binding, else the root's own domain, else a
-      standalone heap domain.
-- [x] narcis.buffer: editor state lives in Eve atoms (per-buffer atom
-      + editor atom); every edit is a swap!; the local mirror atom and
-      persist! are gone. Public API unchanged.
-- [x] narcis.store: reduced to open-by-name (+ the bb file arm, W2);
-      put! re-instantiates a foreign-domain root inside the swap (the
-      only lawful cross-domain path); in-domain roots stored by ref.
-- [x] Gates, all PASS on jolt: rope property tests; store gate;
-      buffer gate (undo across restart); corpus 38/644/0F/0E; S0 gate.
-- [x] Scale: measured and NAMED in REPORT.md — Eve's storage paths
-      for KB-scale values are slow at this pin (deftype leaf ~0.85 ms
-      per KB warm; fresh-atom KB string swaps 65–99 ms cold). Correct-
-      ness unaffected; fix belongs in Eve, package sent to the
-      release seat. 1e6 build 46.0 s jolt / 93.1 s JVM (plain-value
-      S2: 991 ms) is a regression carried openly, not hidden.
+## Gates (all on Jolt, this lane's tip, one 4-core box)
+
+| Gate | Result |
+|---|---|
+| `narcis.run-all-tests` (lifted Jonquil corpus + Narcis's own) | 153 tests, 1,333 assertions, 0 failures, 0 errors; the text layer's 660 seeded edits and its file door PASS |
+| `scripts/buffer-gate.sh jolt` (undo/redo walk; state and history across a restart) | walk / write / read PASS |
+| `scripts/store-gate.sh jolt` | write / read PASS |
+| `scripts/editor-gate.sh` (HTTP session on 12,001 lines, `kill -9`, relaunch, undo across it) | 27/27 |
+| `scripts/page-gate.sh` (the real page in headless Chromium) | 44/44 |
+| `scripts/viewport-gate.sh` (1,000,000-line file through HTTP) | see REPORT.md (run after this ledger was written) |
+
+## Latency (Jolt, over HTTP, median)
+
+| | 4,000 lines before | 4,000 lines now | 12,000 lines now |
+|---|---|---|---|
+| launch + open the file | 1.8 s | 1.6 s | 2.1 s |
+| a window of 100 lines | 981 ms | 26 ms | 23–32 ms |
+| a keystroke | 1,795 ms, growing | 8.1 ms | 8.5 ms |
+| a keystroke and its repaint | 7,770 ms | 33 ms | 32 ms |
+| Enter (smart enter) and its repaint | 9,942 ms | 55 ms | 53 ms |
+| undo and its repaint | 9,865 ms | 31 ms | 31 ms |
+
+"Before" is this lane at `0a1f758` on the same box; at 12,000 lines its run
+was stopped (a keystroke already took 8–10 s at 4,000). `REPORT.md` says where
+the time went.
+
+## Not in
+
+Parinfer, find-and-replace, jump to definition and Locations, the inspector,
+the debugger, tracing and line counts, Run Tests, dialects other than Jolt,
+out-of-process Jolt, plugins, MCP, the terminal, change sets, Save World,
+preferences and editable keys, the guide pages. (`README.md`.)
+
+## Open, named
+
+- **Eve, release line**: the journal's per-commit force spikes on Jolt (600
+  keystrokes: 73 s with it, 5.5 s without), so the store opens with
+  `:journal? false`; a plain deref copies the whole value (hence `$`
+  everywhere); `=` on two handles of one eve-type block answers false; on the
+  JVM the slot codec's byte helpers are untagged (reflection). Each is
+  measured in `REPORT.md` / the eve-text report, for the release seat.
+- **Large buffers** (over 24,000 chars) are painted a window at a time from
+  the top-level form above the window: a bracket opened before that form's
+  line is not seen by the window's colouring.
+- **Offsets** are the host's string units (code points on Jolt).
+- Only Jolt runs the app: `narcis.eval` uses Jolt's interrupt token.

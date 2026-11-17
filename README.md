@@ -63,7 +63,7 @@ files are left as they are.
 | Switch between editor and console | F6 |
 | Complete the word, with its doc beside | Ctrl+Space |
 | Docs for the symbol | Ctrl+Q or Shift+F1 |
-| Structural editing | Edit ▸ Structure; Ctrl+→ / Ctrl+← slurp and barf, Ctrl+Alt+arrows move by form, Alt+↑ / Alt+↓ grow and shrink the selection |
+| Structural editing | Edit ▸ Structure shows every command with its chord: Ctrl+Alt+. / Ctrl+Alt+, slurp and barf, Ctrl+Alt+→ / ← move by form, Alt+Shift+→ / ← grow and shrink the selection, Ctrl+Alt+Shift+P / S / C wrap in ( ) [ ] { } |
 | Format the buffer / the selection | Ctrl/Cmd+Shift+F / Ctrl/Cmd+Alt+F |
 | Find | Ctrl/Cmd+F, then Enter / Shift+Enter, Ctrl/Cmd+G |
 | Rename the symbol | F2 |

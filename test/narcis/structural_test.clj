@@ -1,6 +1,6 @@
 (ns narcis.structural-test
   (:require [clojure.string :as str]
-            [clojure.test :refer [deftest is testing]]
+            [clojure.test :as t :refer [deftest is testing]]
             [narcis.edit :as edit]
             [narcis.structural :as se]))
 
@@ -245,3 +245,8 @@
   (is (nil? (after se/forward-up "a |b")))
   (is (nil? (after se/backward-down "(|a b)")))
   (is (nil? (after se/list-end "a |b"))))
+
+(defn -main [& _]
+  (let [{:keys [fail error] :as m} (t/run-tests 'narcis.structural-test)]
+    (println "TEST-SUMMARY" m)
+    (System/exit (if (zero? (+ fail error)) 0 1))))
