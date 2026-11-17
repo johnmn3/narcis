@@ -23,5 +23,19 @@ off lane/narcis-s0s1 @93e3841a. No merges.
       state identical after reopen (tabs, active, texts, cursor,
       selection, undo/redo depths) and undo walks back to version-0
       across the restart. PASS
-- [ ] narcis.syntax + narcis.edit (jonquil @0ac90991 lift) + adapted corpus
-- [ ] Undo/redo across restart gate
+- [x] narcis.syntax + narcis.edit lifted from jonquil @0ac90991
+      (EPL-2.0; LICENSE/NOTICE/UPSTREAM.md carried). Syntax delta: the
+      jonquil.dialect dependency inlined as data (the Jolt profile's
+      :special-forms/:builtins sets). Edit: verbatim ops + Narcis's
+      rope layer (snapshots from rope slices — :all or enclosing
+      top-level :form scope — :edits applied to a rope as ONE new root).
+      Corpus on jolt: 38 tests / 644 assertions / 0F / 0E — upstream
+      34 deftests ported with ZERO omissions (syntax 6, upstream-syntax
+      13, edit 15, `is` counts identical to upstream) + 4 Narcis rope
+      deftests (oracle battery, random edit sets, form scope, buffer
+      integration). JVM cross-check: 630 pass; the 14 failures are all
+      emoji-offset cases — jolt counts code points ((count "😀") = 1),
+      JVM UTF-16 units; a host string-indexing difference in the lifted
+      corpus, named in REPORT.md, not fixed in Narcis.
+- [x] Undo/redo across restart gate — in the buffer gate above:
+      redo after restart, undo back to version-0 across the restart.
