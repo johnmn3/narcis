@@ -102,7 +102,7 @@
                          "this store is on the file arm (host cannot run Eve — W2)")
                     {:impl (:impl store)})))
   {:store store
-   :editor (store/open-atom store editor-name {:tabs [] :active nil})
+   :editor (store/open-atom store editor-name {:tabs [] :active nil :rev 0})
    :buffers (atom {})})
 
 (defn- buffer-handle [ed path]
@@ -114,6 +114,15 @@
         h)))
 
 (defn- editor-value [ed] (store/atom-deref (:editor ed)))
+
+(defn rev
+  "Editor revision: bumped by every state change (buffer swaps
+   included) — the sync token narcis.ops/launcher expose to clients."
+  [ed]
+  (get (editor-value ed) :rev 0))
+
+(defn- bump! [ed]
+  (store/atom-swap! (:editor ed) (fn [s] (update s :rev (fnil inc 0)))))
 
 (defn- buffer-state [ed path]
   (store/atom-deref (buffer-handle ed path)))
@@ -162,7 +171,9 @@
         :else root-or-text))
 
 (defn- activate-swap [ed path]
-  (store/atom-swap! (:editor ed) (fn [s] (assoc s :active path))))
+  (store/atom-swap! (:editor ed) (fn [s] (-> s
+                                             (assoc :active path)
+                                             (update :rev (fnil inc 0))))))
 
 (defn open-buffer!
   "Open path with rope root (or text string) as its content. Opening an
@@ -177,7 +188,8 @@
         (store/atom-swap! (:editor ed)
                           (fn [s] (-> s
                                       (update :tabs conj path)
-                                      (assoc :active path)))))))
+                                      (assoc :active path)
+                                      (update :rev (fnil inc 0))))))))
 
 (defn open-file!
   "Open a file from disk: its text is streamed into a rope inside the
@@ -192,7 +204,8 @@
         (store/atom-swap! (:editor ed)
                           (fn [s] (-> s
                                       (update :tabs conj path)
-                                      (assoc :active path)))))))
+                                      (assoc :active path)
+                                      (update :rev (fnil inc 0))))))))
 
 (defn close-buffer! [ed path]
   (store/atom-swap! (buffer-handle ed path) (fn [_] nil))
@@ -202,7 +215,8 @@
                                   (assoc :tabs tabs)
                                   (assoc :active (if (= path (:active s))
                                                    (peek tabs)
-                                                   (:active s))))))))
+                                                   (:active s)))
+                                  (update :rev (fnil inc 0)))))))
 
 (defn activate! [ed path]
   (activate-swap ed path))
@@ -210,12 +224,14 @@
 (defn set-cursor! [ed path offset]
   (store/atom-swap! (buffer-handle ed path)
                     (fn [b] (->BufferState (-root b) offset (-sel b)
-                                           (-undo b) (-redo b)))))
+                                           (-undo b) (-redo b))))
+  (bump! ed))
 
 (defn set-selection! [ed path sel]
   (store/atom-swap! (buffer-handle ed path)
                     (fn [b] (->BufferState (-root b) (-cursor b) sel
-                                           (-undo b) (-redo b)))))
+                                           (-undo b) (-redo b))))
+  (bump! ed))
 
 (defn edit-buffer!
   "Replace path's root with new-root as one undoable edit: the prior
@@ -228,7 +244,8 @@
                                             (if (some? new-cursor) new-cursor (-cursor b))
                                             (-sel b)
                                             (arr-push (-undo b) (-root b))
-                                            nil)))))
+                                            nil)))
+   (bump! ed)))
 
 (defn insert-text!
   "Insert s at char offset in path's buffer, as one undoable edit.
@@ -241,7 +258,8 @@
                                              (+ offset (count s))
                                              (-sel b)
                                              (arr-push (-undo b) (-root b))
-                                             nil)))))
+                                             nil))))
+  (bump! ed))
 
 (defn delete-range!
   "Delete chars [start end) in path's buffer, as one undoable edit."
@@ -252,7 +270,8 @@
                                              start
                                              (-sel b)
                                              (arr-push (-undo b) (-root b))
-                                             nil)))))
+                                             nil))))
+  (bump! ed))
 
 (defn undo!
   "Step path's buffer back one root. Returns true when a step was
@@ -268,6 +287,7 @@
                                                      (-sel b)
                                                      (arr-pop u)
                                                      (arr-push (-redo b) (-root b))))))
+          (bump! ed)
           true))))
 
 (defn redo!
@@ -283,4 +303,5 @@
                                                      (-sel b)
                                                      (arr-push (-undo b) (-root b))
                                                      (arr-pop r)))))
+          (bump! ed)
           true))))

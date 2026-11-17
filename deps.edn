@@ -9,4 +9,7 @@
                        :git/sha "99dc255d22997009f4b5d3d2a93469412e3010d8"}}
  :aliases
  {:test {:extra-paths ["test"]}
-  :bench {:extra-paths ["bench"]}}}
+  :bench {:extra-paths ["bench"]}
+  ;; the browser client; built by scripts/build-web.sh into web/app.js
+  :web {:extra-paths ["web"]
+        :deps {org.clojure/clojurescript {:mvn/version "1.12.134"}}}}}
