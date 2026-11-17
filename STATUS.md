@@ -1,7 +1,7 @@
 # Status — lane/narcis-s2
 
-S2 in progress: buffer + edit on the disk atom. Branch: lane/narcis-s2
-off lane/narcis-s0s1 @93e3841a. No merges.
+S2 COMPLETE (all gates green; full provenance in REPORT.md).
+Branch: lane/narcis-s2 off lane/narcis-s0s1 @93e3841a. No merges.
 
 ## Milestones
 - [x] Branch created; Eve re-pinned to release/eve-0.9.3.2 @84bfc7c8

@@ -15,7 +15,7 @@ run_launcher() {
     bb)     PATH="$BIN:$PATH" timeout 60 bb -cp "$ROOT/src" -m narcis.launcher --dir "$DATA" --port $PORT --serve-secs "${SERVE_SECS:-12}" ;;
     bb-eve) PATH="$BIN:$PATH" timeout 120 "$BB_NEW" -cp "$(eve_bb_classpath):$ROOT/src" -m narcis.launcher --dir "$DATA" --port $PORT --serve-secs "${SERVE_SECS:-12}" ;;
     jvm)    timeout 120 bash -c "run_jvm -M -m narcis.launcher --dir $DATA --port $PORT --serve-secs ${SERVE_SECS:-12}" ;;
-    jolt)   (cd "$ROOT/run/jolt" && PATH="$BIN:$PATH" timeout 60 jolt run -m narcis.launcher --dir "$DATA" --port $PORT --serve-secs "${SERVE_SECS:-12}") ;;
+    jolt)   JOLT_TIMEOUT=120 bash "$ROOT/scripts/jolt-run.sh" narcis.launcher --dir "$DATA" --port $PORT --serve-secs "${SERVE_SECS:-12}" ;;
   esac
 }
 
