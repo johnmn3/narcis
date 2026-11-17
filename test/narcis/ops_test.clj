@@ -51,6 +51,50 @@
     (t/is (= "" (text ed path)))
     (t/is (pos? (buffer/redo-depth ed path)))))
 
+(t/deftest structural-ops
+  ;; the paredit set through the op dispatch: slurp/barf reshape the
+  ;; text as ONE undo step, wrap surrounds the form, kill-form hands
+  ;; the form back as :copy, expand-selection grows by form.
+  (let [ed (fresh-editor)
+        path "struct.clj"]
+    (buffer/open-buffer! ed path "(a (b) c)")
+    ;; caret inside (b): slurp forward takes c into (b)
+    (ops/apply-op ed {:op :set-caret :path path :offset 4})
+    (let [res (ops/apply-op ed {:op :slurp-forward :path path})]
+      (t/is (:ok res)))
+    (t/is (= "(a (b c))" (text ed path)))
+    ;; barf forward gives c back
+    (let [res (ops/apply-op ed {:op :barf-forward :path path})]
+      (t/is (:ok res)))
+    (t/is (= "(a (b) c)" (text ed path)))
+    ;; the slurp+barf pair was two undo steps, no more
+    (buffer/undo! ed path)
+    (t/is (= "(a (b c))" (text ed path)))
+    (buffer/undo! ed path)
+    (t/is (= "(a (b) c)" (text ed path)))
+    ;; wrap: jonquil wraps the form the caret is on at the deepest
+    ;; level — the atom b inside (b), not the list around it
+    (ops/apply-op ed {:op :set-caret :path path :offset 4})
+    (let [res (ops/apply-op ed {:op :wrap-square :path path})]
+      (t/is (:ok res)))
+    (t/is (= "(a ([b]) c)" (text ed path)))
+    ;; kill-form removes the form at the caret (with the gap after it)
+    ;; and returns the form's text as :copy
+    (ops/apply-op ed {:op :set-caret :path path :offset 5})
+    (let [res (ops/apply-op ed {:op :kill-form :path path})]
+      (t/is (:ok res))
+      (t/is (= "b" (:copy res))))
+    (t/is (= "(a ([]) c)" (text ed path)))
+    ;; expand-selection selects the form at the caret
+    (ops/apply-op ed {:op :set-caret :path path :offset 4})
+    (let [res (ops/apply-op ed {:op :expand-selection :path path})]
+      (t/is (:ok res))
+      (t/is (= [4 6] (:sel res))))
+    ;; an inapplicable op answers not-ok, never throws
+    (ops/apply-op ed {:op :set-caret :path path :offset 0})
+    (let [res (ops/apply-op ed {:op :barf-forward :path path})]
+      (t/is (not (:ok res))))))
+
 (t/deftest comment-and-indent-ops
   ;; jonquil's own semantics, as the S2 corpus pins them: indent with a
   ;; selection block-indents every spanned line by two spaces;

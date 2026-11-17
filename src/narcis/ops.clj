@@ -14,6 +14,7 @@
             [narcis.edit :as edit]
             [narcis.nav :as nav]
             [narcis.rope :as rope]
+            [narcis.structural :as structural]
             [narcis.theme :as theme]
             [narcis.view :as view]
             [clojure.string :as str]))
@@ -102,7 +103,7 @@
           end (rope/line-start-offset root to)]
       [(rope/slice-string root base end) base])))
 
-(declare rope-op clamp-caret)
+(declare rope-op clamp-caret structural-op structural-ops)
 
 (defn- find-in-text
   "Index of query in text for a find from offset `from`: direction
@@ -246,7 +247,9 @@
                 (if (> (rope/chars root) 50000000)
                   {:ok false :error "save over 50M chars not supported in the spike"}
                   (do (spit path (rope/to-string root)) (result ed path))))
-        {:ok false :error (str "unknown op: " op)})))))
+        (if (contains? structural-ops op)
+          (structural-op ed path (structural-ops op))
+          {:ok false :error (str "unknown op: " op)}))))))
 
 (defn- clamp-caret [res ed path]
   (let [n (rope/chars (buffer/buffer-root ed path))
@@ -259,3 +262,83 @@
     (if res
       (commit! ed path (:rope res) (:caret res) (:sel res))
       {:ok false :error "op does not apply"})))
+
+;; ---------------------------------------------------------------------------
+;; structural (paredit) ops — narcis.structural's snapshot fns, driven
+;; over sexp-text like the nav ops: the whole buffer under the exact
+;; limit, else the ±400-line window (motion clamps to the slice).
+
+(def structural-ops
+  {:slurp-forward structural/slurp-forward
+   :barf-forward structural/barf-forward
+   :slurp-backward structural/slurp-backward
+   :barf-backward structural/barf-backward
+   :raise structural/raise
+   :splice structural/splice
+   :wrap-round structural/wrap-round
+   :wrap-square structural/wrap-square
+   :wrap-curly structural/wrap-curly
+   :wrap-set structural/wrap-set
+   :wrap-quote structural/wrap-quote
+   :copy-form structural/copy-form
+   :kill-form structural/kill-form
+   :kill-form-backward structural/kill-form-backward
+   :forward-form structural/forward
+   :backward-form structural/backward
+   :up structural/up
+   :down structural/down
+   :forward-up structural/forward-up
+   :backward-down structural/backward-down
+   :list-end structural/list-end
+   :list-start structural/list-start
+   :expand-selection structural/expand-selection
+   :shrink-selection structural/shrink-selection
+   :select-forward structural/select-forward
+   :select-backward structural/select-backward
+   :drag-forward structural/drag-forward
+   :drag-backward structural/drag-backward
+   :transpose structural/transpose
+   :join structural/join
+   :split structural/split
+   :kill-list-forward structural/kill-list-forward
+   :kill-list-backward structural/kill-list-backward
+   :kill-right structural/kill-right
+   :kill-left structural/kill-left
+   :splice-killing-forward structural/splice-killing-forward
+   :splice-killing-backward structural/splice-killing-backward
+   :convolute structural/convolute
+   :rewrap-round structural/rewrap-round
+   :rewrap-square structural/rewrap-square
+   :rewrap-curly structural/rewrap-curly
+   :rewrap-set structural/rewrap-set})
+
+(defn- structural-op [ed path f]
+  (let [root (buffer/buffer-root ed path)
+        caret (buffer/cursor ed path)
+        sel (buffer/selection ed path)
+        [text base] (sexp-text root caret)
+        snapshot {:text text
+                  :caret (- caret base)
+                  :sel-start (if sel (- (first sel) base) (- caret base))
+                  :sel-end (if sel (- (second sel) base) (- caret base))}
+        res (f snapshot)]
+    (if (nil? res)
+      {:ok false :error "does not apply here"}
+      (let [;; copy-form answers {:copy} alone: no caret, no edits.
+            new-caret (+ base (or (:caret res) (- caret base)))
+            new-sel (when (:sel res)
+                      [(+ base (first (:sel res))) (+ base (second (:sel res)))])
+            edits (:edits res)
+            out (if (seq edits)
+                  (let [new-root (reduce (fn [r [s e rep]]
+                                           (let [r (rope/delete r (+ base s) (+ base e))]
+                                             (if (seq rep)
+                                               (rope/insert r (+ base s) rep)
+                                               r)))
+                                         root
+                                         (reverse edits))]
+                    (commit! ed path new-root new-caret new-sel))
+                  (move-caret! ed path new-caret new-sel))]
+        (if (:copy res)
+          (assoc out :copy (:copy res))
+          out)))))

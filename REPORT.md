@@ -139,3 +139,32 @@ and DOM read back):
   land in the status bar, init is nil.
 
 web/app.js rebuilt (1,725,867 bytes).
+
+## Paredit set (2026-11-17, coordinator)
+
+Jonquil's structural editing is in, whole: `narcis.structural` is
+jonquil.structural ported namespace-for-namespace (slurp/barf ×4,
+raise, splice, wrap ×5, rewrap ×4, copy/kill-form, kill-list,
+kill-right/left, splice-killing ×2, convolute, drag ×2, transpose,
+join, split, forward/backward/up/down by form, forward-up,
+backward-down, list-start/end, expand/shrink/select by form — 42
+ops), over `narcis.forms`, which is jonquil.commands' form-tree
+extracted (jonquil.commands itself stays behind; it carries the
+console/Run machinery). Jonquil's own structural suite ports with
+it: **21 tests / 154 assertions, all green**.
+
+Ops: one dispatch arm in narcis.ops applies a structural op's
+{:edits :caret :sel :copy} over the rope as ONE undo step, driven
+over the same windowed text as the nav ops (whole buffer under the
+exact limit, else ±400 lines). kill/copy return :copy, which the
+page puts on the clipboard. Op-level gate: ops-test grows a
+structural deftest (slurp/barf round-trip as two undo steps, wrap,
+kill-form's :copy, expand-selection, inapplicable → not-ok) —
+**3 tests / 40 assertions**.
+
+Page: every command is in the palette and the Edit menu; chords are
+jonquil's Calva keyset adapted where Narcis already had a binding
+(Ctrl+Alt+arrows stay forward/backward-sexp, so slurp/barf forward
+are Ctrl+Alt+. / Ctrl+Alt+,). Verified in the real page: clicking a
+form and pressing Ctrl+Alt+Shift+P wraps it. web/app.js rebuilt
+(1,743,677 bytes).

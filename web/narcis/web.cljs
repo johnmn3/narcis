@@ -191,6 +191,8 @@
     (fetch-window! around)))
 
 (defn after-op! [res]
+  (when (:copy res)
+    (try (.writeText (.-clipboard js/navigator) (:copy res)) (catch :default _ nil)))
   (if (:ok res)
     (do (swap! state assoc :status nil)
         (ensure-caret-visible!)
@@ -459,6 +461,9 @@
     (when (and (seq tabs) (<= 0 i))
       (activate-tab! (nth tabs (mod (+ i d) (count tabs)))))))
 
+(defn- paredit-cmd [id label keys op]
+  {:id id :label label :keys keys :run (fn [] (do-op! {:op op}))})
+
 (def commands
   [{:id :file/new :label "New Tab" :run do-new!}
    {:id :file/open :label "Open…" :keys nil :run do-open-prompt!}
@@ -477,6 +482,47 @@
     :run (fn [] (do-op! {:op :forward-sexp}))}
    {:id :paredit/backward :label "Backward by a Form" :keys "Ctrl+Alt+←"
     :run (fn [] (do-op! {:op :backward-sexp}))}
+   ;; the paredit set: jonquil.structural through narcis.ops
+   (paredit-cmd :paredit/slurp-forward "Slurp Forward" "Ctrl+Alt+." :slurp-forward)
+   (paredit-cmd :paredit/barf-forward "Barf Forward" "Ctrl+Alt+," :barf-forward)
+   (paredit-cmd :paredit/slurp-backward "Slurp Backward" "Ctrl+Alt+Shift+←" :slurp-backward)
+   (paredit-cmd :paredit/barf-backward "Barf Backward" "Ctrl+Alt+Shift+→" :barf-backward)
+   (paredit-cmd :paredit/raise "Raise Form" nil :raise)
+   (paredit-cmd :paredit/splice "Splice List" "Ctrl+Alt+S" :splice)
+   (paredit-cmd :paredit/wrap-round "Wrap in ( )" "Ctrl+Alt+Shift+P" :wrap-round)
+   (paredit-cmd :paredit/wrap-square "Wrap in [ ]" "Ctrl+Alt+Shift+S" :wrap-square)
+   (paredit-cmd :paredit/wrap-curly "Wrap in { }" "Ctrl+Alt+Shift+C" :wrap-curly)
+   (paredit-cmd :paredit/wrap-set "Wrap in #{ }" "Ctrl+Alt+Shift+E" :wrap-set)
+   (paredit-cmd :paredit/wrap-quote "Wrap in \" \"" "Ctrl+Alt+Shift+Q" :wrap-quote)
+   (paredit-cmd :paredit/rewrap-round "Rewrap as ( )" nil :rewrap-round)
+   (paredit-cmd :paredit/rewrap-square "Rewrap as [ ]" nil :rewrap-square)
+   (paredit-cmd :paredit/rewrap-curly "Rewrap as { }" nil :rewrap-curly)
+   (paredit-cmd :paredit/rewrap-set "Rewrap as #{ }" nil :rewrap-set)
+   (paredit-cmd :paredit/copy-form "Copy Form" nil :copy-form)
+   (paredit-cmd :paredit/kill-form "Kill Form" "Ctrl+Shift+Del" :kill-form)
+   (paredit-cmd :paredit/kill-form-backward "Kill Form Backward" "Ctrl+Alt+Bksp" :kill-form-backward)
+   (paredit-cmd :paredit/kill-list-forward "Kill List Forward" "Ctrl+Del" :kill-list-forward)
+   (paredit-cmd :paredit/kill-list-backward "Kill List Backward" "Ctrl+Bksp" :kill-list-backward)
+   (paredit-cmd :paredit/kill-right "Kill Right" nil :kill-right)
+   (paredit-cmd :paredit/kill-left "Kill Left" nil :kill-left)
+   (paredit-cmd :paredit/splice-killing-forward "Splice Killing Forward" "Ctrl+Alt+Shift+Del" :splice-killing-forward)
+   (paredit-cmd :paredit/splice-killing-backward "Splice Killing Backward" "Ctrl+Alt+Shift+Bksp" :splice-killing-backward)
+   (paredit-cmd :paredit/drag-forward "Drag Form Forward" "Alt+↓" :drag-forward)
+   (paredit-cmd :paredit/drag-backward "Drag Form Backward" "Alt+↑" :drag-backward)
+   (paredit-cmd :paredit/transpose "Transpose Forms" "Ctrl+Alt+T" :transpose)
+   (paredit-cmd :paredit/join "Join Lists" "Ctrl+Shift+J" :join)
+   (paredit-cmd :paredit/split "Split List" nil :split)
+   (paredit-cmd :paredit/convolute "Convolute" "Ctrl+Shift+C" :convolute)
+   (paredit-cmd :paredit/expand-selection "Expand Selection" "Alt+Shift+→" :expand-selection)
+   (paredit-cmd :paredit/shrink-selection "Shrink Selection" "Alt+Shift+←" :shrink-selection)
+   (paredit-cmd :paredit/select-forward "Select Forward by a Form" "Ctrl+Shift+→" :select-forward)
+   (paredit-cmd :paredit/select-backward "Select Backward by a Form" "Ctrl+Shift+←" :select-backward)
+   (paredit-cmd :paredit/up "Up to List Start" "Ctrl+↑" :up)
+   (paredit-cmd :paredit/down "Down into List" "Ctrl+↓" :down)
+   (paredit-cmd :paredit/forward-up "Forward Up" "Ctrl+Alt+↓" :forward-up)
+   (paredit-cmd :paredit/backward-down "Backward Down" "Ctrl+Alt+↑" :backward-down)
+   (paredit-cmd :paredit/list-end "List End" "Ctrl+End" :list-end)
+   (paredit-cmd :paredit/list-start "List Start" "Ctrl+Home" :list-start)
    {:id :tree/toggle :label "File Tree" :run (fn [] (toggle-tree!))}
    {:id :tab/next :label "Next Tab" :run (fn [] (step-tab! 1))}
    {:id :tab/previous :label "Previous Tab" :run (fn [] (step-tab! -1))}
@@ -502,7 +548,15 @@
     :sections [[:edit/undo :edit/redo]
                [:edit/toggle-comment :edit/indent :edit/unindent]
                [:edit/rename]
-               [:paredit/forward :paredit/backward]]}
+               [:paredit/forward :paredit/backward]
+               [:paredit/slurp-forward :paredit/barf-forward
+                :paredit/slurp-backward :paredit/barf-backward]
+               [:paredit/raise :paredit/splice
+                :paredit/wrap-round :paredit/wrap-square :paredit/wrap-curly]
+               [:paredit/drag-forward :paredit/drag-backward
+                :paredit/transpose :paredit/split :paredit/join]
+               [:paredit/kill-form :paredit/copy-form]
+               [:paredit/expand-selection :paredit/shrink-selection]]}
    {:label "View"
     :sections [[:tree/toggle]
                [:tab/next :tab/previous]
@@ -819,6 +873,49 @@
     (set! (.-value input) "")
     (.focus input)))
 
+(defn- paredit-chord
+  "The paredit chord table (jonquil's Calva keyset, adapted: Ctrl+Alt+
+   arrows stay with forward/backward-sexp, so slurp/barf forward live
+   on Ctrl+Alt+. and Ctrl+Alt+,). Returns the op keyword or nil."
+  [e]
+  (let [k (.-key e)
+        ctrl (.-ctrlKey e)
+        alt (.-altKey e)
+        shift (.-shiftKey e)]
+    (cond
+      (and ctrl alt (not shift) (= k ".")) :slurp-forward
+      (and ctrl alt (not shift) (= k ",")) :barf-forward
+      (and ctrl alt shift (= k "ArrowLeft")) :slurp-backward
+      (and ctrl alt shift (= k "ArrowRight")) :barf-backward
+      (and ctrl alt (not shift) (or (= k "s") (= k "S"))) :splice
+      (and ctrl alt (not shift) (or (= k "t") (= k "T"))) :transpose
+      (and ctrl alt shift (or (= k "p") (= k "P"))) :wrap-round
+      (and ctrl alt shift (or (= k "s") (= k "S"))) :wrap-square
+      (and ctrl alt shift (or (= k "c") (= k "C"))) :wrap-curly
+      (and ctrl alt shift (or (= k "e") (= k "E"))) :wrap-set
+      (and ctrl alt shift (or (= k "q") (= k "Q"))) :wrap-quote
+      (and ctrl shift (not alt) (or (= k "j") (= k "J"))) :join
+      (and ctrl shift (not alt) (or (= k "c") (= k "C"))) :convolute
+      (and ctrl shift (not alt) (= k "Delete")) :kill-form
+      (and ctrl alt (not shift) (= k "Backspace")) :kill-form-backward
+      (and ctrl (not alt) (not shift) (= k "Delete")) :kill-list-forward
+      (and ctrl (not alt) (not shift) (= k "Backspace")) :kill-list-backward
+      (and ctrl alt shift (= k "Delete")) :splice-killing-forward
+      (and ctrl alt shift (= k "Backspace")) :splice-killing-backward
+      (and alt (not ctrl) (not shift) (= k "ArrowDown")) :drag-forward
+      (and alt (not ctrl) (not shift) (= k "ArrowUp")) :drag-backward
+      (and alt shift (not ctrl) (= k "ArrowRight")) :expand-selection
+      (and alt shift (not ctrl) (= k "ArrowLeft")) :shrink-selection
+      (and ctrl shift (not alt) (= k "ArrowRight")) :select-forward
+      (and ctrl shift (not alt) (= k "ArrowLeft")) :select-backward
+      (and ctrl (not alt) (not shift) (= k "ArrowUp")) :up
+      (and ctrl (not alt) (not shift) (= k "ArrowDown")) :down
+      (and ctrl alt (not shift) (= k "ArrowDown")) :forward-up
+      (and ctrl alt (not shift) (= k "ArrowUp")) :backward-down
+      (and ctrl (not alt) (not shift) (= k "End")) :list-end
+      (and ctrl (not alt) (not shift) (= k "Home")) :list-start
+      :else nil)))
+
 (defn on-keydown [e]
   (when-not (.-isComposing e)
     (let [k (.-key e)
@@ -832,7 +929,7 @@
         (do (.preventDefault e) (close-menus!))
 
         ;; command palette: Cmd/Ctrl+Shift+P or Cmd/Ctrl+K
-        (and cmd shift (or (= k "P") (= k "p")))
+        (and cmd shift (not alt) (or (= k "P") (= k "p")))
         (do (.preventDefault e) (open-palette!))
         (and cmd (= k "k"))
         (do (.preventDefault e) (open-palette!))
@@ -846,9 +943,14 @@
         (do (.preventDefault e) (cycle-theme!))
 
         (and cmd (or (= k "/") (= k ";"))) (do (.preventDefault e) (do-op! {:op :toggle-comment}))
-        (and cmd (= k "s")) (do (.preventDefault e) (do-op! {:op :save}))
+        (and cmd (not alt) (= k "s")) (do (.preventDefault e) (do-op! {:op :save}))
         (and cmd (= k "y")) (do (.preventDefault e) (do-op! {:op :redo}))
         (and cmd (= k "z")) (do (.preventDefault e) (do-op! {:op (if shift :redo :undo)}))
+
+        ;; the paredit chord table
+        (paredit-chord e)
+        (do (.preventDefault e) (do-op! {:op (paredit-chord e)}))
+
         (and (.-ctrlKey e) alt (= k "ArrowRight")) (do (.preventDefault e) (do-op! {:op :forward-sexp}))
         (and (.-ctrlKey e) alt (= k "ArrowLeft")) (do (.preventDefault e) (do-op! {:op :backward-sexp}))
         (or (= k "F2") (and (= k "F6") shift)) (do (.preventDefault e) (rename-ui!))
