@@ -32,7 +32,7 @@ Eve pin: `release/eve-0.9.3.2` @`84bfc7c8`. Jolt v0.8.23. Jonquil pin
 | `scripts/store-gate.sh jolt` | write / read PASS |
 | `scripts/editor-gate.sh` (HTTP session on 12,001 lines, `kill -9`, relaunch, undo across it) | 27/27 |
 | `scripts/page-gate.sh` (the real page in headless Chromium) | 44/44 |
-| `scripts/viewport-gate.sh` (1,000,000-line file through HTTP) | see REPORT.md (run after this ledger was written) |
+| `scripts/viewport-gate.sh` (1,000,000-line file through HTTP) | 3/3 — 1,000,001 lines opened, a 60-line window from the middle served in 15,517 bytes; the whole gate (write the 31.8 MB file, launch, open, fetch) took 60 s. The store is 181 MB for that file |
 
 ## Latency (Jolt, over HTTP, median)
 
@@ -67,5 +67,7 @@ preferences and editable keys, the guide pages. (`README.md`.)
 - **Large buffers** (over 24,000 chars) are painted a window at a time from
   the top-level form above the window: a bracket opened before that form's
   line is not seen by the window's colouring.
+- **Store size**: a line is a block of its own, so the store is several
+  times the file (181 MB for a 31.8 MB, 1,000,000-line file).
 - **Offsets** are the host's string units (code points on Jolt).
 - Only Jolt runs the app: `narcis.eval` uses Jolt's interrupt token.

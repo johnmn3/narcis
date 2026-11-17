@@ -332,5 +332,8 @@ See STATUS.md for the table as last run (it is the ledger). Two things the
 numbers do not say: the page gate is new — the earlier gates never drove
 the page, which is how the menu drawn over the text and a caret sync that
 misplaced fast typing got through — and the viewport gate's 1,000,000-line
-open is no longer walled on the rope (the line ingest is Eve's per-line
-string write: see STATUS.md's row for what it took here).
+open is no longer walled: the gate passes 3/3 in 60 s here, the file's
+writing and the launch included (it ran with a 2,400 s budget before and
+was still running when the earlier report was written). What a million
+lines cost instead is disk: a line is a block of its own, and the store is
+181 MB for the 31.8 MB file.
