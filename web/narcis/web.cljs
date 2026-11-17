@@ -1,33 +1,27 @@
 (ns narcis.web
-  "The Narcis editor client: jonquil's editor surface in the browser.
-   The page is a viewport onto the rope in the Eve disk atom — it
-   fetches window payloads (lines + paint spans) from the launcher's
-   /api/window, renders only those lines, and sends every edit back
-   as a narcis.ops message (/api/op). It never holds the buffer text:
-   the only text here is the current window's lines, which are
-   rendering state, replaced on every fetch.
+  "The Narcis client: jonquil's window in the browser.
 
-   The app surface mirrors jonquil's: a menu bar whose menus are data
-   (File / Edit / View / Search / Theme / Help, after jonquil's
-   menus.edn, holding only the commands Narcis has), a command
-   palette (Ctrl/Cmd+Shift+P) fed by the same command list plus
-   jonquil.theme's palette entries, a find bar, a file panel, and
-   theme selection — every choice in narcis.theme, :auto included,
-   persisted server-side in the editor atom via the :theme/use op,
-   so a reload and every other client see the same choice.
+   The window is jonquil's — a header bar (Files, Open…, + at its start,
+   the file's name in the middle, Run, Stop, Save… at its end), the
+   Definitions editor above the Interactions console, a status bar
+   under them, a file tree and a tab strip when they are wanted — and
+   so are its menus: the server sends jonquil's menus narrowed to the
+   commands Narcis has (/api/menus), and every item runs by its
+   command id through the one table below, which the header buttons,
+   the keys and the command palette run through too.
 
-   Keys follow jonquil's keymap for the ported commands: Cmd/Ctrl+/
-   or ; toggle-comment, Cmd/Ctrl+S save, Cmd/Ctrl+Y and
-   Cmd/Ctrl+Shift+Z redo, F2 / Shift+F6 rename, Enter smart-enter,
-   Tab/Shift+Tab indent/unindent, auto-pair on brackets/quotes via
-   the server ops, paredit motion on Ctrl+Alt+arrows, theme cycle on
-   Cmd/Ctrl+Shift+M, find on Cmd/Ctrl+F (next/previous Cmd/Ctrl+G and
-   Cmd/Ctrl+Shift+G)."
+   The page is a viewport, not a copy. The editor fetches window
+   payloads (lines + paint spans) of the document in the Eve atom from
+   /api/window, renders only those lines, and sends every edit back as
+   a narcis.ops message (/api/op). The console reads the transcript in
+   its Eve atom by position (/api/console) and sends what is typed at
+   the prompt to the evaluator. The only text held here is what is on
+   screen."
   (:require [cljs.reader :as reader]
             [clojure.string :as str]))
 
 ;; ---------------------------------------------------------------------------
-;; state — rendering state only; the buffer itself lives in the atom
+;; state — rendering state only; buffers and the transcript live in atoms
 
 (defonce state
   (atom {:path nil
@@ -35,28 +29,40 @@
          :caret 0
          :sel nil            ; [a b] or nil
          :goal-col nil
-         :theme nil          ; /api/theme payload {:theme {...} :styles {...}}
-         :theme-name "light" ; the resolved palette name
-         :theme-choice "light" ; the stored choice ("auto" included)
-         :themes []          ; /api/themes entries {:name :label :dark?}
+         :theme nil          ; /api/theme payload {:theme :styles :console}
+         :theme-name "light"
+         :theme-choice "light"
+         :themes []
          :tabs []
-         :status nil
+         :menus []           ; /api/menus, with Narcis's own items added
+         :project nil
+         :runtime "Jolt"
+         :status nil         ; a message for the status bar, or nil
          :fetching false
          :want-start nil
          :sync-timer nil
          :drag-anchor nil
-         :menu-open nil      ; label of the open menu, or nil
+         :menu-open nil
+         :font-px 13
+         :line-numbers false
          :palette {:open false :query "" :sel 0}
          :find {:open false :query ""}
-         :tree {:open false :dir nil :parent nil :entries []}
+         :tree {:open false :root nil :expanded #{} :kids {}}
+         :console {:entries [] :base 0 :next 0 :status "idle" :ns "user"}
+         :console-h nil      ; px, or nil for the default share
+         :complete nil       ; {:start :end :candidates :sel :doc} while open
+         :dialog nil
          :focused false}))
 
-(def font "13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace")
-(def line-h 19)
+(def zoom-sizes [9 10 11 12 13 14 16 18 20 24 28])
+
+(defn font-px [] (:font-px @state))
+(defn line-h [] (js/Math.round (* 1.46 (font-px))))
+(def mono "ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace")
+(defn font [] (str (font-px) "px " mono))
 (def overscan 45)
 
 (def theme-cycle-fallback
-  ;; jonquil.theme/choice-names; the live list comes from /api/themes
   ["light" "dark" "solarized" "navy" "gruvbox-dark" "gruvbox-light"
    "dracula" "nord" "zenburn" "monokai" "tokyo-night" "catppuccin-mocha"
    "catppuccin-latte" "one-dark" "kanagawa" "rose-pine" "auto"])
@@ -64,29 +70,64 @@
 ;; ---------------------------------------------------------------------------
 ;; DOM helpers
 
-(defn el [tag css text]
+(defn el
+  "An element: tag, class (or nil), text (or nil)."
+  [tag cls text]
   (let [e (.createElement js/document tag)]
-    (when css (set! (.-cssText (.-style e)) css))
+    (when cls (set! (.-className e) cls))
     (when (some? text) (set! (.-textContent e) text))
     e))
 
 (defn by-id [id] (.getElementById js/document id))
 
-(defn char-w []
-  (let [cv (.createElement js/document "canvas")
-        ctx (.getContext cv "2d")]
-    (set! (.-font ctx) font)
-    (/ (.-width (.measureText ctx "xxxxxxxxxx")) 10)))
+(defn css! [e s] (set! (.-cssText (.-style e)) s) e)
 
-(defonce metrics (atom {:char-w 8 :gutter-w 56}))
+(defn clear! [e] (set! (.-innerHTML e) "") e)
 
-(declare render! update-status! refresh-state! apply-theme-choice!)
+(defn show! [e on?] (set! (.-display (.-style e)) (if on? "" "none")) e)
+
+(defn on! [e ev f] (.addEventListener e ev f) e)
+
+(defn append! [parent & kids]
+  (doseq [k kids] (when k (.appendChild parent k)))
+  parent)
+
+(defn measure-char-w
+  "The width of one character of the editor's font, measured where the
+   text is drawn (a span in the editor pane: the font the browser really
+   picked, at the size it really is)."
+  []
+  (if-let [sc (by-id "scroll")]
+    (let [probe (el "span" nil (apply str (repeat 100 "x")))]
+      (css! probe "position:absolute;visibility:hidden;white-space:pre;")
+      (.appendChild sc probe)
+      (let [w (/ (.-width (.getBoundingClientRect probe)) 100)]
+        (.removeChild sc probe)
+        (if (pos? w) w 8)))
+    8))
+
+(defonce metrics (atom {:char-w 8}))
+
+(declare render! update-status! refresh-state! apply-theme-choice! render-tree!
+         render-console! poll-console! close-complete! run-command! render-title!
+         refresh-complete! accept-complete!)
 
 (defn gutter-w [total-lines]
-  (+ 20 (* (:char-w @metrics) (max 3 (count (str total-lines))))))
+  (if (:line-numbers @state)
+    (+ 22 (* (:char-w @metrics) (max 3 (count (str total-lines)))))
+    16))
 
 (defn focus-editor! []
-  (when-let [ta (by-id "input")] (.focus ta)))
+  (when-let [ta (by-id "input")] (.focus ta #js {:preventScroll true})))
+
+(defn focus-console! []
+  (when-let [ta (by-id "console-in")] (.focus ta)))
+
+(defn say!
+  "Put a message in the status bar (nil clears it)."
+  [msg]
+  (swap! state assoc :status msg)
+  (update-status!))
 
 ;; ---------------------------------------------------------------------------
 ;; API
@@ -100,41 +141,52 @@
 
 (defonce op-chain (atom (js/Promise.resolve nil)))
 
-(defn op! [msg]
-  ;; Ops on the current buffer carry the client's caret/sel (the sync
-  ;; narcis.ops applies before the op). Ops that name their own :path
-  ;; (:activate, :open) go as-is — another buffer's caret is not theirs.
-  ;; SERIALIZED through op-chain, and the caret/sel assoc happens when
-  ;; the op actually runs, not when it is queued: three fast keystrokes
-  ;; otherwise all read the same stale caret and insert in reverse
-  ;; order at one spot (measured: typing xyz produced "zyx").
-  (let [run (fn []
-              (let [s @state
-                    msg (if (contains? msg :path)
-                          msg
-                          (assoc msg :path (:path s) :caret (:caret s) :sel (:sel s)))]
-                (-> (fetch-edn "/api/op" #js {:method "POST" :body (pr-str msg)})
-                    (.then (fn [res]
-                             (when (and (:ok res) (= (:path msg) (:path @state)))
-                               (swap! state assoc :caret (:caret res) :sel (:sel res)))
-                             res)))))
-        p (.then @op-chain run run)]
+(defn chained
+  "Run thunk (a fn answering a promise) after every request queued
+   before it. Requests go to the server one at a time, in the order the
+   user made them."
+  [thunk]
+  (let [p (.then @op-chain thunk thunk)]
     (reset! op-chain (.catch p (fn [_] nil)))
     p))
+
+(defn op!
+  "Send one narcis.ops message. An op on the current buffer carries the
+   page's caret and selection, read when the op actually runs (three
+   fast keystrokes would otherwise all carry the same caret); an op that
+   names its own :path goes as it is."
+  [msg]
+  (chained
+   (fn []
+     (let [s @state
+           own? (not (contains? msg :path))
+           msg (if own?
+                 (assoc msg :path (:path s) :caret (:caret s) :sel (:sel s))
+                 msg)]
+       ;; this op carries the caret: a caret sync still waiting has nothing
+       ;; left to say (and sent later it would say a caret that has moved)
+       (when own?
+         (when-let [t (:sync-timer s)] (js/clearTimeout t))
+         (swap! state assoc :sync-timer nil))
+       (-> (fetch-edn "/api/op" #js {:method "POST" :body (pr-str msg)})
+           (.then (fn [res]
+                    (when (and (:ok res) (contains? res :caret) (= (:path msg) (:path @state)))
+                      (swap! state assoc :caret (:caret res) :sel (:sel res)))
+                    res)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; window management
 
 (defn visible-count []
   (let [sc (by-id "scroll")]
-    (max 10 (js/Math.ceil (/ (.-clientHeight sc) line-h)))))
+    (max 10 (js/Math.ceil (/ (.-clientHeight sc) (line-h))))))
 
 (defn first-visible []
   (let [sc (by-id "scroll")]
-    (js/Math.floor (/ (.-scrollTop sc) line-h))))
+    (js/Math.floor (/ (.-scrollTop sc) (line-h)))))
 
 (defn caret-pos
-  "[:line-idx :col :line-map] for caret in the current window, or nil."
+  "[line-idx col line-map] for caret in the current window, or nil."
   [win caret]
   (when win
     (first
@@ -146,9 +198,8 @@
 
 (defn fetch-window!
   "Fetch a window covering line `around`, then re-render. Never moves
-   the caret (scrolling is not caret motion; ops set the caret from
-   their own responses). Serialized: a fetch in flight records the
-   newest want and follows up. Always returns a promise."
+   the caret. Serialized: a fetch in flight records the newest want and
+   follows up. Always returns a promise."
   [around]
   (let [s @state]
     (if (:fetching s)
@@ -170,7 +221,9 @@
                              (fetch-window! w))
                            win))
                   (.catch (fn [_] (swap! state assoc :fetching false) nil))))
-          (js/Promise.resolve nil))))))
+          (do (swap! state assoc :win nil)
+              (render!)
+              (js/Promise.resolve nil)))))))
 
 (defn ensure-caret-visible! []
   (let [win (:win @state)
@@ -178,11 +231,11 @@
     (when pos
       (let [line-n (:n (nth (:lines win) (first pos)))
             fv (first-visible)
-            vc (visible-count)
+            vc (dec (visible-count))
             sc (by-id "scroll")]
         (cond
-          (< line-n fv) (set! (.-scrollTop sc) (* line-n line-h))
-          (>= line-n (+ fv vc)) (set! (.-scrollTop sc) (* (inc (- line-n vc)) line-h)))))))
+          (< line-n fv) (set! (.-scrollTop sc) (* line-n (line-h)))
+          (>= line-n (+ fv vc)) (set! (.-scrollTop sc) (* (inc (- line-n vc)) (line-h))))))))
 
 (defn refresh-window! []
   (let [win (:win @state)
@@ -194,29 +247,32 @@
   (if (:ok res)
     (do (swap! state assoc :status nil)
         (ensure-caret-visible!)
-        (refresh-window!)
+        (-> (refresh-window!)
+            (.then (fn [_] (ensure-caret-visible!) (render!))))
         (update-status!))
-    (do (swap! state assoc :status (str "op failed: " (:error res)))
-        (update-status!))))
+    (say! (:error res)))
+  res)
 
 (defn refresh-state!
-  "Re-read /api/state (tabs, active buffer, caret/sel of the active
-   buffer) and fetch its window. The one flow after an op that
-   changes which buffers exist or which is active (:new, :open,
-   :close, :save-as, tab clicks)."
+  "Re-read /api/state (tabs, the active buffer and its caret) and fetch
+   its window: the one flow after an op that changes which buffers exist
+   or which is active."
   []
   (-> (get-edn "/api/state")
       (.then (fn [st]
                (let [active (:active st)
                      b (get (:buffers st) active)]
                  (swap! state assoc :tabs (:tabs st) :path active
+                        :project (:project st) :runtime (or (:runtime st) "Jolt")
                         :caret (or (:cursor b) 0) :sel (:sel b)
                         :theme-choice (or (:theme st) (:theme-choice @state))))
-               (fetch-window! 0)
-               (focus-editor!)))))
+               (set! (.-scrollTop (by-id "scroll")) 0)
+               (render-title!)
+               (render-tree!)
+               (fetch-window! 0)))))
 
 ;; ---------------------------------------------------------------------------
-;; rendering
+;; rendering: the editor
 
 (defn segment-style [styles kind sel? match? theme]
   (let [st (get styles kind)
@@ -230,17 +286,17 @@
 
 (defn line-segments
   "Elementary segments of one window line: boundaries from its paint
-   spans (later spans win, like jonquil.paint/style-at), the
-   selection, and the bracket-match pair."
+   spans (later spans win, like jonquil.paint/style-at), the selection,
+   and the bracket-match pair."
   [{:keys [start text spans]} sel match]
   (let [len (count text)
         bounds (into #{0 len}
                      (mapcat (fn [[_ c0 c1]] [c0 c1]) spans))
         bounds (cond-> bounds
                  sel (into [(max 0 (- (first sel) start)) (min len (- (second sel) start))])
-                 match (into (keep (fn [p] (let [c (- p start)]
-                                             (when (and (<= 0 c) (< c len)) [c (inc c)])))
-                                   match)))
+                 match (into (mapcat (fn [p] (let [c (- p start)]
+                                               (when (and (<= 0 c) (< c len)) [c (inc c)])))
+                                     match)))
         sorted (sort (filter (fn [b] (and (<= 0 b) (<= b len))) bounds))]
     (map (fn [a b]
            (let [kind (some (fn [[k c0 c1]] (when (and (<= c0 a) (<= b c1)) k))
@@ -254,115 +310,149 @@
 (defn render-lines! []
   (let [s @state
         win (:win s)
-        box (by-id "win")]
-    (set! (.-innerHTML box) "")
+        box (by-id "win")
+        lh (line-h)]
+    (clear! box)
     (when win
       (let [theme (:theme (:theme s))
             styles (:styles (:theme s))
             gw (gutter-w (:total-lines win))
-            caret-line (first (caret-pos win (:caret s)))]
-        (set! (.-cssText (.-style box))
-              (str "position:absolute;left:0;right:0;top:" (* (:start-line win) line-h) "px;"))
+            numbers? (:line-numbers s)
+            caret-line (when (:focused s) (first (caret-pos win (:caret s))))]
+        (css! box (str "position:absolute;left:0;right:0;top:" (* (:start-line win) lh) "px;"))
         (doseq [[i line] (map-indexed vector (:lines win))]
-          (let [row (el "div"
-                        (str "display:flex;height:" line-h "px;line-height:" line-h "px;"
-                             (when (= i caret-line)
-                               (str "background:" (:selection theme) "2e;")))
-                        nil)
-                gut (el "span"
-                        (str "flex:0 0 auto;width:" gw "px;text-align:right;padding-right:12px;"
-                             "box-sizing:border-box;user-select:none;color:"
-                             (get-in (:theme s) [:styles "comment" :fg] (:text theme)) ";")
-                        (str (inc (:n line))))
-                code (el "span" "white-space:pre;" nil)]
+          (let [row (css! (el "div" (if (= i caret-line) "line current" "line") nil)
+                          (str "height:" lh "px;line-height:" lh "px;"))
+                gut (css! (el "span" "gutter" (when numbers? (str (inc (:n line)))))
+                          (str "width:" gw "px;"))
+                code (el "span" "code" nil)]
             (doseq [seg (line-segments line (:sel s) (:match win))]
               (.appendChild code
-                            (el "span"
-                                (segment-style styles (:kind seg) (:sel? seg) (:match? seg) theme)
-                                (:text seg))))
+                            (css! (el "span" nil (:text seg))
+                                  (segment-style styles (:kind seg) (:sel? seg) (:match? seg) theme))))
+            ;; a selected line break shows as a selected space
+            (when (and (:sel s)
+                       (let [e (+ (:start line) (count (:text line)))]
+                         (and (<= (first (:sel s)) e) (< e (second (:sel s))))))
+              (.appendChild code (css! (el "span" nil " ")
+                                       (str "background:" (:selection theme)))))
             (when (zero? (count (:text line)))
-              (.appendChild code (el "span" "" " ")))
-            (.appendChild row gut)
-            (.appendChild row code)
+              (.appendChild code (el "span" nil " ")))
+            (append! row gut code)
             (.appendChild box row)))))))
+
+(defn caret-xy
+  "[x y] of the caret inside the sizer, or nil when it is not in the window."
+  []
+  (let [s @state
+        win (:win s)
+        pos (caret-pos win (:caret s))]
+    (when pos
+      (let [[_ col line] pos]
+        [(+ (gutter-w (:total-lines win)) (* col (:char-w @metrics)))
+         (* (:n line) (line-h))]))))
 
 (defn render-caret! []
   (let [s @state
-        win (:win s)
         c (by-id "caret")
-        pos (caret-pos win (:caret s))]
-    (if (and pos (:focused s))
-      (let [[i col line] pos
-            gw (gutter-w (:total-lines win))
-            x (+ gw (* col (:char-w @metrics)))
-            y (* (:n line) line-h)]
-        (set! (.-cssText (.-style c))
-              (str "position:absolute;width:2px;height:" line-h "px;top:" y "px;left:" x
-                   "px;background:" (get-in s [:theme :theme :caret])
-                   ";animation:narcis-blink 1.1s steps(1) infinite;pointer-events:none;"))
-        ;; park the input textarea at the caret so IME/scroll behave
-        (let [ta (by-id "input")]
-          (set! (.-cssText (.-style ta))
-                (str "position:absolute;width:10px;height:" line-h "px;top:" y "px;left:" x
-                     "px;opacity:0;border:0;padding:0;margin:0;resize:none;overflow:hidden;"
-                     "background:transparent;color:transparent;outline:none;"))))
-      (set! (.-cssText (.-style c)) "display:none;"))))
+        xy (caret-xy)
+        lh (line-h)]
+    (if xy
+      (let [[x y] xy]
+        (if (:focused s)
+          (css! c (str "position:absolute;width:2px;height:" lh "px;top:" y "px;left:" x
+                       "px;background:" (get-in s [:theme :theme :caret])
+                       ";animation:narcis-blink 1.1s steps(1) infinite;pointer-events:none;"))
+          (css! c "display:none;"))
+        ;; the hidden input sits at the caret, so IME and scrolling behave
+        (css! (by-id "input")
+              (str "position:absolute;width:10px;height:" lh "px;top:" y "px;left:" x
+                   "px;opacity:0;border:0;padding:0;margin:0;resize:none;overflow:hidden;"
+                   "background:transparent;color:transparent;outline:none;")))
+      (css! c "display:none;"))))
+
+(defn base-name [p] (last (str/split (or p "") #"/")))
+
+(defn untitled? [p] (or (nil? p) (str/starts-with? p "untitled")))
+
+(defn shown-name [p]
+  (cond (nil? p) "Narcis"
+        (untitled? p) "Untitled"
+        :else (base-name p)))
+
+(defn shown-dir
+  "The folder of path as the header bar's subtitle: its last two parts."
+  [p]
+  (when (and p (not (untitled? p)))
+    (let [parts (vec (butlast (remove str/blank? (str/split p #"/"))))]
+      (cond (empty? parts) nil
+            (<= (count parts) 2) (str "/" (str/join "/" parts))
+            :else (str "…/" (str/join "/" (take-last 2 parts)))))))
+
+(defn render-title! []
+  (let [p (:path @state)]
+    (set! (.-textContent (by-id "title")) (shown-name p))
+    (let [sub (by-id "subtitle")
+          d (shown-dir p)]
+      (set! (.-textContent sub) (or d ""))
+      (show! sub (some? d)))
+    (set! (.-title js/document) (str (shown-name p) " — Narcis"))))
 
 (defn render-tabs! []
   (let [s @state
         bar (by-id "tabs")]
-    (set! (.-innerHTML bar) "")
+    (clear! bar)
+    (show! bar (> (count (:tabs s)) 1))
     (doseq [p (:tabs s)]
-      (let [name (last (str/split p #"/"))
-            active? (= p (:path s))
-            b (el "button"
-                  (str "font:inherit;font-size:12px;margin-right:4px;padding:3px 6px 3px 10px;"
-                       "border:1px solid " (get-in s [:theme :theme :selection])
-                       ";border-radius:4px;cursor:pointer;"
-                       (if active?
-                         (str "background:" (get-in s [:theme :theme :selection])
-                              ";color:" (get-in s [:theme :theme :text]))
-                         (str "background:transparent;color:" (get-in s [:theme :theme :text]))))
-                  nil)
-            label (el "span" "" name)
-            x (el "span" "margin-left:7px;opacity:0.55;padding:0 2px;" "×")]
-        (.appendChild b label)
-        (.appendChild b x)
-        (.addEventListener b "click"
-                           (fn [_]
-                             (-> (op! {:op :activate :path p})
-                                 (.then (fn [_] (refresh-state!))))))
-        (.addEventListener x "click"
-                           (fn [e]
-                             (.stopPropagation e)
-                             (-> (op! {:op :close :path p})
-                                 (.then (fn [_] (refresh-state!))))))
-        (.appendChild bar b)))))
+      (let [tab (el "div" (if (= p (:path s)) "tab active" "tab") nil)
+            label (el "span" "tab-label" (shown-name p))
+            x (el "span" "tab-close" "×")]
+        (set! (.-title tab) p)
+        (append! tab label x)
+        (on! tab "mousedown"
+             (fn [e]
+               (.preventDefault e)
+               (-> (op! {:op :activate :path p})
+                   (.then (fn [_] (refresh-state!) (focus-editor!))))))
+        (on! x "mousedown"
+             (fn [e]
+               (.preventDefault e)
+               (.stopPropagation e)
+               (-> (op! {:op :close :path p})
+                   (.then (fn [_] (refresh-state!))))))
+        (.appendChild bar tab)))))
 
 (defn update-status! []
   (let [s @state
         win (:win s)
         pos (caret-pos win (:caret s))
-        txt (if (:status s)
-              (:status s)
-              (if (and win pos)
-              (str (:path s) "  line " (inc (:n (nth (:lines win) (first pos))))
-                   ", col " (inc (second pos))
-                   "  ·  " (:total-lines win) " lines, " (:total-chars win) " chars"
-                   "  ·  spans " (:spans-mode win)
-                   (when win (str "  ·  rev " (:rev win))))
-              (str (:path s) "")))
-        bar (by-id "status")]
-    (when bar (set! (.-textContent bar) txt))))
+        con (:console s)
+        msg (or (:status s)
+                (case (:status con)
+                  "running" "Running…"
+                  "waiting-input" "Waiting for input"
+                  "Ready"))
+        where (if (and win pos)
+                (str "Ln " (inc (:n (nth (:lines win) (first pos)))) ", Col " (inc (second pos)))
+                "")]
+    (when-let [m (by-id "status-msg")] (set! (.-textContent m) msg))
+    (when-let [p (by-id "status-pos")]
+      (set! (.-textContent p) (str (:runtime s) "  " where)))
+    (when-let [stop (by-id "btn-stop")]
+      (set! (.-disabled stop) (= "idle" (:status con))))))
 
 (defn size-sizer! []
   (let [win (:win @state)
         sizer (by-id "sizer")]
-    (when win
+    (if win
       (let [maxlen (reduce max 0 (map (fn [l] (count (:text l))) (:lines win)))
-            w (+ (gutter-w (:total-lines win)) (* (inc maxlen) (:char-w @metrics)) 40)]
-        (set! (.-cssText (.-style sizer))
-              (str "position:relative;width:" w "px;height:" (* (:total-lines win) line-h) "px;"))))))
+            gw (gutter-w (:total-lines win))
+            w (+ gw (* (inc maxlen) (:char-w @metrics)) 40)]
+        ;; the gutter's strip runs the pane's whole height, as jonquil's does
+        (css! sizer (str "position:relative;min-height:100%;width:" w "px;min-width:100%;height:"
+                         (* (:total-lines win) (line-h)) "px;"
+                         "background:linear-gradient(to right,var(--strip) " gw "px,transparent " gw "px);")))
+      (css! sizer "position:relative;min-height:100%;"))))
 
 (defn render! []
   (render-tabs!)
@@ -372,9 +462,11 @@
   (size-sizer!))
 
 ;; ---------------------------------------------------------------------------
-;; theme selection — the stored choice lives server-side (the editor
-;; atom, via :theme/use); this page resolves :auto against the system
-;; and renders the resolved palette from /api/theme.
+;; theme — the stored choice lives server-side (the editor atom, via
+;; :theme/use); this page resolves :auto against the system and draws the
+;; resolved palette from /api/theme. The window's chrome (header bar,
+;; buttons, status bar) takes its colours from the palette's background,
+;; as a GTK theme's header bar sits beside its text view.
 
 (defn system-dark? []
   (boolean (and (.-matchMedia js/window)
@@ -389,219 +481,463 @@
     (if (system-dark?) "dark" "light")
     choice))
 
+(defn parse-hex [h]
+  (let [h (str/replace (or h "#ffffff") "#" "")
+        h (if (= 3 (count h)) (apply str (mapcat (fn [c] [c c]) h)) h)]
+    [(js/parseInt (subs h 0 2) 16) (js/parseInt (subs h 2 4) 16) (js/parseInt (subs h 4 6) 16)]))
+
+(defn mix
+  "Colour a mixed toward colour b by t (0..1), as a css rgb()."
+  [a b t]
+  (let [[r1 g1 b1] (parse-hex a) [r2 g2 b2] (parse-hex b)
+        f (fn [x y] (js/Math.round (+ x (* t (- y x)))))]
+    (str "rgb(" (f r1 r2) "," (f g1 g2) "," (f b1 b2) ")")))
+
+(defn chrome-vars
+  "The window's colours under theme t, as css custom properties."
+  [t]
+  (let [bg (:background t) fg (:text t) dark? (:dark? t)
+        away (if dark? "#ffffff" "#000000")]
+    (str ":root{"
+         "--bg:" bg ";--fg:" fg ";--sel:" (:selection t) ";--caret:" (:caret t) ";"
+         "--chrome:" (mix bg away (if dark? 0.10 0.125)) ";"
+         "--chrome-border:" (mix bg away (if dark? 0.22 0.25)) ";"
+         "--btn:" (if dark? (mix bg "#ffffff" 0.17) (mix bg "#ffffff" 0.72)) ";"
+         "--btn-hover:" (if dark? (mix bg "#ffffff" 0.24) (mix bg "#000000" 0.02)) ";"
+         "--btn-active:" (mix bg away (if dark? 0.30 0.20)) ";"
+         "--btn-border:" (mix bg away (if dark? 0.30 0.22)) ";"
+         "--strip:" (mix bg away (if dark? 0.05 0.035)) ";"
+         "--statusbar:" (mix bg away (if dark? 0.07 0.055)) ";"
+         "--muted:" (mix fg bg 0.45) ";"
+         "--panel:" (if dark? (mix bg "#ffffff" 0.06) bg) ";"
+         "--current:" (mix bg away 0.035) ";"
+         "--accent:#3584e4;--accent-fg:#ffffff;"
+         "--hover:" (mix bg "#3584e4" 0.22) ";"
+         "}")))
+
 (defn apply-theme! [payload]
   (swap! state assoc :theme payload :theme-name (name (get-in payload [:theme :name])))
-  (let [t (:theme payload)
-        style-el (by-id "theme-css")]
-    (set! (.-textContent style-el)
-          (str "body{background:" (:background t) ";color:" (:text t) ";}"
-               "#hdr{border-bottom:1px solid " (:selection t) ";}"
-               ".menu-panel{background:" (:background t) ";border:1px solid " (:selection t)
-               ";box-shadow:0 6px 24px rgba(0,0,0,0.35);}"
-               ".menu-item:hover{background:" (:selection t) ";}"
-               "#findbar{border-bottom:1px solid " (:selection t) ";}"
-               "@keyframes narcis-blink{0%,55%{opacity:1}56%,100%{opacity:0}}"))
-    ;; colors only, as properties: replacing #app's cssText here would
-    ;; wipe the flex column layout build-dom! gave it (it did — the
-    ;; page fell back to one tall block and the scroll area lost its
-    ;; bounded height).
-    (set! (.-backgroundColor (.-style (by-id "app"))) (:background t))
-    (set! (.-color (.-style (by-id "app"))) (:text t))
-    (render!)))
+  (set! (.-textContent (by-id "theme-css")) (chrome-vars (:theme payload)))
+  (render!)
+  (render-console!))
 
 (defn apply-theme-choice!
   "Select choice (a name from theme-choices): persist it server-side,
    then fetch and apply the resolved palette."
   [choice]
   (swap! state assoc :theme-choice choice)
-  (-> (op! {:op :theme/use :name choice :system-dark (system-dark?)})
+  (-> (op! {:op :theme/use :name choice :system-dark (system-dark?) :path nil})
       (.then (fn [_] (get-edn (str "/api/theme?name=" (resolved-name choice)))))
       (.then apply-theme!)))
 
 (defn cycle-theme! []
   (let [choices (theme-choices)
         cur (:theme-choice @state)
-        nxt (nth choices (mod (inc (.indexOf choices cur)) (count choices)))]
+        nxt (nth choices (mod (inc (.indexOf (to-array choices) cur)) (count choices)))]
     (apply-theme-choice! nxt)))
 
-;; ---------------------------------------------------------------------------
-;; commands — the one list the menus and the palette both run. A
-;; command is {:id :label :keys :run}; :keys is display text for the
-;; chord that runs it, where one exists.
+(defn set-font-px! [px]
+  (swap! state assoc :font-px px)
+  (set! (.-textContent (by-id "font-css"))
+        (str ":root{--mono-px:" px "px;--line-h:" (line-h) "px;}"))
+  (reset! metrics {:char-w (measure-char-w)})
+  (refresh-window!)
+  (render!))
 
-(declare do-op! rename-ui! open-find! find-step! toggle-tree! open-palette!
-         close-menus!)
+(defn zoom! [dir]
+  (let [cur (font-px)
+        i (.indexOf (to-array zoom-sizes) cur)
+        i (if (neg? i) 4 i)]
+    (set-font-px! (case dir
+                    :in (nth zoom-sizes (min (dec (count zoom-sizes)) (inc i)))
+                    :out (nth zoom-sizes (max 0 (dec i)))
+                    13))))
+
+;; ---------------------------------------------------------------------------
+;; dialogs — where jonquil opens a native file chooser, the page asks in
+;; its own sheet: a path to type, and the folder's entries to pick from
+
+(defn close-dialog! []
+  (swap! state assoc :dialog nil)
+  (show! (by-id "dialog-back") false)
+  (focus-editor!))
+
+(defn dialog-shell!
+  "Show the dialog sheet with title; answers its body element."
+  [title]
+  (let [back (by-id "dialog-back")
+        box (clear! (by-id "dialog"))]
+    (.appendChild box (el "div" "dialog-title" title))
+    (let [body (el "div" "dialog-body" nil)]
+      (.appendChild box body)
+      (show! back true)
+      body)))
+
+(defn dialog-buttons! [body ok-label on-ok]
+  (let [row (el "div" "dialog-buttons" nil)
+        cancel (el "button" "btn" "Cancel")
+        ok (el "button" "btn suggested" ok-label)]
+    (on! cancel "click" (fn [_] (close-dialog!)))
+    (on! ok "click" (fn [_] (on-ok)))
+    (append! row cancel ok)
+    (.appendChild body row)))
+
+(defn message-dialog! [title text]
+  (let [body (dialog-shell! title)]
+    (.appendChild body (el "div" "dialog-text" text))
+    (dialog-buttons! body "OK" close-dialog!)
+    (swap! state assoc :dialog {:kind :message})))
+
+(defn text-dialog!
+  "Ask for one line of text; (on-ok text) when confirmed."
+  [title placeholder ok-label on-ok]
+  (let [body (dialog-shell! title)
+        input (el "input" "dialog-input" nil)
+        go (fn [] (let [v (.-value input)] (close-dialog!) (when (seq v) (on-ok v))))]
+    (set! (.-placeholder input) placeholder)
+    (on! input "keydown" (fn [e]
+                           (cond (= (.-key e) "Enter") (do (.preventDefault e) (go))
+                                 (= (.-key e) "Escape") (close-dialog!))))
+    (.appendChild body input)
+    (dialog-buttons! body ok-label go)
+    (swap! state assoc :dialog {:kind :text})
+    (.focus input)))
+
+(defn join-path [dir name]
+  (if (str/ends-with? dir "/") (str dir name) (str dir "/" name)))
+
+(defn path-dialog!
+  "Ask for a path, browsing folders from start-dir. mode is :open (pick a
+   file), :save (name a file) or :folder (pick a folder)."
+  [title mode start-dir ok-label on-ok]
+  (let [body (dialog-shell! title)
+        input (el "input" "dialog-input" nil)
+        listing (el "div" "dialog-list" nil)
+        cur (atom start-dir)
+        go (fn []
+             (let [v (str/trim (.-value input))]
+               (when (seq v)
+                 (close-dialog!)
+                 (on-ok v))))
+        load! (fn load! [dir]
+                (-> (get-edn (if dir
+                               (str "/api/list?dir=" (js/encodeURIComponent dir))
+                               "/api/list"))
+                    (.then (fn [res]
+                             (when (:dir res)
+                               (reset! cur (:dir res))
+                               (when (or (= mode :folder) (str/blank? (.-value input))
+                                         (not= mode :save))
+                                 (set! (.-value input)
+                                       (if (= mode :folder) (:dir res) (join-path (:dir res) ""))))
+                               (clear! listing)
+                               (when (:parent res)
+                                 (let [up (el "div" "dialog-row dir" "..")]
+                                   (on! up "click" (fn [_] (load! (:parent res))))
+                                   (.appendChild listing up)))
+                               (doseq [{:keys [name dir?]} (:entries res)]
+                                 (when-not (str/starts-with? name ".")
+                                   (let [row (el "div" (if dir? "dialog-row dir" "dialog-row") name)
+                                         p (join-path (:dir res) name)]
+                                     (on! row "click"
+                                          (fn [_]
+                                            (cond dir? (load! p)
+                                                  (= mode :folder) nil
+                                                  :else (do (set! (.-value input) p)
+                                                            (when (= mode :open) (go))))))
+                                     (.appendChild listing row)))))))))]
+    (set! (.-spellcheck input) false)
+    (on! input "keydown" (fn [e]
+                           (cond (= (.-key e) "Enter") (do (.preventDefault e) (go))
+                                 (= (.-key e) "Escape") (close-dialog!))))
+    (append! body input listing)
+    (dialog-buttons! body ok-label go)
+    (swap! state assoc :dialog {:kind :path})
+    (load! start-dir)
+    (.focus input)))
+
+(defn current-dir []
+  (let [p (:path @state)]
+    (or (get-in @state [:tree :root])
+        (when (and p (not (untitled? p)))
+          (str/join "/" (butlast (str/split p #"/"))))
+        (:project @state))))
+
+;; ---------------------------------------------------------------------------
+;; commands — the one table the menus, the header bar, the keys and the
+;; palette all run. Keyed by jonquil's command ids; :keys is the chord
+;; shown beside the item.
+
+(declare do-op! open-find! find-step! toggle-tree! open-palette! close-menus!
+         console-op! open-complete! quick-doc!)
 
 (defn do-new! []
-  (-> (op! {:op :new}) (.then (fn [_] (refresh-state!)))))
+  (-> (op! {:op :new :path nil}) (.then (fn [_] (refresh-state!) (focus-editor!)))))
 
-(defn do-open-prompt! []
-  (when-let [p (js/prompt "File path to open:")]
-    (when (seq p)
-      (-> (op! {:op :open :path p}) (.then (fn [_] (refresh-state!)))))))
+(defn open-path! [p]
+  (-> (op! {:op :open :path p})
+      (.then (fn [res]
+               (if (:ok res)
+                 (do (refresh-state!) (focus-editor!))
+                 (say! (:error res)))))))
+
+(defn do-open! []
+  (path-dialog! "Open" :open (current-dir) "Open" open-path!))
 
 (defn do-save-as! []
-  (when-let [p (js/prompt "Save as (new file path):")]
-    (when (seq p)
-      (-> (op! {:op :save-as :new-path p})
-          (.then (fn [res]
-                   (when (:ok res) (refresh-state!))
-                   (when-not (:ok res)
-                     (swap! state assoc :status (:error res))
-                     (js/alert (str "Save As failed: " (:error res))))))))))
+  (path-dialog! "Save As" :save (current-dir) "Save"
+                (fn [p]
+                  (-> (op! {:op :save-as :new-path p})
+                      (.then (fn [res]
+                               (if (:ok res)
+                                 (do (refresh-state!) (say! (str "Saved " p)))
+                                 (say! (str "Save As failed: " (:error res))))))))))
+
+(defn do-save! []
+  (if (untitled? (:path @state))
+    (do-save-as!)
+    (-> (op! {:op :save})
+        (.then (fn [res]
+                 (say! (if (:ok res)
+                         (str "Saved " (base-name (:path @state)))
+                         (str "Save failed: " (:error res)))))))))
+
+(defn do-close-tab! []
+  (when-let [p (:path @state)]
+    (-> (op! {:op :close :path p}) (.then (fn [_] (refresh-state!))))))
 
 (defn activate-tab! [p]
-  (-> (op! {:op :activate :path p}) (.then (fn [_] (refresh-state!)))))
+  (-> (op! {:op :activate :path p}) (.then (fn [_] (refresh-state!) (focus-editor!)))))
 
 (defn step-tab! [d]
   (let [tabs (:tabs @state)
-        i (.indexOf tabs (:path @state))]
+        i (.indexOf (to-array tabs) (:path @state))]
     (when (and (seq tabs) (<= 0 i))
       (activate-tab! (nth tabs (mod (+ i d) (count tabs)))))))
 
-(def commands
-  [{:id :file/new :label "New Tab" :run do-new!}
-   {:id :file/open :label "Open…" :keys nil :run do-open-prompt!}
-   {:id :file/save :label "Save" :keys "Ctrl+S" :run (fn [] (do-op! {:op :save}))}
-   {:id :file/save-as :label "Save As…" :run do-save-as!}
-   {:id :tab/close :label "Close Tab" :run (fn [] (-> (op! {:op :close :path (:path @state)})
-                                                      (.then (fn [_] (refresh-state!)))))}
-   {:id :edit/undo :label "Undo" :keys "Ctrl+Z" :run (fn [] (do-op! {:op :undo}))}
-   {:id :edit/redo :label "Redo" :keys "Ctrl+Shift+Z" :run (fn [] (do-op! {:op :redo}))}
-   {:id :edit/toggle-comment :label "Toggle Comment" :keys "Ctrl+/"
-    :run (fn [] (do-op! {:op :toggle-comment}))}
-   {:id :edit/indent :label "Indent" :keys "Tab" :run (fn [] (do-op! {:op :indent}))}
-   {:id :edit/unindent :label "Unindent" :keys "Shift+Tab" :run (fn [] (do-op! {:op :unindent}))}
-   {:id :edit/rename :label "Rename Symbol…" :keys "F2" :run (fn [] (rename-ui!))}
-   {:id :paredit/forward :label "Forward by a Form" :keys "Ctrl+Alt+→"
-    :run (fn [] (do-op! {:op :forward-sexp}))}
-   {:id :paredit/backward :label "Backward by a Form" :keys "Ctrl+Alt+←"
-    :run (fn [] (do-op! {:op :backward-sexp}))}
-   {:id :tree/toggle :label "File Tree" :run (fn [] (toggle-tree!))}
-   {:id :tab/next :label "Next Tab" :run (fn [] (step-tab! 1))}
-   {:id :tab/previous :label "Previous Tab" :run (fn [] (step-tab! -1))}
-   {:id :view/cycle-theme :label "Next Theme" :keys "Ctrl+Shift+M" :run cycle-theme!}
-   {:id :palette/open :label "Command Palette…" :keys "Ctrl+Shift+P" :run (fn [] (open-palette!))}
-   {:id :find/open :label "Find…" :keys "Ctrl+F" :run (fn [] (open-find!))}
-   {:id :find/next :label "Find Next" :keys "Ctrl+G" :run (fn [] (find-step! :next))}
-   {:id :find/previous :label "Find Previous" :keys "Ctrl+Shift+G" :run (fn [] (find-step! :prev))}])
+(defn rename-ui! []
+  (text-dialog! "Rename Symbol" "new name" "Rename"
+                (fn [v] (do-op! {:op :rename :name v}))))
 
-(def command-by-id (into {} (map (fn [c] [(:id c) c])) commands))
+(defn structural! [op-name]
+  (-> (op! {:op :structural :name op-name})
+      (.then (fn [res]
+               (when (and (:ok res) (:copy res) (.-clipboard js/navigator))
+                 (.catch (.writeText (.-clipboard js/navigator) (:copy res)) (fn [_] nil)))
+               (after-op! res)))))
+
+(defn toggle-focus! []
+  (if (= (.-activeElement js/document) (by-id "console-in"))
+    (focus-editor!)
+    (focus-console!)))
+
+(defn toggle-line-numbers! []
+  (swap! state update :line-numbers not)
+  (render!))
+
+(defn about! []
+  (message-dialog! "Narcis"
+                   (str "Narcis — jonquil on Eve.\n\n"
+                        "The buffer you edit is an eve.text document in an Eve disk atom: "
+                        "every edit is one swap, every earlier version is still there, and "
+                        "this page is a viewport onto it.\n\n"
+                        "Runtime: " (:runtime @state) "\n"
+                        "Theme: " (:theme-choice @state) " (" (:theme-name @state) ")")))
+
+(def command-table
+  {"tab/new" {:run do-new!}
+   "file/open" {:run (fn [] (do-open!)) :keys "Ctrl+O"}
+   "file/save" {:run (fn [] (do-save!)) :keys "Ctrl+S"}
+   "file/save-as" {:run (fn [] (do-save-as!)) :keys "Ctrl+Shift+S"}
+   "tab/close" {:run (fn [] (do-close-tab!))}
+   "edit/undo" {:run (fn [] (do-op! {:op :undo})) :keys "Ctrl+Z"}
+   "edit/redo" {:run (fn [] (do-op! {:op :redo})) :keys "Ctrl+Y"}
+   "edit/toggle-comment" {:run (fn [] (do-op! {:op :toggle-comment})) :keys "Ctrl+/"}
+   "edit/indent" {:run (fn [] (do-op! {:op :indent})) :keys "Tab"}
+   "edit/unindent" {:run (fn [] (do-op! {:op :unindent})) :keys "Shift+Tab"}
+   "edit/format-all" {:run (fn [] (do-op! {:op :format-all})) :keys "Ctrl+Shift+F"}
+   "edit/format-selection" {:run (fn [] (do-op! {:op :format-selection})) :keys "Ctrl+Alt+F"}
+   "edit/rename" {:run (fn [] (rename-ui!)) :keys "F2"}
+   "tree/toggle" {:run (fn [] (toggle-tree!)) :keys "Ctrl+Shift+E"}
+   "focus/toggle" {:run (fn [] (toggle-focus!)) :keys "F6"}
+   "tab/next" {:run (fn [] (step-tab! 1)) :keys "Ctrl+}"}
+   "tab/previous" {:run (fn [] (step-tab! -1)) :keys "Ctrl+{"}
+   "view/zoom-in" {:run (fn [] (zoom! :in)) :keys "Ctrl+="}
+   "view/zoom-out" {:run (fn [] (zoom! :out)) :keys "Ctrl+-"}
+   "view/zoom-reset" {:run (fn [] (zoom! :reset)) :keys "Ctrl+0"}
+   "view/cycle-theme" {:run (fn [] (cycle-theme!)) :keys "Ctrl+Shift+M"}
+   "view/line-numbers" {:run (fn [] (toggle-line-numbers!))}
+   "palette/open" {:run (fn [] (open-palette!)) :keys "Ctrl+Shift+P"}
+   "find/open" {:run (fn [] (open-find!)) :keys "Ctrl+F"}
+   "find/next" {:run (fn [] (find-step! :next)) :keys "Ctrl+G"}
+   "find/previous" {:run (fn [] (find-step! :prev)) :keys "Ctrl+Shift+G"}
+   "run/run" {:run (fn [] (console-op! {:op :run})) :keys "F5"}
+   "run/selection" {:run (fn [] (console-op! {:op :run-selection})) :keys "Ctrl+E"}
+   "run/form" {:run (fn [] (console-op! {:op :run-form})) :keys "Ctrl+Enter"}
+   "run/stop" {:run (fn [] (console-op! {:op :stop})) :keys "Esc"}
+   "console/clear" {:run (fn [] (console-op! {:op :clear})) :keys "Ctrl+L"}
+   "completion/open" {:run (fn [] (open-complete!)) :keys "Ctrl+Space"}
+   "help/quick-doc" {:run (fn [] (quick-doc!)) :keys "Ctrl+Q"}
+   "help/version" {:run (fn [] (about!))}})
+
+(def structural-keys
+  {"paredit/slurp-forward" "Ctrl+→"
+   "paredit/barf-forward" "Ctrl+←"
+   "paredit/forward" "Ctrl+Alt+→"
+   "paredit/backward" "Ctrl+Alt+←"
+   "paredit/up" "Ctrl+Alt+↑"
+   "paredit/down" "Ctrl+Alt+↓"
+   "paredit/expand-selection" "Alt+↑"
+   "paredit/shrink-selection" "Alt+↓"})
+
+(defn command
+  "The table entry for command id: the table's own, or a structural
+   command (paredit/<name>, run by the server's structural op of that
+   name)."
+  [id]
+  (or (get command-table id)
+      (when (str/starts-with? id "paredit/")
+        {:run (fn [] (structural! (subs id 8))) :keys (get structural-keys id)})))
+
+(defn run-command! [id]
+  (when-let [c (command id)]
+    ((:run c))))
 
 ;; ---------------------------------------------------------------------------
-;; menus — jonquil's shape (menus as data, sections separated), only
-;; the commands Narcis has. The Theme menu is generated from the
-;; server's choice list, checkmarked at the stored choice.
+;; menus — jonquil's, as the server narrowed them, drawn as a menu bar
+;; (the browser has no application menu to put them in). Narcis adds
+;; what jonquil keeps elsewhere: Undo/Redo (GTK's text view has its own),
+;; the theme list and the palette.
 
-(def menus
-  [{:label "File"
-    :sections [[:file/new :file/open]
-               [:file/save :file/save-as]
-               [:tab/close]]}
-   {:label "Edit"
-    :sections [[:edit/undo :edit/redo]
-               [:edit/toggle-comment :edit/indent :edit/unindent]
-               [:edit/rename]
-               [:paredit/forward :paredit/backward]]}
-   {:label "View"
-    :sections [[:tree/toggle]
-               [:tab/next :tab/previous]
-               [:view/cycle-theme :palette/open]]}
-   {:label "Search"
-    :sections [[:find/open]
-               [:find/next :find/previous]]}
-   {:label "Theme" :theme-menu true}
-   {:label "Help"
-    :sections [[:help/about]]}])
+(defn with-own-items [menus]
+  (mapv (fn [m]
+          (case (:label m)
+            "Edit" (update m :sections
+                           (fn [secs] (into [[{:command "edit/undo" :label "Undo"}
+                                              {:command "edit/redo" :label "Redo"}]]
+                                            secs)))
+            "View" (update m :sections conj
+                           [{:label "Theme" :theme-menu true}
+                            {:command "view/line-numbers" :label "Line Numbers"}
+                            {:command "palette/open" :label "Command Palette…"}])
+            m))
+        menus))
 
 (defn close-menus! []
   (swap! state assoc :menu-open nil)
-  (when-let [p (by-id "menu-panel")]
-    (set! (.-cssText (.-style p)) "display:none;")))
+  (show! (by-id "menu-panel") false)
+  (show! (by-id "menu-sub") false)
+  (doseq [b (array-seq (.querySelectorAll js/document ".menu-button.open"))]
+    (.remove (.-classList b) "open")))
 
-(defn menu-item-el [label keys-text checked? run]
-  (let [row (el "div"
-                (str "display:flex;align-items:center;gap:8px;padding:5px 22px 5px 10px;"
-                     "cursor:pointer;white-space:nowrap;font-size:12.5px;")
-                nil)
-        tick (el "span" "width:14px;flex:0 0 auto;" (if checked? "✓" ""))
-        lab (el "span" "" label)]
-    (.appendChild row tick)
-    (.appendChild row lab)
-    (when keys-text
-      (.appendChild row (el "span" "margin-left:auto;opacity:0.55;font-size:11.5px;" keys-text)))
-    (set! (.-className row) "menu-item")
-    (.addEventListener row "click"
-                       (fn [_] (close-menus!) (run) (focus-editor!)))
+(defn checked? [item]
+  (case (:command item)
+    "tree/toggle" (get-in @state [:tree :open])
+    "view/line-numbers" (:line-numbers @state)
+    false))
+
+(declare fill-panel!)
+
+(defn open-submenu! [item row]
+  (let [sub (by-id "menu-sub")
+        rect (.getBoundingClientRect row)]
+    (fill-panel! sub item)
+    (show! sub true)
+    (let [h (.-offsetHeight sub)
+          top (max 4 (min (.-top rect) (- (.-innerHeight js/window) h 8)))]
+      (set! (.-top (.-style sub)) (str top "px"))
+      (set! (.-left (.-style sub)) (str (- (.-right rect) 2) "px")))))
+
+(defn menu-row [item]
+  (let [row (el "div" "menu-item" nil)
+        sub? (or (:sections item) (:theme-menu item))
+        c (when (:command item) (command (:command item)))]
+    (append! row
+             (el "span" "menu-tick" (if (or (:checked item) (checked? item)) "✓" ""))
+             (el "span" "menu-label" (:label item))
+             (cond sub? (el "span" "menu-keys" "▸")
+                   (:keys c) (el "span" "menu-keys" (:keys c))))
+    (if sub?
+      (do (on! row "mouseenter" (fn [_] (open-submenu! item row)))
+          (on! row "click" (fn [e] (.stopPropagation e) (open-submenu! item row))))
+      (do (on! row "mouseenter"
+               (fn [_] (when (= "menu-panel" (.-id (.-parentNode row)))
+                         (show! (by-id "menu-sub") false))))
+          (on! row "click"
+               (fn [_]
+                 (close-menus!)
+                 (focus-editor!)
+                 (if (:run item) ((:run item)) (run-command! (:command item)))))))
     row))
+
+(defn fill-panel! [panel menu]
+  (clear! panel)
+  (if (:theme-menu menu)
+    (doseq [t (:themes @state)]
+      (.appendChild panel
+                    (menu-row {:label (str (:label t)
+                                           (when (= "auto" (:name t))
+                                             (str " (" (resolved-name "auto") ")")))
+                               :checked (= (:name t) (:theme-choice @state))
+                               :run (fn [] (apply-theme-choice! (:name t)))})))
+    (doseq [[i section] (map-indexed vector (:sections menu))]
+      (when (pos? i) (.appendChild panel (el "div" "menu-sep" nil)))
+      (doseq [item section]
+        (.appendChild panel (menu-row item))))))
 
 (defn open-menu! [label anchor]
   (let [panel (by-id "menu-panel")
-        menu (first (filter (fn [m] (= label (:label m))) menus))
+        menu (first (filter (fn [m] (= label (:label m))) (:menus @state)))
         rect (.getBoundingClientRect anchor)]
-    (set! (.-innerHTML panel) "")
-    (if (:theme-menu menu)
-      (doseq [t (:themes @state)]
-        (.appendChild panel
-                      (menu-item-el (str (:label t)
-                                         (when (= "auto" (:name t))
-                                           (str " (" (resolved-name "auto") ")")))
-                                    nil
-                                    (= (:name t) (:theme-choice @state))
-                                    (fn [] (apply-theme-choice! (:name t))))))
-      (doseq [[i section] (map-indexed vector (:sections menu))]
-        (when (pos? i)
-          (.appendChild panel (el "div" "height:1px;margin:4px 0;background:currentColor;opacity:0.18;" nil)))
-        (doseq [cid section]
-          (if (= cid :help/about)
-            (.appendChild panel
-                          (menu-item-el "About Narcis" nil false
-                                        (fn []
-                                          (js/alert (str "Narcis — jonquil on Eve.\n"
-                                                         "Buffers live in an Eve disk atom; "
-                                                         "the page is a viewport.\n"
-                                                         "Theme: " (:theme-choice @state)
-                                                         " (resolved " (:theme-name @state) ")")))))
-            (let [c (get command-by-id cid)]
-              (when c
-                (.appendChild panel
-                              (menu-item-el (:label c) (:keys c)
-                                            (and (= cid :tree/toggle)
-                                                 (get-in @state [:tree :open]))
-                                            (:run c)))))))))
-    (set! (.-cssText (.-style panel))
-          (str "display:block;position:absolute;z-index:40;padding:5px 0;border-radius:6px;"
-               "top:" (.-bottom rect) "px;left:" (.-left rect) "px;min-width:230px;"))
+    (close-menus!)
+    (fill-panel! panel menu)
+    (set! (.-top (.-style panel)) (str (.-bottom rect) "px"))
+    (set! (.-left (.-style panel)) (str (.-left rect) "px"))
+    (show! panel true)
+    (.add (.-classList anchor) "open")
     (swap! state assoc :menu-open label)))
 
-(defn build-menus! [bar]
-  (doseq [m menus]
-    (let [b (el "button"
-                "font:inherit;font-size:12.5px;background:transparent;border:0;color:inherit;padding:4px 9px;cursor:pointer;border-radius:4px;"
-                (:label m))]
-      (.setAttribute b "data-menu" (:label m))
-      (.addEventListener b "click"
-                         (fn [e]
-                           (.stopPropagation e)
-                           (if (= (:menu-open @state) (:label m))
-                             (close-menus!)
-                             (open-menu! (:label m) b))))
-      (.addEventListener b "mouseenter"
-                         (fn [_]
-                           (when (and (:menu-open @state)
-                                      (not= (:menu-open @state) (:label m)))
-                             (open-menu! (:label m) b))))
-      (.appendChild bar b))))
+(defn build-menus! []
+  (let [bar (clear! (by-id "menubar"))]
+    (doseq [m (:menus @state)]
+      (let [b (el "button" "menu-button" (:label m))]
+        (.setAttribute b "data-menu" (:label m))
+        (on! b "mousedown"
+             (fn [e]
+               (.preventDefault e)
+               (.stopPropagation e)
+               (if (= (:menu-open @state) (:label m))
+                 (close-menus!)
+                 (open-menu! (:label m) b))))
+        (on! b "mouseenter"
+             (fn [_]
+               (when (and (:menu-open @state) (not= (:menu-open @state) (:label m)))
+                 (open-menu! (:label m) b))))
+        (.appendChild bar b)))))
 
 ;; ---------------------------------------------------------------------------
-;; command palette — the command list plus jonquil.theme's palette
-;; entries ("Use theme: X"), filtered by the input.
+;; command palette — every command the menus name, plus the themes
 
-(declare close-palette! render-tree!)
+(declare close-palette!)
+
+(defn flat-commands
+  "[{:label :command}] of every command item in menus, submenu items
+   under their submenu's name."
+  [menus]
+  (letfn [(walk [prefix item]
+            (cond (:command item) [{:label (str prefix (:label item)) :command (:command item)}]
+                  (:sections item) (mapcat (fn [i] (walk (str prefix (:label item) ": ") i))
+                                           (apply concat (:sections item)))
+                  :else []))]
+    (vec (mapcat (fn [m] (mapcat (fn [i] (walk "" i)) (apply concat (:sections m)))) menus))))
 
 (defn palette-items []
   (let [q (str/lower-case (get-in @state [:palette :query]))
-        cmds (map (fn [c] {:label (:label c) :keys (:keys c) :run (:run c)}) commands)
+        cmds (map (fn [{:keys [label command]}]
+                    {:label label :keys (:keys (narcis.web/command command))
+                     :run (fn [] (run-command! command))})
+                  (conj (flat-commands (:menus @state))
+                        {:label "Complete the Word" :command "completion/open"}))
         thms (map (fn [t] {:label (str "Use theme: " (:label t))
                            :keys nil
                            :run (fn [] (apply-theme-choice! (:name t)))})
@@ -612,35 +948,26 @@
       (vec (filter (fn [i] (str/includes? (str/lower-case (:label i)) q)) all)))))
 
 (defn render-palette! []
-  (let [box (by-id "palette-list")
+  (let [box (clear! (by-id "palette-list"))
         items (palette-items)
         sel (min (get-in @state [:palette :sel]) (max 0 (dec (count items))))]
-    (set! (.-innerHTML box) "")
     (doseq [[i item] (map-indexed vector items)]
-      (let [row (el "div"
-                    (str "display:flex;gap:8px;padding:6px 12px;cursor:pointer;font-size:13px;"
-                         (when (= i sel) (str "background:" (get-in @state [:theme :theme :selection]) ";")))
-                    nil)]
-        (.appendChild row (el "span" "" (:label item)))
-        (when (:keys item)
-          (.appendChild row (el "span" "margin-left:auto;opacity:0.55;font-size:11.5px;" (:keys item))))
-        (.addEventListener row "click"
-                           (fn [_]
-                             (close-palette!)
-                             ((:run item))
-                             (focus-editor!)))
-        (.appendChild box row)))
+      (let [row (el "div" (if (= i sel) "palette-row sel" "palette-row") nil)]
+        (.appendChild row (el "span" nil (:label item)))
+        (when (:keys item) (.appendChild row (el "span" "menu-keys" (:keys item))))
+        (on! row "click" (fn [_] (close-palette!) (focus-editor!) ((:run item))))
+        (.appendChild box row)
+        (when (= i sel) (.scrollIntoView row #js {:block "nearest"}))))
     (when (empty? items)
-      (.appendChild box (el "div" "padding:6px 12px;opacity:0.6;font-size:13px;" "No matching commands")))))
+      (.appendChild box (el "div" "palette-row muted" "No matching commands")))))
 
 (defn close-palette! []
   (swap! state assoc-in [:palette :open] false)
-  (set! (.-cssText (.-style (by-id "palette"))) "display:none;"))
+  (show! (by-id "palette") false))
 
 (defn open-palette! []
   (swap! state assoc :palette {:open true :query "" :sel 0})
-  (set! (.-cssText (.-style (by-id "palette")))
-        "display:block;position:absolute;z-index:50;top:48px;left:50%;transform:translateX(-50%);width:520px;max-width:92vw;border-radius:8px;overflow:hidden;")
+  (show! (by-id "palette") true)
   (set! (.-value (by-id "palette-input")) "")
   (render-palette!)
   (.focus (by-id "palette-input")))
@@ -659,28 +986,28 @@
           (swap! state assoc-in [:palette :sel] (max (dec sel) 0))
           (render-palette!))
       (= (.-key e) "Enter")
-      (when-let [item (nth items sel nil)]
+      (when-let [item (nth items (min sel (max 0 (dec (count items)))) nil)]
         (close-palette!)
-        ((:run item))
-        (focus-editor!)))))
+        (focus-editor!)
+        ((:run item))))))
 
 ;; ---------------------------------------------------------------------------
 ;; find bar — drives the :find-next/:find-prev ops; the server selects
-;; the match, this page just shows it.
+;; the match, this page shows it
 
 (defn find-step! [dir]
   (let [q (get-in @state [:find :query])]
-    (when (seq q)
+    (if (seq q)
       (-> (op! {:op (if (= dir :next) :find-next :find-prev) :query q})
           (.then (fn [res]
                    (if (:ok res)
                      (after-op! res)
-                     (let [bar (by-id "status")]
-                       (when bar (set! (.-textContent bar) (str "Find: " (:error res))))))))))))
+                     (say! (str "Find: " (:error res)))))))
+      (open-find!))))
 
 (defn open-find! []
   (swap! state assoc-in [:find :open] true)
-  (set! (.-cssText (.-style (by-id "findbar"))) "display:flex;")
+  (show! (by-id "findbar") true)
   (let [input (by-id "find-input")]
     (when (seq (get-in @state [:find :query]))
       (set! (.-value input) (get-in @state [:find :query])))
@@ -689,60 +1016,316 @@
 
 (defn close-find! []
   (swap! state assoc-in [:find :open] false)
-  (set! (.-cssText (.-style (by-id "findbar"))) "display:none;")
+  (show! (by-id "findbar") false)
   (focus-editor!))
 
 ;; ---------------------------------------------------------------------------
-;; file panel — /api/list over the launcher's directory; click a file
-;; to open it, a directory to descend.
+;; file tree — the project folder, its folders opening in place
 
-(defn tree-path [dir name] (str dir "/" name))
-
-(defn load-tree! [dir]
-  (-> (get-edn (if dir
-                 (str "/api/list?dir=" (js/encodeURIComponent dir))
-                 "/api/list"))
+(defn load-dir!
+  "Fetch dir's entries into the tree's :kids; answers a promise."
+  [dir]
+  (-> (get-edn (if dir (str "/api/list?dir=" (js/encodeURIComponent dir)) "/api/list"))
       (.then (fn [res]
-               (swap! state assoc :tree {:open true :dir (:dir res)
-                                         :parent (:parent res)
-                                         :entries (:entries res)})
+               (when (:dir res)
+                 (swap! state assoc-in [:tree :kids (:dir res)] (:entries res)))
+               res))))
+
+(defn open-tree-at! [dir]
+  (-> (load-dir! dir)
+      (.then (fn [res]
+               (when (:dir res)
+                 (swap! state update :tree assoc :open true :root (:dir res)))
                (render-tree!)))))
+
+(defn tree-rows! [panel dir depth]
+  (doseq [{:keys [name dir?]} (get-in @state [:tree :kids dir])]
+    (when-not (str/starts-with? name ".")
+      (let [p (join-path dir name)
+            open? (contains? (get-in @state [:tree :expanded]) p)
+            row (el "div" (cond (= p (:path @state)) "tree-row active"
+                                dir? "tree-row dir"
+                                :else "tree-row")
+                    nil)]
+        (css! row (str "padding-left:" (+ 8 (* depth 14)) "px;"))
+        (append! row
+                 (el "span" "tree-arrow" (cond (not dir?) "" open? "▾" :else "▸"))
+                 (el "span" nil name))
+        (on! row "click"
+             (fn [_]
+               (if dir?
+                 (if open?
+                   (do (swap! state update-in [:tree :expanded] disj p) (render-tree!))
+                   (do (swap! state update-in [:tree :expanded] conj p)
+                       (-> (load-dir! p) (.then (fn [_] (render-tree!))))))
+                 (open-path! p))))
+        (.appendChild panel row)
+        (when (and dir? open?)
+          (tree-rows! panel p (inc depth)))))))
 
 (defn render-tree! []
   (let [panel (by-id "tree")
-        {:keys [open dir parent entries]} (:tree @state)]
-    (if-not open
-      (set! (.-cssText (.-style panel)) "display:none;")
-      (do (set! (.-cssText (.-style panel))
-                (str "display:block;flex:0 0 250px;overflow:auto;padding:8px 6px;"
-                     "border-right:1px solid " (get-in @state [:theme :theme :selection])
-                     ";font-size:12.5px;"))
-          (set! (.-innerHTML panel) "")
-          (.appendChild panel
-                        (el "div" "font-weight:bold;padding:2px 6px 8px;word-break:break-all;" dir))
-          (when parent
-            (let [up (el "div" "padding:3px 6px;cursor:pointer;opacity:0.8;" "📁 ..")]
-              (.addEventListener up "click" (fn [_] (load-tree! parent)))
-              (.appendChild panel up)))
-          (doseq [{:keys [name dir?]} entries]
-            (let [row (el "div"
-                          (str "padding:3px 6px;cursor:pointer;white-space:nowrap;"
-                               (when (= (tree-path dir name) (:path @state))
-                                 (str "background:" (get-in @state [:theme :theme :selection]) ";")))
-                          (str (if dir? "📁 " "📄 ") name))]
-              (.addEventListener row "click"
-                                 (fn [_]
-                                   (if dir?
-                                     (load-tree! (tree-path dir name))
-                                     (-> (op! {:op :open :path (tree-path dir name)})
-                                         (.then (fn [_] (refresh-state!) (render-tree!)))))))
-              (.appendChild panel row)))))))
+        {:keys [open root]} (:tree @state)
+        btn (by-id "btn-files")]
+    (when btn
+      (if open (.add (.-classList btn) "active") (.remove (.-classList btn) "active")))
+    (show! panel open)
+    (when open
+      (clear! panel)
+      (let [head (el "div" "tree-head" nil)
+            name (el "span" "tree-name" (base-name root))
+            refresh (el "button" "btn small" "⟳")
+            folder (el "button" "btn small" "Open Folder…")]
+        (set! (.-title name) (or root ""))
+        (set! (.-title refresh) "Reload the folder")
+        (on! refresh "click"
+             (fn [_]
+               (-> (js/Promise.all
+                    (to-array (map load-dir! (cons root (get-in @state [:tree :expanded])))))
+                   (.then (fn [_] (render-tree!))))))
+        (on! folder "click"
+             (fn [_] (path-dialog! "Open Folder" :folder root "Open"
+                                   (fn [d] (swap! state assoc-in [:tree :expanded] #{})
+                                     (open-tree-at! d)))))
+        (append! head name refresh folder)
+        (.appendChild panel head))
+      (let [rows (el "div" "tree-rows" nil)]
+        (tree-rows! rows root 0)
+        (.appendChild panel rows)))))
 
 (defn toggle-tree! []
   (if (get-in @state [:tree :open])
     (do (swap! state assoc-in [:tree :open] false)
         (render-tree!))
-    (load-tree! (get-in @state [:tree :dir]))))
+    (open-tree-at! (or (get-in @state [:tree :root]) (:project @state)))))
+
+;; ---------------------------------------------------------------------------
+;; the Interactions console — the transcript in its Eve atom, read by
+;; position; what is typed at the prompt goes to the evaluator
+
+(defn console-style [kind]
+  (let [st (get-in @state [:theme :console kind])
+        theme (get-in @state [:theme :theme])]
+    (str "color:" (or (:fg st) (:text theme)) ";"
+         (when (:bold st) "font-weight:bold;")
+         (when (:italic st) "font-style:italic;"))))
+
+(defn render-console!
+  "Redraw the transcript from entry index `from` on (the entries before
+   it are on screen already), and the prompt."
+  ([] (render-console! 0))
+  ([from]
+   (when-let [out (by-id "console-out")]
+     (let [{:keys [entries status ns]} (:console @state)
+           pane (by-id "console")
+           stick? (< (- (.-scrollHeight pane) (.-scrollTop pane) (.-clientHeight pane)) 30)]
+       (while (> (.-length (.-childNodes out)) from)
+         (.removeChild out (.-lastChild out)))
+       (doseq [[kind text] (drop from entries)]
+         (.appendChild out (css! (el "span" nil text) (console-style kind))))
+       (let [prompt (by-id "console-prompt")]
+         (set! (.-textContent prompt) (str ns "=> "))
+         (css! prompt (console-style "prompt"))
+         (show! prompt (= status "idle")))
+       (when stick? (set! (.-scrollTop pane) (.-scrollHeight pane)))))))
+
+(defonce poll-timer (atom nil))
+
+(defn take-console!
+  "Fold a /api/console answer into the page's transcript."
+  [res]
+  (when (and res (contains? res :entries))
+    (let [{:keys [entries base]} (:console @state)
+          ;; :start is the oldest entry the transcript still keeps: what
+          ;; the page holds from before it (trimmed, or cleared) goes
+          start (or (:start res) base)
+          gone (max 0 (min (count entries) (- start base)))
+          entries (vec (drop gone entries))
+          base (max base start)
+          from (:from res)
+          keep-n (max 0 (min (count entries) (- from base)))
+          entries (into (vec (take keep-n entries)) (:entries res))]
+      (swap! state assoc :console {:entries entries :base base :next (:next res)
+                                   :status (:status res) :ns (:ns res)})
+      (render-console! (if (pos? gone) 0 keep-n))))
+  (when (and res (contains? res :status) (not (contains? res :entries)))
+    (swap! state update :console assoc :status (:status res) :ns (:ns res)))
+  (update-status!))
+
+(defn poll-console! []
+  (when-let [t @poll-timer] (js/clearTimeout t))
+  (reset! poll-timer nil)
+  ;; the last entry may have grown: read again from it
+  (let [since (max 0 (dec (get-in @state [:console :next])))]
+    (-> (get-edn (str "/api/console?since=" since))
+        (.then (fn [res]
+                 (take-console! res)
+                 (when (not= "idle" (:status res))
+                   (reset! poll-timer (js/setTimeout poll-console! 120)))))
+        (.catch (fn [_] nil)))))
+
+(defn console-op!
+  "Send one message to the console (Run, Stop, the prompt's input), after
+   every edit queued before it, then read what it said."
+  [msg]
+  (chained
+   (fn []
+     (let [s @state
+           msg (merge {:path (:path s) :caret (:caret s) :sel (:sel s)} msg)]
+       (-> (fetch-edn "/api/console" #js {:method "POST" :body (pr-str msg)})
+           (.then (fn [res]
+                    (when (and (false? (:ok res)) (:error res)) (say! (:error res)))
+                    (when (:ok res) (swap! state assoc :status nil))
+                    (take-console! res)
+                    (poll-console!)
+                    res)))))))
+
+(defn grow-console-input! []
+  (let [ta (by-id "console-in")]
+    (set! (.-rows ta) (max 1 (count (str/split (.-value ta) #"\n" -1))))))
+
+(defn console-key! [e]
+  (let [ta (by-id "console-in")
+        k (.-key e)
+        cmd (or (.-metaKey e) (.-ctrlKey e))
+        single? (not (str/includes? (.-value ta) "\n"))]
+    (cond
+      (= k "Enter")
+      (do (.preventDefault e)
+          (let [text (.-value ta)]
+            (-> (console-op! {:op :input :text text :shift (.-shiftKey e)})
+                (.then (fn [res]
+                         (case (:action res)
+                           "newline" (do (set! (.-value ta) (str (.-value ta) "\n"))
+                                         (grow-console-input!))
+                           ("eval" "stdin") (do (set! (.-value ta) "") (grow-console-input!))
+                           "busy" (say! "A program is running. Stop it first.")
+                           nil))))))
+      (and (= k "ArrowUp") single?)
+      (do (.preventDefault e)
+          (-> (console-op! {:op :history :dir :prev :current (.-value ta)})
+              (.then (fn [res] (when (:ok res) (set! (.-value ta) (or (:text res) "")))))))
+      (and (= k "ArrowDown") single?)
+      (do (.preventDefault e)
+          (-> (console-op! {:op :history :dir :next :current (.-value ta)})
+              (.then (fn [res] (when (:ok res) (set! (.-value ta) (or (:text res) "")))))))
+      (and (= k "Escape") (not= "idle" (get-in @state [:console :status])))
+      (do (.preventDefault e) (run-command! "run/stop"))
+      (= k "Escape") (focus-editor!)
+      (= k "F6") (do (.preventDefault e) (focus-editor!))
+      (= k "F5") (do (.preventDefault e) (run-command! "run/run"))
+      (and cmd (= k "l")) (do (.preventDefault e) (run-command! "console/clear"))
+      :else nil)))
+
+;; ---------------------------------------------------------------------------
+;; completion and quick documentation
+
+(defn close-complete! []
+  (when (:complete @state)
+    (swap! state assoc :complete nil))
+  (show! (by-id "completion") false))
+
+(defn place-popup!
+  "Put popup just under the caret (above it when there is no room)."
+  [popup]
+  (when-let [[x y] (caret-xy)]
+    (let [rect (.getBoundingClientRect (by-id "sizer"))
+          left (+ (.-left rect) x)
+          top (+ (.-top rect) y (line-h) 2)
+          h (.-offsetHeight popup)
+          w (.-offsetWidth popup)
+          top (if (> (+ top h) (- (.-innerHeight js/window) 8))
+                (max 4 (- (+ (.-top rect) y) h 2))
+                top)
+          left (max 4 (min left (- (.-innerWidth js/window) w 8)))]
+      (set! (.-top (.-style popup)) (str top "px"))
+      (set! (.-left (.-style popup)) (str left "px")))))
+
+(defn render-complete! []
+  (let [popup (by-id "completion")
+        {:keys [candidates sel doc]} (:complete @state)
+        list (clear! (by-id "completion-list"))]
+    (doseq [[i c] (map-indexed vector candidates)]
+      (let [row (el "div" (if (= i sel) "completion-row sel" "completion-row") nil)]
+        (append! row (el "span" nil (:symbol c)) (el "span" "completion-kind" (:category c)))
+        (on! row "mousedown"
+             (fn [e]
+               (.preventDefault e)
+               (swap! state assoc-in [:complete :sel] i)
+               (accept-complete!)))
+        (.appendChild list row)
+        (when (= i sel) (.scrollIntoView row #js {:block "nearest"}))))
+    (set! (.-textContent (by-id "completion-doc")) (or doc ""))
+    (show! popup true)
+    (place-popup! popup)))
+
+(defn fetch-complete-doc! []
+  (when-let [{:keys [candidates sel]} (:complete @state)]
+    (when-let [c (nth candidates sel nil)]
+      (-> (op! {:op :doc :symbol (:symbol c) :category (:category c)})
+          (.then (fn [res]
+                   (when (and (:complete @state)
+                              (= (:symbol c) (:symbol (nth (:candidates (:complete @state))
+                                                           (:sel (:complete @state)) nil))))
+                     (swap! state assoc-in [:complete :doc] (when (:ok res) (:doc res)))
+                     (render-complete!))))))))
+
+(defn open-complete! []
+  (-> (op! {:op :complete})
+      (.then (fn [res]
+               (if (and (:ok res) (seq (:candidates res)))
+                 (do (swap! state assoc :complete {:start (:start res) :end (:end res)
+                                                   :candidates (:candidates res)
+                                                   :sel 0 :doc nil})
+                     (render-complete!)
+                     (fetch-complete-doc!))
+                 (do (close-complete!)
+                     (when (:ok res) (say! "No completions"))))))))
+
+(defn refresh-complete!
+  "After a keystroke while the popup is open: ask again, or close when
+   the word is gone."
+  []
+  (when (:complete @state)
+    (-> (op! {:op :complete})
+        (.then (fn [res]
+                 (if (and (:complete @state) (:ok res) (seq (:candidates res))
+                          (seq (:prefix res)))
+                   (do (swap! state assoc :complete {:start (:start res) :end (:end res)
+                                                     :candidates (:candidates res)
+                                                     :sel 0 :doc nil})
+                       (render-complete!)
+                       (fetch-complete-doc!))
+                   (close-complete!)))))))
+
+(defn move-complete! [d]
+  (let [{:keys [candidates sel]} (:complete @state)
+        n (count candidates)]
+    (when (pos? n)
+      (swap! state update :complete assoc :sel (mod (+ sel d) n) :doc nil)
+      (render-complete!)
+      (fetch-complete-doc!))))
+
+(defn ^:export accept-complete! []
+  (when-let [{:keys [start end candidates sel]} (:complete @state)]
+    (when-let [c (nth candidates sel nil)]
+      (close-complete!)
+      ;; the word under the caret is replaced: sent as the selection the
+      ;; insert replaces
+      (swap! state assoc :caret end :sel (when (< start end) [start end]))
+      (do-op! {:op :insert-text :text (:symbol c)}))))
+
+(defn close-doc! [] (show! (by-id "quickdoc") false))
+
+(defn quick-doc! []
+  (-> (op! {:op :doc})
+      (.then (fn [res]
+               (if (:ok res)
+                 (let [popup (by-id "quickdoc")]
+                   (set! (.-textContent popup) (:doc res))
+                   (show! popup true)
+                   (place-popup! popup))
+                 (say! (or (:error res) "No documentation")))))))
 
 ;; ---------------------------------------------------------------------------
 ;; caret motion (local; synced to the server debounced and with every op)
@@ -751,7 +1334,9 @@
   (when-let [t (:sync-timer @state)] (js/clearTimeout t))
   (swap! state assoc :sync-timer
          (js/setTimeout
-          (fn [] (op! {:op :set-caret :offset (:caret @state) :sel (:sel @state)}))
+          ;; the caret is read when the op runs, after every op queued
+          ;; before it — never the caret of when the timer fired
+          (fn [] (op! {:op :set-caret}))
           250)))
 
 (defn set-caret-local! [offset sel]
@@ -759,10 +1344,14 @@
   (render!)
   (sync-caret!))
 
-(defn line-of-caret []
-  (let [win (:win @state)
-        pos (caret-pos win (:caret @state))]
-    (when pos (:n (nth (:lines win) (first pos))))))
+(defn extend-sel
+  "The selection after moving the caret from `from` to `to` with Shift:
+   it keeps its far end."
+  [sel from to]
+  (let [anchor (cond (nil? sel) from
+                     (= from (first sel)) (second sel)
+                     :else (first sel))]
+    (when (not= anchor to) [(min anchor to) (max anchor to)])))
 
 (defn move-lines! [n extend?]
   (let [s @state
@@ -771,40 +1360,49 @@
     (when pos
       (let [[_ col line] pos
             goal (or (:goal-col s) col)
-            target (+ (:n line) n)
-            anchor (if extend? (or (first (:sel s)) (:caret s)) nil)]
+            target (max 0 (min (dec (:total-lines win)) (+ (:n line) n)))
+            place! (fn [tl]
+                     (let [off (+ (:start tl) (min goal (count (:text tl))))]
+                       (swap! state assoc :caret off :goal-col goal
+                              :sel (when extend? (extend-sel (:sel s) (:caret s) off)))
+                       (ensure-caret-visible!)
+                       (render!)
+                       (sync-caret!)))]
         (if (and (<= (:start-line win) target)
                  (< target (+ (:start-line win) (count (:lines win)))))
-          (let [tl (nth (:lines win) (- target (:start-line win)))
-                off (+ (:start tl) (min goal (count (:text tl))))]
-            (swap! state assoc :caret off :goal-col goal
-                   :sel (when extend? [(min anchor off) (max anchor off)]))
-            (ensure-caret-visible!)
-            (render!)
-            (sync-caret!))
-          ;; target line not loaded: fetch around it, then place
+          (place! (nth (:lines win) (- target (:start-line win))))
+          ;; the target line is not loaded: fetch around it, then place
           (do (swap! state assoc :goal-col goal)
               (-> (fetch-window! target)
                   (.then (fn []
-                           (let [w (:win @state)
-                                 tl (first (filter (fn [l] (= (:n l) target)) (:lines w)))]
-                             (when tl
-                               (let [off (+ (:start tl) (min goal (count (:text tl))))]
-                                 (swap! state assoc :caret off
-                                        :sel (when extend? [(min anchor off) (max anchor off)]))
-                                 (ensure-caret-visible!)
-                                 (render!)
-                                 (sync-caret!)))))))))))))
+                           (when-let [tl (first (filter (fn [l] (= (:n l) target))
+                                                        (:lines (:win @state))))]
+                             (place! tl)))))))))))
 
 (defn move-horizontal! [d extend?]
   (let [s @state
-        off (max 0 (+ (:caret s) d))
-        anchor (if extend? (or (first (:sel s)) (:caret s)) nil)]
+        total (or (:total-chars (:win s)) 0)
+        ;; a selection collapses to the end the arrow points at
+        off (if (and (:sel s) (not extend?))
+              (if (neg? d) (first (:sel s)) (second (:sel s)))
+              (max 0 (min total (+ (:caret s) d))))]
     (swap! state assoc :caret off :goal-col nil
-           :sel (when extend? [(min anchor off) (max anchor off)]))
+           :sel (when extend? (extend-sel (:sel s) (:caret s) off)))
     (ensure-caret-visible!)
     (render!)
     (sync-caret!)))
+
+(defn line-edge! [end? extend?]
+  (let [s @state
+        win (:win s)
+        pos (caret-pos win (:caret s))]
+    (when pos
+      (let [line (nth (:lines win) (first pos))
+            target (if end? (+ (:start line) (count (:text line))) (:start line))]
+        (swap! state assoc :caret target :goal-col nil
+               :sel (when extend? (extend-sel (:sel s) (:caret s) target)))
+        (render!)
+        (sync-caret!)))))
 
 ;; ---------------------------------------------------------------------------
 ;; keyboard — jonquil's keymap for the ported commands
@@ -812,78 +1410,117 @@
 (defn do-op! [msg]
   (-> (op! msg) (.then after-op!)))
 
-(defn rename-ui! []
-  (let [box (by-id "rename-box")
-        input (by-id "rename-input")]
-    (set! (.-cssText (.-style box)) "display:inline-block;")
-    (set! (.-value input) "")
-    (.focus input)))
+(defn window-key!
+  "The chords that work wherever the focus is (jonquil's :window keys).
+   True when e was one."
+  [e]
+  (let [k (.-key e)
+        cmd (or (.-metaKey e) (.-ctrlKey e))
+        shift (.-shiftKey e)
+        alt (.-altKey e)
+        lower (str/lower-case k)
+        run (fn [id] (.preventDefault e) (run-command! id) true)]
+    (cond
+      (= k "F5") (run "run/run")
+      (and cmd (not shift) (not alt) (= lower "r")) (run "run/run")
+      (and cmd shift (= lower "p")) (run "palette/open")
+      (and cmd (not shift) (= lower "k")) (run "palette/open")
+      (and cmd (not shift) (not alt) (= lower "o")) (run "file/open")
+      (and cmd shift (not alt) (= lower "s")) (run "file/save-as")
+      (and cmd (not shift) (not alt) (= lower "s")) (run "file/save")
+      (and cmd shift (not alt) (= lower "e")) (run "tree/toggle")
+      (and cmd (not shift) (not alt) (= lower "e")) (run "run/selection")
+      (and cmd (not shift) (not alt) (= lower "l")) (run "console/clear")
+      (and cmd (not shift) (not alt) (= lower "f")) (run "find/open")
+      (and cmd (not alt) (= lower "g")) (run (if shift "find/previous" "find/next"))
+      (and cmd shift (= lower "m")) (run "view/cycle-theme")
+      (and cmd (or (= k "=") (= k "+"))) (run "view/zoom-in")
+      (and cmd (= k "-")) (run "view/zoom-out")
+      (and cmd (= k "0")) (run "view/zoom-reset")
+      (and cmd (= k "}")) (run "tab/next")
+      (and cmd (= k "{")) (run "tab/previous")
+      (and (= k "F6") (not shift)) (run "focus/toggle")
+      :else false)))
+
+(defn complete-key!
+  "Keys the completion popup takes while it is open. True when taken."
+  [e]
+  (when (:complete @state)
+    (let [k (.-key e)]
+      (cond
+        (= k "ArrowDown") (do (.preventDefault e) (move-complete! 1) true)
+        (= k "ArrowUp") (do (.preventDefault e) (move-complete! -1) true)
+        (or (= k "Enter") (= k "Tab")) (do (.preventDefault e) (accept-complete!) true)
+        (= k "Escape") (do (.preventDefault e) (close-complete!) true)
+        :else false))))
 
 (defn on-keydown [e]
   (when-not (.-isComposing e)
     (let [k (.-key e)
           cmd (or (.-metaKey e) (.-ctrlKey e))
+          ctrl (.-ctrlKey e)
           shift (.-shiftKey e)
           alt (.-altKey e)
-          s @state]
+          lower (str/lower-case k)
+          s @state
+          typed! (fn [msg]
+                   (.preventDefault e)
+                   (-> (do-op! msg) (.then (fn [_] (refresh-complete!)))))]
+      (close-doc!)
       (cond
-        ;; an open menu takes Escape first
-        (and (:menu-open s) (= k "Escape"))
-        (do (.preventDefault e) (close-menus!))
+        (complete-key! e) nil
 
-        ;; command palette: Cmd/Ctrl+Shift+P or Cmd/Ctrl+K
-        (and cmd shift (or (= k "P") (= k "p")))
-        (do (.preventDefault e) (open-palette!))
-        (and cmd (= k "k"))
-        (do (.preventDefault e) (open-palette!))
+        ;; an open menu takes Escape first, then a running program
+        (and (:menu-open s) (= k "Escape")) (do (.preventDefault e) (close-menus!))
+        (and (= k "Escape") (not= "idle" (get-in s [:console :status])))
+        (do (.preventDefault e) (run-command! "run/stop"))
+        (and (= k "Escape") (:sel s)) (do (.preventDefault e) (set-caret-local! (:caret s) nil))
 
-        ;; find: Cmd/Ctrl+F opens the bar, Cmd/Ctrl+G / Shift+G step
-        (and cmd (= k "f")) (do (.preventDefault e) (open-find!))
-        (and cmd (= k "g")) (do (.preventDefault e) (find-step! (if shift :prev :next)))
+        (window-key! e) nil
 
-        ;; theme cycle: Cmd/Ctrl+Shift+M (jonquil's chord)
-        (and cmd shift (or (= k "M") (= k "m")))
-        (do (.preventDefault e) (cycle-theme!))
-
+        ;; jonquil's :editor keys
+        (and cmd (= k "Enter")) (do (.preventDefault e) (run-command! "run/form"))
+        (and ctrl (= k " ")) (do (.preventDefault e) (open-complete!))
+        (and ctrl (not (.-metaKey e)) (= lower "q")) (do (.preventDefault e) (quick-doc!))
+        (and shift (= k "F1")) (do (.preventDefault e) (quick-doc!))
         (and cmd (or (= k "/") (= k ";"))) (do (.preventDefault e) (do-op! {:op :toggle-comment}))
-        (and cmd (= k "s")) (do (.preventDefault e) (do-op! {:op :save}))
-        (and cmd (= k "y")) (do (.preventDefault e) (do-op! {:op :redo}))
-        (and cmd (= k "z")) (do (.preventDefault e) (do-op! {:op (if shift :redo :undo)}))
-        (and (.-ctrlKey e) alt (= k "ArrowRight")) (do (.preventDefault e) (do-op! {:op :forward-sexp}))
-        (and (.-ctrlKey e) alt (= k "ArrowLeft")) (do (.preventDefault e) (do-op! {:op :backward-sexp}))
+        (and cmd shift (= lower "f")) (do (.preventDefault e) (do-op! {:op :format-all}))
+        (and cmd alt (or (= lower "f") (= lower "l"))) (do (.preventDefault e) (do-op! {:op :format-selection}))
+        (and cmd (= lower "y")) (do (.preventDefault e) (do-op! {:op :redo}))
+        (and cmd (= lower "z")) (do (.preventDefault e) (do-op! {:op (if shift :redo :undo)}))
+        (and cmd (= lower "a"))
+        (do (.preventDefault e)
+            (let [n (or (:total-chars (:win s)) 0)]
+              (swap! state assoc :caret n :sel (when (pos? n) [0 n]))
+              (render!)
+              (sync-caret!)))
         (or (= k "F2") (and (= k "F6") shift)) (do (.preventDefault e) (rename-ui!))
 
-        (= k "Enter") (do (.preventDefault e) (do-op! {:op :smart-enter}))
-        (= k "Tab") (do (.preventDefault e) (do-op! {:op (if shift :unindent :indent)}))
-        (= k "Backspace") (do (.preventDefault e) (do-op! {:op :backspace}))
-        (= k "Delete") (do (.preventDefault e) (do-op! {:op :delete-forward}))
+        ;; structural editing
+        (and ctrl alt (= k "ArrowRight")) (do (.preventDefault e) (structural! "forward"))
+        (and ctrl alt (= k "ArrowLeft")) (do (.preventDefault e) (structural! "backward"))
+        (and ctrl alt (= k "ArrowUp")) (do (.preventDefault e) (structural! "up"))
+        (and ctrl alt (= k "ArrowDown")) (do (.preventDefault e) (structural! "down"))
+        (and ctrl (not alt) (not shift) (= k "ArrowRight")) (do (.preventDefault e) (structural! "slurp-forward"))
+        (and ctrl (not alt) (not shift) (= k "ArrowLeft")) (do (.preventDefault e) (structural! "barf-forward"))
+        (and alt (not ctrl) (= k "ArrowUp")) (do (.preventDefault e) (structural! "expand-selection"))
+        (and alt (not ctrl) (= k "ArrowDown")) (do (.preventDefault e) (structural! "shrink-selection"))
 
-        (= k "ArrowLeft") (do (.preventDefault e) (move-horizontal! -1 shift))
-        (= k "ArrowRight") (do (.preventDefault e) (move-horizontal! 1 shift))
+        (= k "Enter") (typed! {:op :smart-enter})
+        (= k "Tab") (do (.preventDefault e) (do-op! {:op (if shift :unindent :indent)}))
+        (= k "Backspace") (typed! {:op :backspace})
+        (= k "Delete") (typed! {:op :delete-forward})
+
+        (= k "ArrowLeft") (do (.preventDefault e) (close-complete!) (move-horizontal! -1 shift))
+        (= k "ArrowRight") (do (.preventDefault e) (close-complete!) (move-horizontal! 1 shift))
         (= k "ArrowUp") (do (.preventDefault e) (move-lines! -1 shift))
         (= k "ArrowDown") (do (.preventDefault e) (move-lines! 1 shift))
-        (= k "PageUp") (do (.preventDefault e) (move-lines! (- (visible-count)) shift))
-        (= k "PageDown") (do (.preventDefault e) (move-lines! (visible-count) shift))
-        (= k "Home")
-        (do (.preventDefault e)
-            (let [win (:win s) pos (caret-pos win (:caret s))]
-              (when pos
-                (let [target (:start (nth (:lines win) (first pos)))
-                      anchor (or (first (:sel s)) (:caret s))]
-                  (set-caret-local! target
-                                    (when shift [(min anchor target) (max anchor target)]))))))
-        (= k "End")
-        (do (.preventDefault e)
-            (let [win (:win s) pos (caret-pos win (:caret s))]
-              (when pos
-                (let [line (nth (:lines win) (first pos))
-                      target (+ (:start line) (count (:text line)))
-                      anchor (or (first (:sel s)) (:caret s))]
-                  (set-caret-local! target
-                                    (when shift [(min anchor target) (max anchor target)]))))))
+        (= k "PageUp") (do (.preventDefault e) (move-lines! (- (dec (visible-count))) shift))
+        (= k "PageDown") (do (.preventDefault e) (move-lines! (dec (visible-count)) shift))
+        (= k "Home") (do (.preventDefault e) (line-edge! false shift))
+        (= k "End") (do (.preventDefault e) (line-edge! true shift))
 
-        (and (not cmd) (not alt) (= 1 (count k)))
-        (do (.preventDefault e) (do-op! {:op :type-char :ch k}))
+        (and (not cmd) (not alt) (= 1 (count k))) (typed! {:op :type-char :ch k})
 
         :else nil))))
 
@@ -891,48 +1528,50 @@
 ;; mouse
 
 (defn event-pos [e]
-  (let [sc (by-id "scroll")
-        rect (.getBoundingClientRect (by-id "sizer"))
+  (let [rect (.getBoundingClientRect (by-id "sizer"))
         x (- (.-clientX e) (.-left rect))
         y (- (.-clientY e) (.-top rect))
-        win (:win @state)
-        line-n (js/Math.floor (/ y line-h))
-        gw (gutter-w (:total-lines win))
-        col (js/Math.max 0 (js/Math.round (/ (- x gw) (:char-w @metrics))))
-        line (first (filter (fn [l] (= (:n l) line-n)) (:lines win)))]
-    (when line
-      (+ (:start line) (min col (count (:text line)))))))
+        win (:win @state)]
+    (when win
+      (let [line-n (max 0 (min (dec (:total-lines win)) (js/Math.floor (/ y (line-h)))))
+            gw (gutter-w (:total-lines win))
+            col (js/Math.max 0 (js/Math.round (/ (- x gw) (:char-w @metrics))))
+            line (first (filter (fn [l] (= (:n l) line-n)) (:lines win)))]
+        (when line
+          (+ (:start line) (min col (count (:text line)))))))))
 
 (defn on-mousedown [e]
   ;; preventDefault first: the browser's own mousedown default moves
   ;; focus to the clicked (non-focusable) element AFTER this handler
-  ;; runs, undoing the programmatic focus — the click moved the caret
-  ;; but typing went nowhere and the caret hid. Every editor does this.
+  ;; runs, undoing the programmatic focus.
   (.preventDefault e)
-  (.focus (by-id "input"))
+  (close-complete!)
+  (close-doc!)
+  (focus-editor!)
   (when-let [off (event-pos e)]
-    (swap! state assoc :drag-anchor off)
-    (set-caret-local! off nil)))
+    (if (.-shiftKey e)
+      (let [s @state]
+        (swap! state assoc :caret off :sel (extend-sel (:sel s) (:caret s) off))
+        (render!)
+        (sync-caret!))
+      (do (swap! state assoc :drag-anchor off)
+          (set-caret-local! off nil)))))
 
 (defn on-mousemove [e]
-  (when (:drag-anchor @state)
+  (when-let [a (:drag-anchor @state)]
     (.preventDefault e)
     (when-let [off (event-pos e)]
-      (let [a (:drag-anchor @state)]
-        (swap! state assoc :caret off :sel [(min a off) (max a off)])
-        (render!)))))
+      (swap! state assoc :caret off :sel (when (not= a off) [(min a off) (max a off)]))
+      (render!))))
 
 (defn on-mouseup [_]
   (when (:drag-anchor @state)
     (swap! state assoc :drag-anchor nil)
     (sync-caret!)))
 
-;; ---------------------------------------------------------------------------
-;; init
-
 (defn selection-text
-  "The selected text, when the selection lies inside the loaded
-   window (the only text the page holds); nil otherwise."
+  "The selected text, when the selection lies inside the loaded window
+   (the only text the page holds); nil otherwise."
   [a b]
   (let [win (:win @state)
         lines (:lines win)]
@@ -944,164 +1583,333 @@
           (let [le (+ start (count text))
                 s (max a start) e (min b le)]
             (when (< s e) (.push sb (subs text (- s start) (- e start))))
-            (when (and (< start b) (< a le) (< le b)) (.push sb "\n"))))
+            (when (and (<= a le) (< le b)) (.push sb "\n"))))
         (str/join "" sb)))))
 
+;; ---------------------------------------------------------------------------
+;; the window
+
+(def base-css
+  "The window's stylesheet. Colours are the theme's custom properties
+   (chrome-vars); sizes follow the font's (set-font-px!)."
+  (str
+   "html,body{margin:0;height:100%;overflow:hidden;}"
+   "body{background:var(--bg);color:var(--fg);font:13px system-ui,-apple-system,'Segoe UI',Cantarell,sans-serif;}"
+   "#app{display:flex;flex-direction:column;height:100vh;background:var(--bg);color:var(--fg);}"
+   "button{font:inherit;color:inherit;}"
+   ;; menu bar
+   "#menubar{display:flex;align-items:center;flex:0 0 auto;padding:0 6px;height:26px;background:var(--chrome);border-bottom:1px solid var(--chrome-border);}"
+   ".menu-button{background:transparent;border:0;padding:3px 9px;border-radius:4px;cursor:default;font-size:13px;}"
+   ".menu-button:hover,.menu-button.open{background:var(--btn-active);}"
+   ".menu-panel{position:fixed;z-index:40;min-width:220px;max-height:calc(100vh - 60px);overflow-y:auto;padding:5px 0;border-radius:7px;"
+   "background:var(--panel);color:var(--fg);border:1px solid var(--chrome-border);box-shadow:0 8px 28px rgba(0,0,0,0.28);font-size:13px;}"
+   ".menu-item{display:flex;align-items:center;gap:6px;padding:4px 14px 4px 6px;cursor:default;white-space:nowrap;}"
+   ".menu-item:hover{background:var(--accent);color:var(--accent-fg);}"
+   ".menu-tick{width:14px;flex:0 0 auto;text-align:center;}"
+   ".menu-keys{margin-left:auto;padding-left:22px;opacity:0.6;font-size:12px;}"
+   ".menu-sep{height:1px;margin:4px 0;background:var(--chrome-border);}"
+   ;; header bar
+   "#hdr{display:flex;align-items:center;gap:8px;flex:0 0 auto;height:46px;padding:0 8px;position:relative;"
+   "background:var(--chrome);border-bottom:1px solid var(--chrome-border);}"
+   ".btn{background:var(--btn);border:1px solid var(--btn-border);border-radius:6px;padding:6px 15px;cursor:default;font-size:13px;"
+   "box-shadow:0 1px 1px rgba(0,0,0,0.06);white-space:nowrap;}"
+   ".btn:hover{background:var(--btn-hover);}"
+   ".btn:active,.btn.active{background:var(--btn-active);box-shadow:inset 0 1px 2px rgba(0,0,0,0.12);}"
+   ".btn:disabled{opacity:0.5;}"
+   ".btn.small{padding:4px 9px;font-size:12.5px;}"
+   ".btn.suggested{background:var(--accent);color:var(--accent-fg);border-color:var(--accent);}"
+   "#hdr-title{position:absolute;left:50%;transform:translateX(-50%);text-align:center;pointer-events:none;max-width:40%;}"
+   "#title{font-weight:700;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}"
+   "#subtitle{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}"
+   ".spacer{flex:1 1 auto;}"
+   ;; body
+   "#main{display:flex;flex:1 1 auto;min-height:0;}"
+   "#work{display:flex;flex-direction:column;flex:1 1 auto;min-width:0;}"
+   ;; file tree
+   "#tree{flex:0 0 250px;display:flex;flex-direction:column;border-right:1px solid var(--chrome-border);background:var(--bg);min-height:0;}"
+   ".tree-head{display:flex;align-items:center;gap:6px;padding:5px 6px;background:var(--chrome);border-bottom:1px solid var(--chrome-border);}"
+   ".tree-name{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}"
+   ".tree-rows{overflow:auto;flex:1 1 auto;padding:4px 0;}"
+   ".tree-row{display:flex;align-items:center;height:26px;cursor:default;white-space:nowrap;padding-right:8px;}"
+   ".tree-row:hover{background:var(--hover);}"
+   ".tree-row.active{background:var(--accent);color:var(--accent-fg);}"
+   ".tree-arrow{width:16px;flex:0 0 auto;font-size:10px;text-align:center;}"
+   ;; tabs
+   "#tabs{display:flex;flex:0 0 auto;background:var(--chrome);border-bottom:1px solid var(--chrome-border);overflow-x:auto;}"
+   ".tab{display:flex;align-items:center;gap:14px;padding:8px 14px 6px 18px;cursor:default;border-bottom:3px solid transparent;white-space:nowrap;}"
+   ".tab:hover{background:var(--btn-active);}"
+   ".tab.active{border-bottom-color:var(--accent);}"
+   ".tab-close{opacity:0.5;padding:0 3px;border-radius:3px;}"
+   ".tab-close:hover{opacity:1;background:var(--btn-active);}"
+   ;; find bar
+   "#findbar{display:flex;align-items:center;gap:6px;flex:0 0 auto;padding:5px 8px;background:var(--chrome);border-bottom:1px solid var(--chrome-border);}"
+   "#find-input{font:inherit;min-width:260px;padding:4px 7px;border:1px solid var(--btn-border);border-radius:5px;background:var(--bg);color:var(--fg);}"
+   ;; editor
+   "#scroll{flex:1 1 0;min-height:60px;overflow:auto;position:relative;cursor:text;background:var(--bg);"
+   "font-family:" mono ";font-size:var(--mono-px);}"
+   ".line{display:flex;}"
+   ".line.current{background:var(--current);}"
+   ".gutter{flex:0 0 auto;box-sizing:border-box;text-align:right;padding-right:10px;user-select:none;color:var(--muted);}"
+   ".code{white-space:pre;padding-left:8px;}"
+   "@keyframes narcis-blink{0%,55%{opacity:1}56%,100%{opacity:0}}"
+   ;; divider + console
+   "#divider{flex:0 0 5px;cursor:row-resize;background:var(--bg);border-top:1px solid var(--chrome-border);}"
+   "#console{flex:0 0 auto;overflow:auto;background:var(--bg);cursor:text;padding:2px 8px 8px 8px;"
+   "font-family:" mono ";font-size:var(--mono-px);line-height:var(--line-h);}"
+   "#console-out{white-space:pre-wrap;word-break:break-word;}"
+   "#console-row{display:flex;align-items:flex-start;}"
+   "#console-prompt{white-space:pre;flex:0 0 auto;}"
+   "#console-in{flex:1 1 auto;font:inherit;line-height:inherit;color:var(--fg);background:transparent;border:0;outline:none;resize:none;padding:0;margin:0;overflow:hidden;}"
+   ;; status bar
+   "#status{display:flex;align-items:center;flex:0 0 auto;height:24px;padding:0 10px;position:relative;font-size:12.5px;"
+   "background:var(--statusbar);border-top:1px solid var(--chrome-border);}"
+   "#status-msg{position:absolute;left:50%;transform:translateX(-50%);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:70%;}"
+   "#status-pos{margin-left:auto;white-space:pre;}"
+   ;; palette, completion, quick doc
+   "#palette{position:fixed;z-index:50;top:64px;left:50%;transform:translateX(-50%);width:540px;max-width:92vw;padding:0;overflow:hidden;}"
+   "#palette-input{font:inherit;width:100%;box-sizing:border-box;padding:10px 12px;border:0;border-bottom:1px solid var(--chrome-border);outline:none;background:transparent;color:inherit;}"
+   "#palette-list{max-height:340px;overflow:auto;padding:4px 0;}"
+   ".palette-row{display:flex;gap:8px;padding:5px 12px;cursor:default;}"
+   ".palette-row.sel{background:var(--accent);color:var(--accent-fg);}"
+   ".muted{opacity:0.6;}"
+   "#completion{position:fixed;z-index:45;width:520px;max-width:92vw;padding:6px;border-radius:9px;"
+   "background:var(--panel);border:1px solid var(--chrome-border);box-shadow:0 8px 28px rgba(0,0,0,0.25);"
+   "font-family:" mono ";font-size:12.5px;}"
+   "#completion-list{max-height:176px;overflow:auto;}"
+   ".completion-row{display:flex;gap:10px;padding:2px 6px;cursor:default;white-space:nowrap;}"
+   ".completion-row.sel{background:var(--hover);}"
+   ".completion-kind{opacity:0.75;}"
+   "#completion-doc{white-space:pre-wrap;max-height:150px;overflow:auto;padding:4px 6px 2px 6px;}"
+   "#quickdoc{position:fixed;z-index:45;max-width:560px;max-height:300px;overflow:auto;padding:8px 10px;border-radius:9px;white-space:pre-wrap;"
+   "background:var(--panel);border:1px solid var(--chrome-border);box-shadow:0 8px 28px rgba(0,0,0,0.25);"
+   "font-family:" mono ";font-size:12.5px;}"
+   ;; dialog
+   "#dialog-back{position:fixed;z-index:60;inset:0;background:rgba(0,0,0,0.28);display:flex;align-items:flex-start;justify-content:center;}"
+   "#dialog{margin-top:90px;width:560px;max-width:92vw;border-radius:10px;background:var(--panel);border:1px solid var(--chrome-border);"
+   "box-shadow:0 14px 40px rgba(0,0,0,0.35);overflow:hidden;}"
+   ".dialog-title{font-weight:700;text-align:center;padding:11px;background:var(--chrome);border-bottom:1px solid var(--chrome-border);}"
+   ".dialog-body{padding:12px;}"
+   ".dialog-text{white-space:pre-wrap;line-height:1.45;}"
+   ".dialog-input{font:inherit;width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--btn-border);border-radius:6px;background:var(--bg);color:var(--fg);outline:none;}"
+   ".dialog-input:focus{border-color:var(--accent);}"
+   ".dialog-list{height:260px;overflow:auto;margin-top:8px;border:1px solid var(--chrome-border);border-radius:6px;background:var(--bg);}"
+   ".dialog-row{padding:4px 10px;cursor:default;white-space:nowrap;}"
+   ".dialog-row:hover{background:var(--hover);}"
+   ".dialog-row.dir{font-weight:600;}"
+   ".dialog-row.dir::after{content:'/';opacity:0.6;}"
+   ".dialog-buttons{display:flex;justify-content:flex-end;gap:8px;margin-top:12px;}"))
+
+(defn header-button [id label command-id]
+  (let [b (el "button" "btn" label)]
+    (set! (.-id b) id)
+    (when-let [k (:keys (command command-id))] (set! (.-title b) k))
+    ;; mousedown, not click: the button must not take the focus the
+    ;; editor has
+    (on! b "mousedown" (fn [e] (.preventDefault e)))
+    (on! b "click" (fn [_] (run-command! command-id)))
+    b))
+
+(defn with-id [e id] (set! (.-id e) id) e)
+
 (defn build-dom! []
-  (let [app (by-id "app")]
-    (set! (.-cssText (.-style app))
-          (str "display:flex;flex-direction:column;height:100vh;font-family:" font ";"))
-    (set! (.-innerHTML app) "")
-    (let [style-el (el "style" nil nil)]
-      (set! (.-id style-el) "theme-css")
-      (.appendChild (.-head js/document) style-el))
-    ;; header: title, menu bar, tabs, rename box, status
-    (let [hdr (el "div" "display:flex;align-items:center;gap:6px;padding:6px 10px;flex:0 0 auto;position:relative;" nil)]
-      (set! (.-id hdr) "hdr")
-      (let [title (el "span" "font-weight:bold;font-size:14px;margin-right:2px;" "Narcis")
-            menubar (el "span" "display:flex;align-items:center;" nil)
-            tabs (el "span" "margin-left:8px;" nil)
-            rename-box (el "span" "display:none;" nil)
-            rename-input (el "input" "font:inherit;font-size:12px;" nil)
-            status (el "span" "font-size:12px;opacity:0.75;margin-left:auto;" "")]
-        (set! (.-id tabs) "tabs")
-        (set! (.-id status) "status")
-        (set! (.-id rename-box) "rename-box")
-        (set! (.-id rename-input) "rename-input")
-        (set! (.-placeholder rename-input) "new name, Enter to rename")
-        (build-menus! menubar)
-        (.addEventListener rename-input "keydown"
-                           (fn [e]
-                             (cond
-                               (= (.-key e) "Enter")
-                               (let [v (.-value rename-input)]
-                                 (set! (.-cssText (.-style rename-box)) "display:none;")
-                                 (-> (op! {:op :rename :name v}) (.then after-op!))
-                                 (.focus (by-id "input")))
-                               (= (.-key e) "Escape")
-                               (do (set! (.-cssText (.-style rename-box)) "display:none;")
-                                   (.focus (by-id "input"))))))
-        (.appendChild rename-box rename-input)
-        (doseq [c [title menubar tabs rename-box status]]
-          (.appendChild hdr c)))
-      (let [panel (el "div" "display:none;" nil)]
-        (set! (.-id panel) "menu-panel")
-        (set! (.-className panel) "menu-panel")
-        (.appendChild hdr panel))
-      (.appendChild app hdr))
-    ;; find bar (hidden until Ctrl/Cmd+F)
-    (let [bar (el "div" "display:none;align-items:center;gap:8px;padding:5px 10px;flex:0 0 auto;" nil)
-          input (el "input" "font:inherit;font-size:12.5px;min-width:260px;" nil)
-          prev-b (el "button" "font:inherit;font-size:12px;" "↑ Prev")
-          next-b (el "button" "font:inherit;font-size:12px;" "↓ Next")
-          close-b (el "button" "font:inherit;font-size:12px;" "×")]
-      (set! (.-id bar) "findbar")
-      (set! (.-id input) "find-input")
-      (set! (.-placeholder input) "Find in buffer…")
-      (.addEventListener input "input"
-                         (fn [_] (swap! state assoc-in [:find :query] (.-value input))))
-      (.addEventListener input "keydown"
-                         (fn [e]
-                           (cond
-                             (= (.-key e) "Enter") (find-step! (if (.-shiftKey e) :prev :next))
-                             (= (.-key e) "Escape") (close-find!))))
-      (.addEventListener prev-b "click" (fn [_] (find-step! :prev)))
-      (.addEventListener next-b "click" (fn [_] (find-step! :next)))
-      (.addEventListener close-b "click" (fn [_] (close-find!)))
-      (doseq [c [input prev-b next-b close-b]] (.appendChild bar c))
-      (.appendChild app bar))
-    ;; command palette overlay (hidden until Ctrl/Cmd+Shift+P)
-    (let [pal (el "div" "display:none;" nil)
-          input (el "input" "font:inherit;font-size:13px;width:100%;box-sizing:border-box;padding:9px 12px;border:0;outline:none;background:transparent;color:inherit;" nil)
-          list (el "div" "max-height:320px;overflow:auto;padding:4px 0;" nil)]
-      (set! (.-id pal) "palette")
-      (set! (.-className pal) "menu-panel")
-      (set! (.-id input) "palette-input")
-      (set! (.-id list) "palette-list")
-      (set! (.-placeholder input) "Type a command or a theme…")
-      (.addEventListener input "input"
-                         (fn [_]
-                           (swap! state assoc :palette {:open true
-                                                         :query (.-value input)
-                                                         :sel 0})
-                           (render-palette!)))
-      (.addEventListener input "keydown" palette-key!)
-      (.appendChild pal input)
-      (.appendChild pal list)
-      (.appendChild app pal))
-    ;; main row: file panel + editor scroll area
-    (let [row (el "div" "display:flex;flex:1 1 auto;min-height:0;" nil)
-          tree (el "div" "display:none;" nil)
-          sc (el "div" "flex:1 1 auto;overflow:auto;position:relative;cursor:text;" nil)
-          sizer (el "div" "position:relative;min-height:100%;" nil)
-          win (el "div" "" nil)
-          caret (el "div" "display:none;" nil)
-          ta (el "textarea" "position:absolute;opacity:0;" nil)]
-      (set! (.-id tree) "tree")
-      (set! (.-id sc) "scroll")
-      (set! (.-id sizer) "sizer")
-      (set! (.-id win) "win")
-      (set! (.-id caret) "caret")
-      (set! (.-id ta) "input")
+  (let [app (clear! (by-id "app"))
+        head (.-head js/document)]
+    (doseq [[id text] [["base-css" base-css] ["theme-css" ""] ["font-css" ""]]]
+      (.appendChild head (with-id (el "style" nil text) id)))
+    ;; menu bar, header bar
+    (let [menubar (with-id (el "div" nil nil) "menubar")
+          hdr (with-id (el "div" nil nil) "hdr")
+          title-box (with-id (el "div" nil nil) "hdr-title")]
+      (append! title-box
+               (with-id (el "div" nil "Narcis") "title")
+               (with-id (el "div" nil "") "subtitle"))
+      (append! hdr
+               (header-button "btn-files" "≡ Files" "tree/toggle")
+               (header-button "btn-open" "Open…" "file/open")
+               (header-button "btn-new" "+" "tab/new")
+               title-box
+               (el "div" "spacer" nil)
+               (header-button "btn-run" "▶ Run" "run/run")
+               (header-button "btn-stop" "Stop" "run/stop")
+               (header-button "btn-save" "Save…" "file/save"))
+      (append! app menubar hdr))
+    ;; file tree | tabs, find bar, editor, console
+    (let [main (with-id (el "div" nil nil) "main")
+          tree (show! (with-id (el "div" nil nil) "tree") false)
+          work (with-id (el "div" nil nil) "work")
+          tabs (show! (with-id (el "div" nil nil) "tabs") false)
+          findbar (show! (with-id (el "div" nil nil) "findbar") false)
+          find-input (with-id (el "input" nil nil) "find-input")
+          prev-b (el "button" "btn small" "↑")
+          next-b (el "button" "btn small" "↓")
+          close-b (el "button" "btn small" "×")
+          sc (with-id (el "div" nil nil) "scroll")
+          sizer (with-id (el "div" nil nil) "sizer")
+          win (with-id (el "div" nil nil) "win")
+          caret (with-id (el "div" nil nil) "caret")
+          ta (with-id (el "textarea" nil nil) "input")
+          divider (with-id (el "div" nil nil) "divider")
+          console (with-id (el "div" nil nil) "console")
+          con-out (with-id (el "div" nil nil) "console-out")
+          con-row (with-id (el "div" nil nil) "console-row")
+          con-prompt (with-id (el "span" nil "user=> ") "console-prompt")
+          con-in (with-id (el "textarea" nil nil) "console-in")]
+      ;; find bar
+      (set! (.-placeholder find-input) "Find")
+      (set! (.-spellcheck find-input) false)
+      (on! find-input "input" (fn [_] (swap! state assoc-in [:find :query] (.-value find-input))))
+      (on! find-input "keydown"
+           (fn [e]
+             (cond
+               (= (.-key e) "Enter") (do (.preventDefault e) (find-step! (if (.-shiftKey e) :prev :next)))
+               (= (.-key e) "Escape") (close-find!)
+               :else (window-key! e))))
+      (on! prev-b "click" (fn [_] (find-step! :prev)))
+      (on! next-b "click" (fn [_] (find-step! :next)))
+      (on! close-b "click" (fn [_] (close-find!)))
+      (append! findbar find-input prev-b next-b close-b)
+      ;; editor
+      (css! sizer "position:relative;min-height:100%;")
+      (css! caret "display:none;")
+      (css! ta "position:absolute;opacity:0;width:10px;height:10px;")
       (set! (.-spellcheck ta) false)
-      (.appendChild sizer win)
-      (.appendChild sizer caret)
-      (.appendChild sizer ta)
+      (.setAttribute ta "autocapitalize" "off")
+      (.setAttribute ta "autocomplete" "off")
+      (append! sizer win caret ta)
       (.appendChild sc sizer)
-      (.appendChild row tree)
-      (.appendChild row sc)
-      (.appendChild app row)
-      (.addEventListener sc "scroll"
-                         (fn [_]
-                           (let [win (:win @state)
-                                 fv (first-visible)]
-                             (when (and win (or (< fv (+ (:start-line win) 15))
-                                                (> (+ fv (visible-count))
-                                                   (+ (:start-line win) (count (:lines win)) -15))))
-                               (fetch-window! fv))))
-                         #js {:passive true})
-      (.addEventListener sizer "mousedown" on-mousedown)
-      (.addEventListener js/document "mousemove" on-mousemove)
-      (.addEventListener js/document "mouseup" on-mouseup)
-      (.addEventListener js/document "mousedown"
-                         (fn [e]
-                           (when (and (:menu-open @state)
-                                      (not (.contains (by-id "menu-panel") (.-target e)))
-                                      (not (.getAttribute (.-target e) "data-menu")))
-                             (close-menus!))))
-      (.addEventListener ta "keydown" on-keydown)
-      (.addEventListener ta "focus" (fn [_] (swap! state assoc :focused true) (render-caret!)))
-      (.addEventListener ta "blur" (fn [_] (swap! state assoc :focused false) (render-caret!)))
-      (.addEventListener ta "paste"
-                         (fn [e]
-                           (.preventDefault e)
-                           (let [txt (.getData (.-clipboardData e) "text")]
-                             (when (seq txt) (do-op! {:op :insert-text :text txt})))))
-      (.addEventListener ta "copy"
-                         (fn [e]
-                           (when-let [[a b] (:sel @state)]
-                             (when-let [txt (selection-text a b)]
-                               (.preventDefault e)
-                               (.setData (.-clipboardData e) "text/plain" txt)))))
-      (.addEventListener ta "cut"
-                         (fn [e]
-                           (when-let [[a b] (:sel @state)]
-                             (when-let [txt (selection-text a b)]
-                               (.preventDefault e)
-                               (.setData (.-clipboardData e) "text/plain" txt)
-                               (do-op! {:op :insert-text :text ""}))))))
+      ;; console
+      (set! (.-rows con-in) 1)
+      (set! (.-spellcheck con-in) false)
+      (.setAttribute con-in "autocapitalize" "off")
+      (append! con-row con-prompt con-in)
+      (append! console con-out con-row)
+      (append! work tabs findbar sc divider console)
+      (append! main tree work)
+      (.appendChild app main)
+      ;; editor events
+      (on! sc "scroll"
+           (fn [_]
+             (close-complete!)
+             (close-doc!)
+             (let [win (:win @state)
+                   fv (first-visible)]
+               (when (and win (or (< fv (+ (:start-line win) 15))
+                                  (> (+ fv (visible-count))
+                                     (+ (:start-line win) (count (:lines win)) -15))))
+                 (fetch-window! fv)))))
+      (on! sizer "mousedown" on-mousedown)
+      (on! js/document "mousemove" on-mousemove)
+      (on! js/document "mouseup" on-mouseup)
+      (on! ta "keydown" on-keydown)
+      (on! ta "focus" (fn [_] (swap! state assoc :focused true) (render-lines!) (render-caret!)))
+      (on! ta "blur" (fn [_] (swap! state assoc :focused false) (render-lines!) (render-caret!)))
+      (on! ta "paste"
+           (fn [e]
+             (.preventDefault e)
+             (let [txt (.getData (.-clipboardData e) "text")]
+               (when (seq txt) (do-op! {:op :insert-text :text txt})))))
+      (on! ta "copy"
+           (fn [e]
+             (when-let [[a b] (:sel @state)]
+               (when-let [txt (selection-text a b)]
+                 (.preventDefault e)
+                 (.setData (.-clipboardData e) "text/plain" txt)))))
+      (on! ta "cut"
+           (fn [e]
+             (when-let [[a b] (:sel @state)]
+               (when-let [txt (selection-text a b)]
+                 (.preventDefault e)
+                 (.setData (.-clipboardData e) "text/plain" txt)
+                 (do-op! {:op :insert-text :text ""})))))
+      ;; console events
+      (on! con-in "keydown" (fn [e] (when-not (window-key! e) (console-key! e))))
+      (on! con-in "input" (fn [_] (grow-console-input!)))
+      (on! console "mouseup"
+           (fn [_]
+             ;; a click in the console types at the prompt, unless it selected text
+             (when (str/blank? (str (.getSelection js/window)))
+               (focus-console!))))
+      ;; the divider resizes the console
+      (on! divider "mousedown"
+           (fn [e]
+             (.preventDefault e)
+             (let [move (fn [ev]
+                          (let [rect (.getBoundingClientRect work)
+                                h (- (.-bottom rect) (.-clientY ev))
+                                h (max 40 (min (- (.-height rect) 120) h))]
+                            (swap! state assoc :console-h h)
+                            (set! (.-height (.-style console)) (str h "px"))))
+                   up (fn up [_]
+                        (.removeEventListener js/document "mousemove" move)
+                        (.removeEventListener js/document "mouseup" up)
+                        (refresh-window!))]
+               (.addEventListener js/document "mousemove" move)
+               (.addEventListener js/document "mouseup" up))))
+      (set! (.-height (.-style console)) "32vh"))
+    ;; status bar
+    (let [status (with-id (el "div" nil nil) "status")]
+      (append! status
+               (with-id (el "span" nil "Ready") "status-msg")
+               (with-id (el "span" nil "") "status-pos"))
+      (.appendChild app status))
+    ;; overlays: menus, palette, completion, quick doc, dialog
+    (let [body (.-body js/document)
+          panel (show! (with-id (el "div" "menu-panel" nil) "menu-panel") false)
+          sub (show! (with-id (el "div" "menu-panel" nil) "menu-sub") false)
+          pal (show! (with-id (el "div" "menu-panel" nil) "palette") false)
+          pal-in (with-id (el "input" nil nil) "palette-input")
+          pal-list (with-id (el "div" nil nil) "palette-list")
+          comp (show! (with-id (el "div" nil nil) "completion") false)
+          quick (show! (with-id (el "div" nil nil) "quickdoc") false)
+          back (show! (with-id (el "div" nil nil) "dialog-back") false)
+          dialog (with-id (el "div" nil nil) "dialog")]
+      (set! (.-placeholder pal-in) "Type a command or a theme…")
+      (on! pal-in "input"
+           (fn [_]
+             (swap! state assoc :palette {:open true :query (.-value pal-in) :sel 0})
+             (render-palette!)))
+      (on! pal-in "keydown" palette-key!)
+      (append! pal pal-in pal-list)
+      (append! comp
+               (with-id (el "div" nil nil) "completion-list")
+               (with-id (el "div" nil nil) "completion-doc"))
+      (.appendChild back dialog)
+      (on! back "mousedown" (fn [e] (when (= (.-target e) back) (close-dialog!))))
+      (append! body panel sub pal comp quick back)
+      (on! js/document "mousedown"
+           (fn [e]
+             (let [t (.-target e)]
+               (when (and (:menu-open @state)
+                          (not (.contains panel t))
+                          (not (.contains sub t))
+                          (not (and (.-getAttribute t) (.getAttribute t "data-menu"))))
+                 (close-menus!))
+               (when (and (get-in @state [:palette :open]) (not (.contains pal t)))
+                 (close-palette!))))))
+    ;; keys that reach nothing focused still run window commands
+    (on! js/document "keydown"
+         (fn [e]
+           (when (= (.-target e) (.-body js/document))
+             (when-not (window-key! e)
+               (when (and (= (.-key e) "Escape") (:dialog @state)) (close-dialog!))))))
+    (on! js/window "resize" (fn [_] (refresh-window!)))
     ;; :auto follows the system while it is the stored choice
     (when (.-matchMedia js/window)
-      (.addEventListener (.matchMedia js/window "(prefers-color-scheme: dark)") "change"
-                         (fn [_]
-                           (when (= "auto" (:theme-choice @state))
-                             (apply-theme-choice! "auto")))))
-  ))
+      (on! (.matchMedia js/window "(prefers-color-scheme: dark)") "change"
+           (fn [_]
+             (when (= "auto" (:theme-choice @state))
+               (apply-theme-choice! "auto")))))))
 
 (defn ^:export init []
   (build-dom!)
-  (reset! metrics {:char-w (char-w) :gutter-w 56})
-  (-> (get-edn "/api/themes")
+  (set! (.-textContent (by-id "font-css"))
+        (str ":root{--mono-px:" (font-px) "px;--line-h:" (line-h) "px;}"))
+  (reset! metrics {:char-w (measure-char-w)})
+  (-> (get-edn "/api/menus")
+      (.then (fn [menus]
+               (swap! state assoc :menus (with-own-items menus))
+               (build-menus!)
+               (get-edn "/api/themes")))
       (.then (fn [th]
                (swap! state assoc :themes (:themes th) :theme-choice (:choice th))
                (get-edn "/api/state")))
@@ -1109,11 +1917,13 @@
                (let [active (:active st)
                      b (get (:buffers st) active)]
                  (swap! state assoc :tabs (:tabs st) :path active
+                        :project (:project st) :runtime (or (:runtime st) "Jolt")
                         :caret (or (:cursor b) 0) :sel (:sel b)
                         :theme-choice (or (:theme st) (:theme-choice @state))))
+               (render-title!)
                (get-edn (str "/api/theme?name=" (resolved-name (:theme-choice @state))))))
       (.then (fn [payload]
                (apply-theme! payload)
-               (when (:path @state)
-                 (fetch-window! 0))
-               (.focus (by-id "input"))))))
+               (poll-console!)
+               (fetch-window! 0)
+               (focus-editor!)))))
