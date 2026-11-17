@@ -63,3 +63,36 @@ lane/narcis-s3-joined, then
 `jolt run -m narcis.launcher --dir <data> --port 8377 --file <path>`
 — the page that opens is the actual editor now (caret, selection,
 structural editing), its state in the Eve disk atom.
+
+## App surface (2026-11-17, coordinator)
+
+The editor page is now the whole app surface, not just an editing pane:
+
+- **Menus** — a menu bar (File / Edit / View / Search / Theme / Help)
+  whose items are one command registry shared with the palette; every
+  item runs a real op. Jonquil's menu shape, only the commands Narcis
+  has (Run stays out until the S4 evaluator lands).
+- **Theme selection** — the Theme menu lists all of jonquil.theme's
+  choices including Auto (resolved against the OS light/dark setting,
+  followed live). The choice is stored server-side in the editor atom
+  (one swap), so it persists across restarts and is shared by every
+  client; Ctrl+Shift+M still cycles. New: buffer :theme,
+  ops :theme/use, GET /api/themes.
+- **Command palette** — Ctrl+Shift+P / Ctrl+K: every command plus
+  "Use theme: X" entries (theme/palette-entries, now consumed).
+- **Find bar** — Ctrl+F, Ctrl+G / Ctrl+Shift+G step; new ops
+  :find-next/:find-prev select the match server-side (bounded by the
+  same exact-text limit as rename).
+- **Tabs** — a × on every tab; File > New Tab (new op :new) and
+  Save As… (new op :save-as) round out the file commands.
+- **File panel** — View > File Tree: a directory browser over the new
+  GET /api/list; click a file to open it.
+
+Gates (jolt, Eve @84bfc7c8): editor gate extended with 10 app-surface
+checks over HTTP — **27/27** (themes endpoint, :theme/use, theme in
+state, theme still set after kill -9 + relaunch, find-next, list,
+new tab, save-as writes the file); new test/narcis/app_test.clj
+**3 tests / 34 assertions** (theme persistence incl. :auto resolution,
+new/save-as, find wrap both directions); view 4/15, ops 2/26,
+corpus 38/644, buffer gate — all green. web/app.js rebuilt
+(1,724,905 bytes).

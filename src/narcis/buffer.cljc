@@ -102,7 +102,7 @@
                          "this store is on the file arm (host cannot run Eve — W2)")
                     {:impl (:impl store)})))
   {:store store
-   :editor (store/open-atom store editor-name {:tabs [] :active nil :rev 0})
+   :editor (store/open-atom store editor-name {:tabs [] :active nil :rev 0 :theme nil})
    :buffers (atom {})})
 
 (defn- buffer-handle [ed path]
@@ -143,7 +143,8 @@
                                      :redo (arr-vec (-redo b))}])))
                     (:tabs ev))
      :tabs (:tabs ev)
-     :active (:active ev)}))
+     :active (:active ev)
+     :theme (:theme ev)}))
 
 (defn buffer [ed path]
   (get-in (state ed) [:buffers path]))
@@ -154,6 +155,21 @@
 (defn selection [ed path] (:sel (buffer ed path)))
 (defn tabs [ed] (:tabs (editor-value ed)))
 (defn active [ed] (:active (editor-value ed)))
+
+(defn theme-choice
+  "The editor's theme choice (a narcis.theme choice keyword, :auto
+   included), or nil when none was ever chosen."
+  [ed]
+  (:theme (editor-value ed)))
+
+(defn set-theme!
+  "Store choice as the editor's theme choice: one swap! on the editor
+   atom, so the choice is durable in the store and every client reads
+   the same one from state."
+  [ed choice]
+  (store/atom-swap! (:editor ed) (fn [s] (-> s
+                                             (assoc :theme choice)
+                                             (update :rev (fnil inc 0))))))
 (defn undo-depth [ed path] (count (:undo (buffer ed path))))
 (defn redo-depth [ed path] (count (:redo (buffer ed path))))
 

@@ -78,6 +78,26 @@ op "{:op :set-caret :path \"$FIXTURE\" :offset 0}" > /dev/null
 op "{:op :type-char :path \"$FIXTURE\" :ch \"z\"}" > /dev/null
 [ "$(line0)" = "z$ORIG_LINE0" ]; ok $? "pre-kill-edit"
 
+# app surface (menus/palette/find/tree drive these same endpoints+ops)
+THEMES=$(curl -fsS "http://127.0.0.1:$PORT/api/themes")
+contains "$THEMES" ':name "dracula"'; ok $? "themes-endpoint"
+contains "$THEMES" ':name "auto"'; ok $? "themes-has-auto"
+RESP=$(op "{:op :theme/use :name \"dracula\"}")
+contains "$RESP" ':theme "dracula"'; ok $? "theme-use-op"
+STATE=$(curl -fsS "http://127.0.0.1:$PORT/api/state")
+contains "$STATE" ':theme "dracula"'; ok $? "state-theme-dracula"
+RESP=$(op "{:op :find-next :path \"$FIXTURE\" :query \"fn-100\"}")
+contains "$RESP" ":match"; ok $? "find-next-match"
+LIST=$(curl -fsS "http://127.0.0.1:$PORT/api/list?dir=$DATA")
+contains "$LIST" "fixture.clj"; ok $? "list-endpoint"
+RESP=$(op "{:op :new}")
+contains "$RESP" ':path "untitled"'; ok $? "new-tab"
+RESP=$(op "{:op :save-as :path \"untitled\" :new-path \"$DATA/saved-as.clj\"}")
+contains "$RESP" "saved-as.clj"; ok $? "save-as-op"
+[ -f "$DATA/saved-as.clj" ]; ok $? "save-as-file-written"
+op "{:op :close :path \"$DATA/saved-as.clj\"}" > /dev/null
+op "{:op :activate :path \"$FIXTURE\"}" > /dev/null
+
 kill -9 -"$SRV" 2>/dev/null; sleep 2
 PROBE=$(JOLT_TIMEOUT=300 bash "$ROOT/scripts/jolt-run.sh" narcis.editor-probe "$DATA/db" "$FIXTURE" 2>/dev/null)
 echo "$PROBE" | grep "^PROBE"
@@ -91,6 +111,8 @@ STATE=$(cat "$DATA/state.out")
 [ "$(field "$STATE" undo)" = "1" ]; ok $? "relaunch-undo-depth-1"
 op "{:op :undo :path \"$FIXTURE\"}" > /dev/null
 [ "$(line0)" = "$ORIG_LINE0" ]; ok $? "undo-across-restart"
+STATE=$(curl -fsS "http://127.0.0.1:$PORT/api/state")
+contains "$STATE" ':theme "dracula"'; ok $? "theme-persists-restart"
 kill -9 -"$SRV" 2>/dev/null
 
 echo "EDITOR-GATE SUMMARY pass=$PASS fail=$FAIL data=$DATA"

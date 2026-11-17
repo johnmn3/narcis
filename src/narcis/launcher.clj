@@ -96,10 +96,10 @@
 ;; ---------------------------------------------------------------------------
 ;; API
 
-(defn- state-payload [ed theme-name]
+(defn- state-payload [ed theme-atom]
   {:tabs (buffer/tabs ed)
    :active (buffer/active ed)
-   :theme theme-name
+   :theme (name (or (buffer/theme-choice ed) (:name @theme-atom)))
    :buffers (into {}
                   (map (fn [p]
                          (let [root (buffer/buffer-root ed p)]
@@ -126,9 +126,33 @@
   (locking lock
     (try
       (case path
-        "/api/state" [200 (pr-str (state-payload ed (name (:name @theme-atom)))) "text/plain; charset=utf-8"]
+        "/api/state" [200 (pr-str (state-payload ed theme-atom)) "text/plain; charset=utf-8"]
         "/api/theme" (let [t (theme/theme (keyword (or (:name query) (name (:name @theme-atom)))))]
                        [200 (pr-str (view/theme-payload t)) "text/plain; charset=utf-8"])
+        "/api/themes" [200 (pr-str {:choice (name (or (buffer/theme-choice ed) (:name @theme-atom)))
+                                    :themes (mapv (fn [k]
+                                                    {:name (name k)
+                                                     :label (theme/label k)
+                                                     :dark? (when (not= k :auto)
+                                                              (:dark? (theme/theme k)))})
+                                                  theme/choice-names)})
+                        "text/plain; charset=utf-8"]
+        "/api/list" (let [dir (File. (or (:dir query)
+                                         (some-> (buffer/active ed) (File.) (.getParent))
+                                         "."))
+                          dir (.getCanonicalFile dir)]
+                      (if (.isDirectory dir)
+                        [200 (pr-str {:dir (.getPath dir)
+                                      :parent (some-> (.getParentFile dir) (.getPath))
+                                      :entries (mapv (fn [^File f]
+                                                       {:name (.getName f) :dir? (.isDirectory f)})
+                                                     (sort-by (fn [^File f]
+                                                                [(if (.isDirectory f) 0 1)
+                                                                 (str/lower-case (.getName f))])
+                                                              (.listFiles dir)))})
+                         "text/plain; charset=utf-8"]
+                        [404 (pr-str {:ok false :error (str "not a directory: " (.getPath dir))})
+                         "text/plain; charset=utf-8"]))
         "/api/window" (let [p (or (:path query) (buffer/active ed))
                             start (Integer/parseInt (or (:start query) "0"))
                             count (Integer/parseInt (or (:count query) "100"))]
@@ -198,7 +222,11 @@
         web-dir (get m :web-dir "web")
         st (store/open-store {:dir dir :name "narcis/buffers"})
         ed (buffer/open-editor st)
-        theme-atom (atom (theme/theme (keyword (get m :theme (name theme/default-theme)))))]
+        _ (when-let [t (:theme m)]
+            (when (theme/choice? (keyword t))
+              (buffer/set-theme! ed (keyword t))))
+        theme-atom (atom (theme/theme (or (buffer/theme-choice ed)
+                                          (keyword (get m :theme (name theme/default-theme))))))]
     (println "NARCIS-S0 store-impl:" (:impl st))
     (when (:eve-error st)
       (println "NARCIS-S0 eve-error:" (:eve-error st)))

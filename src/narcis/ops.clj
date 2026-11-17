@@ -14,6 +14,7 @@
             [narcis.edit :as edit]
             [narcis.nav :as nav]
             [narcis.rope :as rope]
+            [narcis.theme :as theme]
             [narcis.view :as view]
             [clojure.string :as str]))
 
@@ -103,6 +104,45 @@
 
 (declare rope-op clamp-caret)
 
+(defn- find-in-text
+  "Index of query in text for a find from offset `from`: direction
+   :next searches forward, :prev backward; wraps once when wrap?.
+   Returns [start end] or nil."
+  [text query from dir wrap?]
+  (let [q (count query)]
+    (if (zero? q)
+      nil
+      (case dir
+        :next (or (when-let [i (str/index-of text query (min (count text) (max 0 from)))]
+                    [i (+ i q)])
+                  (when wrap?
+                    (when-let [i (str/index-of text query)] [i (+ i q)])))
+        :prev (let [from (min (count text) (max 0 from))]
+                ;; lastIndexOf's start is a match-START bound: from - q
+                ;; asks for the last match ending at or before from
+                ;; (negative when none can — Java answers -1).
+                (or (when-let [i (str/last-index-of text query (- from q))]
+                      [i (+ i q)])
+                    (when wrap?
+                      (when-let [i (str/last-index-of text query)] [i (+ i q)]))))))))
+
+(defn- find-op [ed path msg dir]
+  (let [root (buffer/buffer-root ed path)
+        query (:query msg)]
+    (cond
+      (or (nil? query) (zero? (count query))) {:ok false :error "empty find query"}
+      (> (rope/chars root) view/exact-limit) {:ok false :error "find needs the whole text; buffer is over the exact limit"}
+      :else
+      (let [text (rope/to-string root)
+            sel (buffer/selection ed path)
+            caret (buffer/cursor ed path)
+            from (or (:from msg)
+                     (case dir :next caret :prev (if sel (first sel) caret)))
+            m (find-in-text text query from dir (not (false? (:wrap msg))))]
+        (if m
+          (assoc (move-caret! ed path (second m) m) :match m)
+          {:ok false :error (str "not found: " query)})))))
+
 (defn apply-op
   "Apply one op message to the editor. See the ns docstring for the
    result shape. Unknown ops and inapplicable structural ops answer
@@ -110,7 +150,7 @@
    errors, which propagate."
   [ed {:keys [op path] :as msg}]
   (let [path (or path (buffer/active ed))]
-    (if (and (not (#{:open :activate} op)) (nil? (buffer/buffer ed path)))
+    (if (and (not (#{:open :activate :new :theme/use} op)) (nil? (buffer/buffer ed path)))
       {:ok false :error (str "no such buffer: " path)}
       (do
         ;; A message may carry the client's current :caret/:sel (the
@@ -127,6 +167,31 @@
         :activate (do (buffer/activate! ed path) (result ed path))
         :close (do (buffer/close-buffer! ed path)
                    (assoc (result ed (buffer/active ed)) :path (buffer/active ed)))
+        :new (let [p (first (filter #(nil? (buffer/buffer ed %))
+                                    (map (fn [i] (if (zero? i) "untitled" (str "untitled-" (inc i))))
+                                         (range 100))))]
+               (buffer/open-buffer! ed p "")
+               (assoc (result ed p) :path p))
+        :theme/use (let [choice (keyword (:name msg))]
+                     (if (theme/choice? choice)
+                       (do (buffer/set-theme! ed choice)
+                           {:ok true :theme (name choice)
+                            :resolved (name (theme/resolve-choice choice (boolean (:system-dark msg))))
+                            :rev (buffer/rev ed)})
+                       {:ok false :error (str "unknown theme: " (:name msg))}))
+        :save-as (let [np (:new-path msg)
+                       root (buffer/buffer-root ed path)]
+                   (cond
+                     (or (nil? np) (str/blank? np)) {:ok false :error "save-as needs a new path"}
+                     (= np path) {:ok false :error "save-as path is the current path"}
+                     (some? (buffer/buffer ed np)) {:ok false :error (str "already open: " np)}
+                     (> (rope/chars root) 50000000) {:ok false :error "save over 50M chars not supported in the spike"}
+                     :else (do (spit np (rope/to-string root))
+                               (buffer/open-buffer! ed np root)
+                               (buffer/close-buffer! ed path)
+                               (assoc (result ed np) :path np))))
+        :find-next (find-op ed path msg :next)
+        :find-prev (find-op ed path msg :prev)
 
         :insert-text (plain-insert ed path (:text msg))
         :type-char (type-char ed path (first (:ch msg)))
