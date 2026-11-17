@@ -9,7 +9,7 @@
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 source "$ROOT/scripts/hosts.sh"
-export TMPDIR=${TMPDIR:-$HOME/workspace/narcis-s3-lane/tmp}
+export TMPDIR=${TMPDIR:-/tmp}
 mkdir -p "$TMPDIR"
 DATA=$(mktemp -d "$TMPDIR/narcis-editor-gate.XXXXXX")
 PORT=${EDITOR_GATE_PORT:-8391}

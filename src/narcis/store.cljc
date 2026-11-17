@@ -16,7 +16,7 @@
         {:buffers {<buffer-name> {:current <value> :versions [...]}}}
       This arm remains ONLY for hosts where Eve genuinely cannot run
       yet — today bb, whose SCI blocks the ByteBuffer put Eve's vector
-      path needs (W2, see REPORT.md) — and this seam is the one place
+      path needs — and this seam is the one place
       that says so. It holds EDN-representable values (the launcher's
       text buffers); eve.deftype rope values require the Eve arm —
       narcis.buffer says so when opened on a file store.

@@ -9,7 +9,7 @@ set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 source "$ROOT/scripts/hosts.sh"
 export PATH="$BIN:$PATH"
-export TMPDIR=${TMPDIR:-$HOME/workspace/narcis-s2-lane/tmp}
+export TMPDIR=${TMPDIR:-/tmp}
 mkdir -p "$TMPDIR"
 CP=$(cd "$EVE_RELEASE" && timeout 120 bb classpath jolt 2>/dev/null | tail -n 1)
 if [ -z "$CP" ]; then echo "jolt-run: empty Eve jolt classpath" >&2; exit 1; fi

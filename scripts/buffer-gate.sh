@@ -9,7 +9,7 @@ set -u
 HOST=${1:-jolt}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 source "$ROOT/scripts/hosts.sh"
-export TMPDIR=${TMPDIR:-$HOME/workspace/narcis-s2-lane/tmp}
+export TMPDIR=${TMPDIR:-/tmp}
 mkdir -p "$TMPDIR"
 DATA=$(mktemp -d "$TMPDIR/narcis-buffer-gate.XXXXXX")
 

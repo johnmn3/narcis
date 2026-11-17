@@ -4,10 +4,7 @@
         ;; lives at that repo's root; sha = tag v0.9.3.2, the 0.9.3.2
         ;; release merge commit).
         eve/eve {:git/url "https://github.com/SeniorCareMarket/eve"
-                 :git/sha "e6cddc906da3620b912287f30046ffb67058ac4e"}
-        ;; cohost — johnmn3/cohost.cljc main tip as cloned 2026-11-16.
-        cohost/cohost {:git/url "https://github.com/johnmn3/cohost.cljc.git"
-                       :git/sha "99dc255d22997009f4b5d3d2a93469412e3010d8"}}
+                 :git/sha "e6cddc906da3620b912287f30046ffb67058ac4e"}}
  :aliases
  {:test {:extra-paths ["test"]}
   :bench {:extra-paths ["bench"]}

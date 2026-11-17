@@ -15,8 +15,8 @@
    A deftype value must sit at an atom's root: nested inside a
    collection value it would be frozen by its plain field view, and
    a field held by reference (a rope's children array) cannot be
-   packed (measured at Eve @84bfc7c8 — see the rope-deftype lane
-   REPORT.md). At the root the value is owned, never packed.
+   packed (measured at Eve @84bfc7c8). At the root the value is
+   owned, never packed.
 
    Values enter by swap!. The versions atoms hold plain values (the
    launcher's hello text); a buffer's document is built inside its own
@@ -85,8 +85,8 @@
              ;; the journal file. An editor commits on every keystroke, and
              ;; with the journal 600 keystrokes took 73 s on Jolt at this
              ;; pin — one commit in eight over 50 ms, some over a second —
-             ;; against 5.5 s without it, none over 40 ms (REPORT.md has
-             ;; the runs). domain-opts are eve.atom/persistent-atom-domain's
+             ;; against 5.5 s without it, none over 40 ms.
+             ;; domain-opts are eve.atom/persistent-atom-domain's
              ;; own (:durable? :journal? :journal-batch ...), for an opener
              ;; that wants otherwise.
              _ (apply ea/persistent-atom-domain

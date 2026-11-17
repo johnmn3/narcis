@@ -1,7 +1,0 @@
-NARCIS-S0 store-impl: :eve
-NARCIS-S0 seeded hello buffer
-NARCIS-S0 buffer-versions: 1
-NARCIS-S0 buffer-text-ok: true
-NARCIS-S0 auto-open attempted: xdg-open http://127.0.0.1:8399/
-NARCIS-S0 requests-served: 0
-NARCIS-S0 done

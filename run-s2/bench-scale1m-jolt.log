@@ -1,5 +1,0 @@
-BENCH build-1e6-lines: 990.7 ms
-BENCH build-1e6: lines= 1000001 chars= 38888890 height= 4
-BENCH ops-2000-at-1e6: 333.0 ms
-BENCH window-50-at-1e6: 1.8 ms
-BENCH scale1m PASS

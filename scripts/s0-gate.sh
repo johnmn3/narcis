@@ -2,7 +2,7 @@
 # S0 gate: launcher in two separate processes on one data dir.
 # Process 1 seeds the hello buffer and serves the page (we curl it).
 # Process 2 must find the buffer by name (reopen) and report text ok.
-# Usage: s0-gate.sh bb|jolt|jvm|bb-eve   (impl differs per host; see REPORT)
+# Usage: s0-gate.sh bb|jolt|jvm|bb-eve   (impl differs per host)
 set -u
 HOST=${1:-bb}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
