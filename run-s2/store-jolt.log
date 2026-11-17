@@ -1,0 +1,9 @@
+== store gate host=jolt data=/home/hatch/workspace/narcis-s2-lane/tmp/narcis-store-gate.MYc35t
+STORE impl: :eve
+STORE-WRITE versions: 2
+STORE-TEST write PASS
+STORE impl: :eve
+STORE-READ reopen-by-name OK; current + version-0 texts verified
+STORE-TEST read PASS
+narcis
+== data dir kept at /home/hatch/workspace/narcis-s2-lane/tmp/narcis-store-gate.MYc35t
