@@ -1,11 +1,11 @@
-(ns narcis.edit-rope-test
-  "Narcis's own tests for the rope layer of narcis.edit: every jonquil
-   op driven through the rope must produce exactly the text and caret
+(ns narcis.edit-doc-test
+  "Narcis's own tests for the document layer of narcis.edit: every jonquil
+   op driven through a document must produce exactly the text and caret
    the lifted text oracle (jonquil's apply-edits over the op result)
    produces on the same snapshot. Plus :form scoping and a
    narcis.buffer integration walk (op -> one undo step -> undo/redo)."
   (:require [clojure.test :refer [deftest is testing]]
-            [narcis.rope :as rope]
+            [narcis.text :as text]
             [narcis.edit :as edit]
             [narcis.buffer :as buf]
             [narcis.store :as store]))
@@ -19,10 +19,12 @@
   (let [r (op-fn (snap text caret sel))]
     (when r {:text (edit/apply-edits text (:edits r)) :caret (:caret r)})))
 
-(defn- via-rope
-  [text caret sel op-fn scope]
-  (let [r (edit/run-op (rope/from-string text) caret sel op-fn scope)]
-    (when r {:text (rope/to-string (:rope r)) :caret (:caret r)})))
+(defn- via-doc
+  [s caret sel op-fn scope]
+  (text/with-heap-domain
+    (fn []
+      (let [r (edit/run-op (text/from-string s) caret sel op-fn scope)]
+        (when r {:text (text/to-string (:doc r)) :caret (:caret r)})))))
 
 (def cases
   ;; [text caret sel op-fn label]
@@ -41,18 +43,18 @@
    ["(defn foo [] (foo))" 6 nil (fn [s] (edit/rename s "bar")) "rename"]
    ["(a [b] c)" 3 nil (fn [s] (edit/smart-enter s)) "smart-enter nested"]])
 
-(deftest rope-layer-matches-oracle-test
+(deftest doc-layer-matches-oracle-test
   (doseq [[text caret sel op-fn label] cases]
     (testing label
       (let [o (oracle text caret sel op-fn)
-            r (via-rope text caret sel op-fn :all)]
+            r (via-doc text caret sel op-fn :all)]
         (is (= (some? o) (some? r)) "applicability agrees")
         (when o
           (is (= (:text o) (:text r)) "text agrees")
           (is (= (:caret o) (:caret r)) "caret agrees"))))))
 
-(deftest apply-edits-to-rope-test
-  (testing "random ascending edit sets: rope result = text oracle"
+(deftest apply-edits-to-doc-test
+  (testing "random ascending edit sets: document result = text oracle"
     (let [rng (atom 4242)
           rnd (fn [n] (let [s (swap! rng (fn [x] (mod (+ (* x 1103515245) 12345) 2147483648)))] (if (zero? n) 0 (mod s n))))]
       (dotimes [i 60]
@@ -61,15 +63,19 @@
               cuts (sort (repeatedly (* 2 k) #(rnd (inc (count text)))))
               edits (mapv (fn [[a b]] [a (max a b) (str "X" i)]) (partition 2 cuts))
               expected (edit/apply-edits text edits)
-              actual (rope/to-string (edit/apply-edits-to-rope (rope/from-string text) edits))]
+              actual (text/with-heap-domain
+                       (fn [] (text/to-string (edit/apply-edits-to-doc (text/from-string text) edits))))]
           (is (= expected actual)))))))
 
 (deftest form-scope-test
   (testing "smart-enter inside the second top-level form leaves the first form byte-identical"
     (let [text "(defn a [] 1)\n(defn b [x]\n  (+ x 1))"
           caret (dec (count text))
-          r (edit/smart-enter-rope (rope/from-string text) caret nil)
-          out (rope/to-string (:rope r))
+          out (text/with-heap-domain
+                (fn [] (let [doc (text/from-string text)
+                             r (edit/smart-enter-doc doc (edit/region-of doc) caret nil)]
+                         (when r (text/to-string (:doc r))))))
+          r out
           expected (:text (oracle text caret nil (fn [s] (edit/smart-enter s))))]
       (is (some? r))
       (is (.startsWith out "(defn a [] 1)\n"))
@@ -78,16 +84,16 @@
 (deftest buffer-integration-test
   (testing "an edit op through narcis.buffer is ONE undo step; undo/redo walk it"
     (let [dir (str (or (System/getenv "TMPDIR") (System/getProperty "java.io.tmpdir")) "/narcis-edit-int-" (System/nanoTime))
-          st (store/open-store {:dir dir :name "narcis/buffers"})
+          st (store/open-store {:dir dir :name store/store-name})
           ed (buf/open-editor st)
           path "x.clj"
           text "(defn f [x]\n  (+ x 1))"]
       (buf/open-buffer! ed path text)
-      (let [root (buf/buffer-root ed path)
-            caret (dec (count text))
-            r (edit/smart-enter-rope root caret nil)
+      (let [caret (dec (count text))
             expected (:text (oracle text caret nil (fn [s] (edit/smart-enter s))))]
-        (buf/edit-buffer! ed path (:rope r) (:caret r))
+        ;; the op runs inside the buffer atom's swap: one swap, one undo step
+        (buf/edit! ed path (fn [doc _ _ _]
+                             (edit/smart-enter-doc doc (edit/region-of doc) caret nil)))
         (is (= expected (buf/buffer-text ed path)))
         (is (= 1 (buf/undo-depth ed path)) "one op = one undo step")
         (is (true? (buf/undo! ed path)))

@@ -1,14 +1,108 @@
 # Narcis
 
-A DrRacket-style Clojure IDE ported from [jonquil](https://github.com/b12n-oss/jonquil)
-to idiomatic Eve: no host-specific app code, runnable on every Eve host,
-rendered as cljs into an auto-opening HTML viewer, with editor and buffer
-state living in Eve disk atoms.
+A DrRacket-style Clojure IDE — [Jonquil](https://github.com/b12n-oss/jonquil)
+ported to Eve: a Definitions editor above an Interactions console, Run, and a
+Stop that really stops, with the editor's state living in Eve disk atoms and
+the window drawn in a browser page the launcher serves.
 
-The buffer is a new Eve rope (`narcis.rope`): a fanout-32 B-tree of lines,
-dual-indexed by character offset and line number, whose roots live in a
-disk atom. Every edit is an O(log n) path-copy to a new persistent root —
-buffer versions are durable, and a billion-line file opens by chunk-ingest
-rather than by loading.
+- **The buffer is an `eve.text` document** (CodeMirror 6's `Text` as Eve data:
+  a B-tree of lines, indexed by character offset and by line number). It lives
+  at the root of the buffer's own Eve atom. Every edit is one `swap!` that
+  copies one path of the tree and shares the rest, so every earlier version is
+  still there: undo is a root swap, and it works across a restart.
+- **The page is a viewport.** It fetches the lines on screen, with their paint
+  spans, and sends each edit back as a message. It never holds the text, so a
+  file's size is not the page's problem.
+- **The window is Jonquil's**: its header bar (Files, Open…, +, the file's
+  name, Run, Stop, Save…), its menus (Jonquil's own menu data, narrowed to the
+  commands Narcis has), its file tree and tabs, its console styles and themes.
+- **The language core is Jonquil's too**, lifted with its tests: the
+  tokenizer and bracket analysis, the editing ops, structural editing
+  (slurp, barf, raise, splice, wrap, kill, moves by form), the formatter,
+  completion and documentation lookup, the console's decisions, and the
+  evaluator behind Run and Stop. `UPSTREAM.md` says what came from where.
 
-Status: S0+S1 spike (jolt first). See STATUS.md and REPORT.md.
+## Running it
+
+Narcis runs on [Jolt](https://github.com/jolt-lang/jolt) (v0.8.23 or later)
+over Eve's own Jolt classpath. You need a checkout of Eve's 0.9.3.2 release
+line (`johnmn3/atom.broker`, branch `release/eve-0.9.3.2`; Narcis is verified
+at `84bfc7c8`) and `bb` on your `PATH` (Eve's classpath task runs on it).
+
+```bash
+git clone https://github.com/johnmn3/narcis.git ~/narcis-app
+```
+
+```bash
+cd ~/narcis-app && git switch lane/narcis-s3-joined
+```
+
+```bash
+EVE_RELEASE=<eve-checkout> TMPDIR=/tmp bash scripts/jolt-run.sh narcis.launcher --dir ~/narcis-app/data --port 8377 --file <path-to-a-clj-file>
+```
+
+The launcher opens `http://127.0.0.1:8377/` in your browser (open it yourself
+if it does not). `--project <dir>` names the folder the file tree shows; it
+defaults to the file's folder. `--theme <name>` sets the theme on first start.
+The page's script (`web/app.js`) is committed prebuilt;
+`scripts/build-web.sh` rebuilds it from `web/narcis/web.cljs` (it needs the
+`clojure` CLI).
+
+A store made by an earlier Narcis (its buffers were `narcis.rope` trees) is
+not read: this layout's store has its own name inside `--dir`, and the old
+files are left as they are.
+
+## Using it
+
+| | |
+|---|---|
+| Run the Definitions | **▶ Run**, F5 or Ctrl/Cmd+R |
+| Stop a running program | **Stop**, or Esc |
+| Run the form at the caret / the selection or line | Ctrl/Cmd+Enter / Ctrl/Cmd+E |
+| The console's prompt | type, Enter; Shift+Enter or an open bracket continues the input; ↑ ↓ recall |
+| Switch between editor and console | F6 |
+| Complete the word, with its doc beside | Ctrl+Space |
+| Docs for the symbol | Ctrl+Q or Shift+F1 |
+| Structural editing | Edit ▸ Structure; Ctrl+→ / Ctrl+← slurp and barf, Ctrl+Alt+arrows move by form, Alt+↑ / Alt+↓ grow and shrink the selection |
+| Format the buffer / the selection | Ctrl/Cmd+Shift+F / Ctrl/Cmd+Alt+F |
+| Find | Ctrl/Cmd+F, then Enter / Shift+Enter, Ctrl/Cmd+G |
+| Rename the symbol | F2 |
+| File tree | **≡ Files** or Ctrl/Cmd+Shift+E |
+| Every command by name | Ctrl/Cmd+Shift+P |
+| Themes | View ▸ Theme (Auto follows the system) |
+
+## What is not in it
+
+Jonquil is a large program. Not ported: Parinfer, find-and-replace, jump to
+definition and the Locations list, the inspector, the debugger (breakpoints,
+Break on error, stepping), tracing and line counts, Reset on Run, Run Tests,
+the dialects other than Jolt (JVM Clojure, ClojureScript, ClojureDart, jank,
+nREPL attach), out-of-process Jolt, plugins, the MCP server, the terminal,
+change sets and Compare, Save World, preferences and editable key bindings,
+and the guide pages. The menus show only what is there.
+
+## Tests
+
+Each needs `EVE_RELEASE` as above; all run on Jolt.
+
+```bash
+bash scripts/jolt-run.sh narcis.run-all-tests
+```
+
+```bash
+bash scripts/buffer-gate.sh jolt
+```
+
+```bash
+bash scripts/editor-gate.sh
+```
+
+```bash
+bash scripts/page-gate.sh
+```
+
+`run-all-tests` is the lifted Jonquil corpus and Narcis's own tests;
+`buffer-gate` walks undo and redo across a restart; `editor-gate` is an
+editing session over HTTP with a `kill -9` in the middle; `page-gate` drives
+the real page in headless Chromium (it needs `node` with `playwright`).
+`STATUS.md` has the latest results and `REPORT.md` the account of the work.

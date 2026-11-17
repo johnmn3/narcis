@@ -18,20 +18,16 @@
    packed (measured at Eve @84bfc7c8 — see the rope-deftype lane
    REPORT.md). At the root the value is owned, never packed.
 
-   Values enter by swap!: a rope root built in another domain is
-   re-instantiated inside the swap (narcis.rope/rebuild — Eve refuses
-   cross-domain values, and names this remedy itself); a root already
-   in this domain is stored by reference. Plain values (strings,
-   editor data) pass through unchanged."
+   Values enter by swap!. The versions atoms hold plain values (the
+   launcher's hello text); a buffer's document is built inside its own
+   atom's swap by narcis.buffer."
   #?(:bb  (:require [eve.alpha :as e] [eve.atom :as ea]
                     [eve.host :as eh] [eve.deftype :as edt]
                     [eve.deftype.array :as arr]
-                    [narcis.rope :as r]
                     [clojure.string :as str])
      :clj (:require [eve.alpha :as e] [eve.atom :as ea]
                     [eve.host :as eh] [eve.deftype :as edt]
                     [eve.deftype.array :as arr]
-                    [narcis.rope :as r]
                     [clojure.string :as str])
      :cljs nil))
 
@@ -73,16 +69,7 @@
                (swap! atoms assoc k a)
                a))))
 
-     (defn- transfer
-       "Inside a swap!: a rope root from another domain is rebuilt in
-        this one; anything else (in-domain roots, plain values) passes
-        by reference."
-       [value]
-       (if (and (r/RopeNode? value) (not (r/in-current-domain? value)))
-         (r/rebuild value)
-         value))
-
-     (defn open [{:keys [dir name]}]
+     (defn open [{:keys [dir name domain-opts]}]
        (let [base (str dir "/" name)
              _ (.mkdirs (.getParentFile (java.io.File. base)))
              ;; Force the domain into existence now (S2 lifecycle:
@@ -93,12 +80,24 @@
              ;; 1e6-line ingest spends its time growing regions and
              ;; walls at ~450k lines (Eve's error names the parameter;
              ;; sizing a domain for its workload is the opener's job).
-             _ (ea/persistent-atom-domain
-                 base
-                 :capacities {0 (* 16 1024 1024) 1 (* 8 1024 1024)
-                              2 (* 8 1024 1024) 3 (* 32 1024 1024)
-                              4 (* 8 1024 1024) 5 (* 8 1024 1024)}
-                 :coalesc-descriptors 262144)]
+             ;; Durability: every commit is durable (Eve forces the pages
+             ;; it touched and the root before the swap answers), without
+             ;; the journal file. An editor commits on every keystroke, and
+             ;; with the journal 600 keystrokes took 73 s on Jolt at this
+             ;; pin — one commit in eight over 50 ms, some over a second —
+             ;; against 5.5 s without it, none over 40 ms (REPORT.md has
+             ;; the runs). domain-opts are eve.atom/persistent-atom-domain's
+             ;; own (:durable? :journal? :journal-batch ...), for an opener
+             ;; that wants otherwise.
+             _ (apply ea/persistent-atom-domain
+                      base
+                      (mapcat identity
+                              (merge {:capacities {0 (* 16 1024 1024) 1 (* 8 1024 1024)
+                                                   2 (* 8 1024 1024) 3 (* 32 1024 1024)
+                                                   4 (* 8 1024 1024) 5 (* 8 1024 1024)}
+                                      :coalesc-descriptors 262144
+                                      :journal? false}
+                                     domain-opts)))]
          {:impl :eve :base base :atoms (atom {})}))
 
      (defn put! [store buffer-name value]
@@ -106,8 +105,8 @@
          (eh/swap! a
                    (fn [v]
                      (if (nil? v)
-                       (->Versioned (transfer value) nil)
-                       (->Versioned (transfer value)
+                       (->Versioned value nil)
+                       (->Versioned value
                                     (arr-push (-hist v) (-cur v))))))
          (let [v @a]
            (dec (inc (arr-len (-hist v)))))))
@@ -139,6 +138,12 @@
 
      (defn atom-deref [handle]
        @(:atom handle))
+
+     (defn atom-read
+       "(f value) inside a read region: the value in place, f's answer
+        as plain data (see narcis.store/atom-read)."
+       [handle f]
+       (e/$ (f @(:atom handle))))
 
      (defn atom-swap! [handle f]
        (eh/swap! (:atom handle) f))

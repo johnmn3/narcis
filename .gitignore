@@ -6,3 +6,4 @@
 /.cpcache/
 /run/
 target/
+web/out/

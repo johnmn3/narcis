@@ -7,11 +7,12 @@
   back to front inside one undoable user action.
   Narcis lift (2026-11-16): from jonquil.edit @0ac90991 (b12n-oss/jonquil,
   EPL-2.0; see UPSTREAM.md and NOTICE in this repo), verbatim apart from the
-  namespace. The rope layer at the bottom of this file is Narcis's own:
-  it builds snapshots from rope slices and applies an op's :edits to a
-  rope as ONE new root (one undo step in narcis.buffer)."
+  namespace. The document layer at the bottom of this file is Narcis's
+  own: it builds snapshots from a region of the buffer's document and
+  applies an op's :edits to the document as ONE new root (one undo step
+  in narcis.buffer)."
   (:require [clojure.string :as str]
-            [narcis.rope :as rope]
+            [narcis.text :as text]
             [narcis.syntax :as syntax]))
 
 (def open->close {\( \), \[ \], \{ \}})
@@ -289,39 +290,44 @@
             {:edits edits :caret (shift-offset edits caret) :sel nil}))))))
 
 ;; ---------------------------------------------------------------------------
-;; Narcis rope layer (not part of the jonquil lift)
+;; Narcis document layer (not part of the jonquil lift)
 ;;
 ;; The ops above consume a snapshot {:text :caret :sel-start :sel-end}.
-;; On a rope, the snapshot's text is the SLICE the op can see: for the
-;; buffer sizes an edit op's contract covers (a form, a line region —
-;; never a whole billion-line file) narcis.buffer hands us the rope and
-;; a scope; scope :form scopes to the enclosing top-level form via
-;; narcis.syntax brackets, :all is the whole rope (small buffers and
-;; tests). Ops run on the slice with offsets rebased to the slice, and
-;; the returned :edits are applied back to the rope in one pass as a
-;; single new root.
+;; On a document (narcis.text, an eve.text tree in the buffer's atom)
+;; the snapshot's text is the REGION the op can see, handed in by the
+;; caller as [text base]: the whole buffer for buffers small enough to
+;; analyse whole (the caller has that string already — the painter's),
+;; a slice of lines around the caret on a larger one. Scope :form
+;; narrows the region to the top-level form enclosing the caret
+;; (narcis.syntax brackets); :all keeps the region. The op runs on that
+;; text with offsets rebased to it, and its :edits are applied back to
+;; the document as one new root.
+;;
+;; These build a document, so they run where building may: inside the
+;; buffer atom's swap! (narcis.buffer/edit!), or under
+;; narcis.text/with-heap-domain in tests.
 
-(defn apply-edits-to-rope
+(defn apply-edits-to-doc
   "Apply jonquil-style :edits ([start end replacement] ascending,
-   non-overlapping, offsets into the rope) to rope t, producing ONE
-   new root. Equivalent to (apply-edits (rope/to-string t) edits) but
-   path-copies only the edited spans."
-  [t edits]
-  (loop [t t shift 0 edits (seq edits)]
+   non-overlapping, offsets into the document) to doc, producing ONE
+   new root. Equivalent to (apply-edits (text/to-string doc) edits)
+   but path-copies only the edited spans."
+  [doc edits]
+  (loop [doc doc shift 0 edits (seq edits)]
     (if (nil? edits)
-      t
+      doc
       (let [[s e r] (first edits)
-            s (+ s shift) e (+ e shift)
-            t (rope/delete t s e)
-            t (rope/insert t s r)]
-        (recur t (+ shift (- (count r) (- e s))) (next edits))))))
+            s (+ s shift) e (+ e shift)]
+        (recur (text/replace doc s e r)
+               (+ shift (- (count r) (- e s)))
+               (next edits))))))
 
 (defn- form-scope
-  "Slice bounds [start end] of the top-level form enclosing offset in
-   text, or [0 (count text)] when offset is not inside one. Bracket
-   pairs come from narcis.syntax/compute-brackets' :matches map
-   (open -> close entries only); the top-level form is the OUTERMOST
-   enclosing pair."
+  "Bounds [start end] of the top-level form enclosing offset in text,
+   or [0 (count text)] when offset is not inside one. Bracket pairs
+   come from narcis.syntax/compute-brackets' :matches map (open ->
+   close entries only); the top-level form is the OUTERMOST enclosing
+   pair."
   [text offset]
   (let [matches (:matches (syntax/compute-brackets text))
         enclosing (filter (fn [[o c]] (and (< o c) (<= o offset) (< offset c))) matches)
@@ -330,48 +336,55 @@
       [(first outer) (inc (second outer))]
       [0 (count text)])))
 
+(defn region-of
+  "The whole document as an op's region: [text 0]."
+  [doc]
+  [(text/to-string doc) 0])
+
 (defn snapshot
-  "Build an op snapshot from rope t at caret with selection [a b]
-   (or nil). scope is :all (default) or :form. Returns
-   {:snap {...} :base offset-of-slice-in-rope}."
-  ([t caret sel] (snapshot t caret sel :all))
-  ([t caret sel scope]
-   (let [text (rope/to-string t)
-         [base end] (if (= scope :form)
-                      (form-scope text caret)
-                      [0 (count text)])
-         slice (subs text base end)]
-     {:base base
-      :snap {:text slice
-             :caret (- caret base)
-             :sel-start (- (if sel (first sel) caret) base)
-             :sel-end (- (if sel (second sel) caret) base)}})))
+  "An op snapshot of region [text base] at caret with selection [a b]
+   (or nil), offsets into the document. scope is :all or :form.
+   Returns {:snap {...} :base offset-of-the-snapshot-text-in-the-document}."
+  [[text rbase] caret sel scope]
+  (let [c (- caret rbase)
+        [fs fe] (if (= scope :form) (form-scope text c) [0 (count text)])
+        base (+ rbase fs)]
+    {:base base
+     :snap {:text (subs text fs fe)
+            :caret (- caret base)
+            :sel-start (- (if sel (first sel) caret) base)
+            :sel-end (- (if sel (second sel) caret) base)}}))
 
 (defn run-op
   "Run a jonquil edit op (a fn of snapshot -> {:edits :caret :sel} or
-   nil) against rope t at caret/sel. Returns
-   {:rope new-root :caret n :sel [a b] or nil} with offsets rebased to
-   the rope, or nil when the op does not apply. The new root is ONE
-   edit: narcis.buffer records it as one undo step."
-  ([t caret sel op-fn] (run-op t caret sel op-fn :all))
-  ([t caret sel op-fn scope]
-   (let [{:keys [base snap]} (snapshot t caret sel scope)
+   nil) against doc at caret/sel. region is [text base] (see above);
+   without one it is the whole document. Returns {:doc new-root
+   :caret n :sel [a b] or nil} with offsets rebased to the document, or
+   nil when the op does not apply. The new root is ONE edit:
+   narcis.buffer records it as one undo step."
+  ([doc caret sel op-fn] (run-op doc (region-of doc) caret sel op-fn :all))
+  ([doc caret sel op-fn scope] (run-op doc (region-of doc) caret sel op-fn scope))
+  ([doc region caret sel op-fn scope]
+   (let [{:keys [base snap]} (snapshot region caret sel scope)
          res (op-fn snap)]
      (when res
        (let [edits (mapv (fn [[s e r]] [(+ s base) (+ e base) r]) (:edits res))]
-         {:rope (apply-edits-to-rope t edits)
-          :caret (+ (:caret res) base)
-          :sel (when (:sel res)
-                 [(+ (first (:sel res)) base) (+ (second (:sel res)) base)])})))))
+         ;; what the op answered beside its edits (:copy, the clipboard's
+         ;; text) rides along; an op with no edits answers doc itself
+         (assoc (dissoc res :edits)
+                :doc (apply-edits-to-doc doc edits)
+                :caret (+ (:caret res) base)
+                :sel (when (:sel res)
+                       [(+ (first (:sel res)) base) (+ (second (:sel res)) base)])))))))
 
-(defn smart-enter-rope
-  ([t caret sel] (run-op t caret sel (fn [s] (smart-enter s)) :form))
-  ([t caret sel opts] (run-op t caret sel (fn [s] (smart-enter s opts)) :form)))
+(defn smart-enter-doc
+  ([doc region caret sel] (run-op doc region caret sel (fn [s] (smart-enter s)) :form))
+  ([doc region caret sel opts] (run-op doc region caret sel (fn [s] (smart-enter s opts)) :form)))
 
-(defn indent-rope [t caret sel] (run-op t caret sel indent :form))
-(defn unindent-rope [t caret sel] (run-op t caret sel unindent :form))
-(defn toggle-comment-rope [t caret sel] (run-op t caret sel toggle-comment :form))
-(defn insert-open-rope [t caret sel ch] (run-op t caret sel (fn [s] (insert-open s ch)) :form))
-(defn insert-close-rope [t caret sel ch] (run-op t caret sel (fn [s] (insert-close s ch)) :form))
-(defn backspace-pair-rope [t caret sel] (run-op t caret sel backspace-pair :form))
-(defn rename-rope [t caret sel new-name] (run-op t caret sel (fn [s] (rename s new-name)) :all))
+(defn indent-doc [doc region caret sel] (run-op doc region caret sel indent :form))
+(defn unindent-doc [doc region caret sel] (run-op doc region caret sel unindent :form))
+(defn toggle-comment-doc [doc region caret sel] (run-op doc region caret sel toggle-comment :form))
+(defn insert-open-doc [doc region caret sel ch] (run-op doc region caret sel (fn [s] (insert-open s ch)) :form))
+(defn insert-close-doc [doc region caret sel ch] (run-op doc region caret sel (fn [s] (insert-close s ch)) :form))
+(defn backspace-pair-doc [doc region caret sel] (run-op doc region caret sel backspace-pair :form))
+(defn rename-doc [doc region caret sel new-name] (run-op doc region caret sel (fn [s] (rename s new-name)) :all))

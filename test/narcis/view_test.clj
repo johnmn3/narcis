@@ -2,10 +2,12 @@
   "S3 rendering-correctness gate, headless: the span data of a window
    payload must be exactly jonquil.syntax's analysis of the same text
    (tokenize + compute-brackets, composed the way jonquil.paint
-   composes them), and a window of a 1e6-line rope must stay bounded."
+   composes them), and a window of a 1e6-line document must stay bounded."
   (:require [clojure.test :as t]
             [narcis.paint :as paint]
-            [narcis.rope :as rope]
+            [narcis.text :as text]
+            [eve.text]
+            [clojure.string]
             [narcis.syntax :as syntax]
             [narcis.view :as view]))
 
@@ -57,13 +59,19 @@
                       spans))
               line-ranges)))))
 
+(defn- window-of
+  "[window-payload total-lines] of a document of s, built in a heap domain."
+  [s opts]
+  (text/with-heap-domain
+    (fn [] (let [doc (text/from-string s)]
+             [(view/window doc opts) (text/lines doc)]))))
+
 (t/deftest span-data-matches-syntax-analysis
-  (let [root (rope/from-string fixture)
-        win (view/window root {:start 0 :count 100 :caret 0})
+  (let [[win total] (window-of fixture {:start 0 :count 100 :caret 0})
         expected (expected-plan fixture)
         plan (paint/paint-plan fixture)]
     (t/is (= :exact (:spans-mode win)))
-    (t/is (= (rope/lines root) (:total-lines win)))
+    (t/is (= total (:total-lines win)))
     ;; the lift chain itself: narcis.paint's plan is the syntax-derived one
     (t/is (= expected plan))
     ;; and the payload the page renders is exactly that plan, rebased
@@ -71,10 +79,10 @@
              (vec (sort (payload-spans-absolute win)))))))
 
 (t/deftest span-data-window-slice
-  (let [root (rope/from-string fixture)
-        win (view/window root {:start 2 :count 3 :caret 0})
-        cs (rope/line-start-offset root 2)
-        ce (rope/line-start-offset root 5)
+  (let [[win _] (window-of fixture {:start 2 :count 3 :caret 0})
+        starts (reductions + 0 (map (fn [l] (inc (count l))) (clojure.string/split fixture #"\n" -1)))
+        cs (nth starts 2)
+        ce (nth starts 5)
         expected (into []
                        (keep (fn [[k s e]]
                                (let [a (max s cs) b (min e ce)]
@@ -85,26 +93,34 @@
              (vec (sort (payload-spans-absolute win)))))))
 
 (t/deftest bracket-match-in-payload
-  (let [root (rope/from-string fixture)
-        ;; offset of the (defn add ... opening paren is 15; its match is
+  (let [;; offset of the (defn add ... opening paren is 15; its match is
         ;; the close of (+ x y)) line's second paren
         open (.indexOf fixture "(defn")
-        win (view/window root {:start 0 :count 100 :caret open})
+        [win _] (window-of fixture {:start 0 :count 100 :caret open})
         [a b] (:match win)]
     (t/is (some? (:match win)))
     (t/is (= open a))
     (t/is (= (get (:matches (syntax/compute-brackets fixture)) open) b))))
 
 (t/deftest viewport-payload-bounded
-  (let [lines (map (fn [i] (str "(defn f" i " [x] (+ x " i "))")) (range 1000000))
-        root (rope/from-lines lines)
-        win (view/window root {:start 500000 :count 60 :caret nil})
+  (let [n (if (System/getenv "NARCIS_VIEW_LINES") (Integer/parseInt (System/getenv "NARCIS_VIEW_LINES")) 1000000)
+        [win total]
+        (text/with-heap-domain
+          (fn []
+            ;; built as a file is: a chunk of text at a time
+            (let [doc (loop [i 0 b (eve.text/text-builder)]
+                        (if (< i n)
+                          (let [k (min n (+ i 20000))]
+                            (recur k (eve.text/text-builder-add
+                                      b (apply str (map (fn [j] (str "(defn f" j " [x] (+ x " j "))\n")) (range i k))))))
+                          (eve.text/text-builder-text b)))]
+              [(view/window doc {:start (quot n 2) :count 60 :caret nil}) (text/lines doc)])))
         payload (pr-str win)]
-    (t/is (= (rope/lines root) (:total-lines win)))
-    (t/is (<= 1000000 (:total-lines win)))
+    (t/is (= total (:total-lines win)))
+    (t/is (<= n (:total-lines win)))
     (t/is (= :window (:spans-mode win)))
     (t/is (= 60 (count (:lines win))))
-    (t/is (= 500000 (:n (first (:lines win)))))
+    (t/is (= (quot n 2) (:n (first (:lines win)))))
     ;; named bound: a 60-line window of ~30-char lines stays under 32 KiB
     (t/is (< (count payload) 32768) (str "payload bytes: " (count payload)))))
 

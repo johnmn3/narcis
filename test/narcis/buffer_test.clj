@@ -9,8 +9,7 @@
              undo/redo depths), and undo/redo must keep walking the
              persistent roots across the restart."
   (:require [narcis.store :as store]
-            [narcis.buffer :as buf]
-            [narcis.rope :as r]))
+            [narcis.buffer :as buf]))
 
 (def path-a "doc-a.clj")
 (def path-b "doc-b.clj")
@@ -26,7 +25,7 @@
   (println "BUFFER-CHECK" label "OK"))
 
 (defn walk! []
-  (let [st (store/open-store {:dir (str (or (System/getenv "TMPDIR") (System/getProperty "java.io.tmpdir")) "/narcis-walk-" (System/nanoTime)) :name "narcis/buffers"})
+  (let [st (store/open-store {:dir (str (or (System/getenv "TMPDIR") (System/getProperty "java.io.tmpdir")) "/narcis-walk-" (System/nanoTime)) :name store/store-name})
         ed (buf/open-editor st)]
     (buf/open-buffer! ed path-a a-v0)
     (check "walk v0" a-v0 (buf/buffer-text ed path-a))
@@ -35,7 +34,7 @@
     (buf/insert-text! ed path-a 19 "2")
     ;; NOTE: the two rope ops above are two undo steps; rebuild cleanly:
     (check "walk after edits" a-v1 (buf/buffer-text ed path-a))
-    (buf/insert-text! ed path-a (r/chars (buf/buffer-root ed path-a)) ";; note\n")
+    (buf/insert-text! ed path-a (:chars (buf/snapshot ed path-a)) ";; note\n")
     (check "walk v2" a-v2 (buf/buffer-text ed path-a))
     (check "walk undo-depth" 3 (buf/undo-depth ed path-a))
     ;; undo step by step: v2 -> (append undone) -> a-v1 -> mid-edit -> a-v0
@@ -52,7 +51,7 @@
     (println "BUFFER-TEST walk PASS")))
 
 (defn write! [dir]
-  (let [st (store/open-store {:dir dir :name "narcis/buffers"})]
+  (let [st (store/open-store {:dir dir :name store/store-name})]
     (println "STORE impl:" (:impl st))
     (let [ed (buf/open-editor st)]
       (buf/open-buffer! ed path-a a-v0)
@@ -60,7 +59,7 @@
       (buf/activate! ed path-a)
       (buf/delete-range! ed path-a 19 20)
       (buf/insert-text! ed path-a 19 "2")
-      (buf/insert-text! ed path-a (r/chars (buf/buffer-root ed path-a)) ";; note\n")
+      (buf/insert-text! ed path-a (:chars (buf/snapshot ed path-a)) ";; note\n")
       (buf/set-cursor! ed path-a 14)
       (buf/set-selection! ed path-a [17 20])
       (buf/undo! ed path-a) ;; drop the append; undo history keeps the rest
@@ -71,7 +70,7 @@
       (println "BUFFER-TEST write PASS"))))
 
 (defn read! [dir]
-  (let [st (store/open-store {:dir dir :name "narcis/buffers"})]
+  (let [st (store/open-store {:dir dir :name store/store-name})]
     (println "STORE impl:" (:impl st))
     (let [ed (buf/open-editor st)]
       (check "read tabs" [path-a path-b] (buf/tabs ed))

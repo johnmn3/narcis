@@ -26,6 +26,13 @@
 
 (defn- sanitize [s] (str/replace s #"[^a-zA-Z0-9._-]" "_"))
 
+(def store-name
+  "The store the editor opens. The name carries the layout of what is in
+   it: text2 buffers are eve.text documents (the first layout's were
+   narcis.rope trees, a type this code no longer has — a store of that
+   layout is left as it is, under its own name, and not read)."
+  "narcis/text2")
+
 #?(:cljs nil
    :default
    (do
@@ -119,6 +126,19 @@
        (if (= :eve (:kind handle))
          ((resolve 'narcis.store-eve/atom-deref) handle)
          (get-in @(:state (:store handle)) [:atoms (:key handle)])))
+
+     (defn atom-read
+       "(f value) with the atom's value read IN PLACE, and f's answer
+        as plain data. On the Eve arm this is a read region
+        (eve.alpha/$): a deref outside one hands back a copy of the
+        whole value, which for a buffer is the whole document; inside
+        one, f reads only what it touches, and what it answers is
+        materialized as it leaves — so f answers plain data (numbers,
+        strings, maps of them), never the value or a part of it."
+       [handle f]
+       (if (= :eve (:kind handle))
+         ((resolve 'narcis.store-eve/atom-read) handle f)
+         (f (atom-deref handle))))
 
      (defn atom-swap!
        "Swap the atom behind handle with f (a fn of its current value).

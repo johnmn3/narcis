@@ -6,90 +6,100 @@
    Per buffer, one named Eve atom in the store's disk domain holds a
    BufferState eve.deftype at its root:
 
-     BufferState{:root   <RopeNode>          ; the buffer's rope root
+     BufferState{:root   <eve.text document>   ; the buffer's text
                  :cursor <char offset>
                  :sel    [<start> <end>] or nil
-                 :undo   <eve array of RopeNode>  ; oldest first
-                 :redo   <eve array of RopeNode>}
+                 :undo   <History: the prior documents, newest first>
+                 :redo   <History: the undone documents, newest first>
+                 :nundo  <how many> :nredo <how many>
+                 :eol    <the file's line ending>
+                 :rev    <swaps on this buffer>
+                 :trev   <changes of :root among them>
+                 :gen    <the editor revision it was opened at>}
 
    A second named atom holds the editor's plain data:
-   {:tabs [<path> ...] :active <path>}.
+   {:tabs [<path> ...] :active <path> :theme <choice> :rev n}.
 
-   Every mutation is ONE swap! on the relevant atom, and the rope op
-   runs INSIDE the swap fn — so the new nodes are constructed in the
-   atom's own domain, path-copying the deftyped tree in Eve storage
+   Every mutation is ONE swap! on the relevant atom, and the text op
+   runs INSIDE the swap fn (edit!) — so the new nodes are built in the
+   atom's own domain, path-copying the document's tree in Eve storage
    (Eve's swap! binds the atom's domain while f runs). There is no
    mirror state and no persist step: the swap IS the persistence, so
    state survives process restart by construction and undo — a root
-   swap between the :undo/:redo arrays — works across a restart
-   exactly as in-process.
+   swap between the :undo/:redo lists, which cost nothing to keep
+   because documents share what they did not change — works across a
+   restart exactly as in-process.
 
-   BufferState sits at the atom's root because a deftype with a
-   by-reference field (the rope's children arrays) cannot be nested
-   inside a collection value in Eve @84bfc7c8 (freeze would pack its
-   plain field view and refuse the reference) — see the rope-deftype
-   lane REPORT.md. Per-buffer atoms are the shape Eve's own Dataset
-   precedent (a deftype at an atom's root) generalizes to.
+   BufferState sits at the atom's root because an Eve type that holds
+   Eve memory by reference (a document's nodes) lives at an atom's
+   root or in another Eve type's field, never inside a plain
+   collection value (Eve @84bfc7c8 stores those by value and refuses
+   the reference).
 
-   The editor requires the store's Eve arm: eve.deftype rope values
-   cannot live in the file arm's EDN (and on the host where the file
-   arm runs today, bb, Eve itself is W2-walled). open-editor says so
-   when handed a file store."
+   The editor requires the store's Eve arm: open-editor says so when
+   handed a file store."
   (:require [clojure.string :as str]
             [eve.deftype :as edt]
-            [eve.deftype.array :as arr]
-            [narcis.rope :as r]
+            [narcis.text :as text]
             [narcis.store :as store]))
 
 ;; ---------------------------------------------------------------------------
 ;; the per-buffer state type
 
 (defprotocol IBufferState
-  (-root [b] "The buffer's current rope root.")
+  (-root [b] "The buffer's current document.")
   (-cursor [b] "Caret char offset.")
   (-sel [b] "Selection [start end] or nil.")
-  (-undo [b] "Eve array of prior roots, oldest first, or nil.")
-  (-redo [b] "Eve array of undone roots, oldest first, or nil."))
+  (-undo [b] "History of prior documents (newest first), or nil.")
+  (-redo [b] "History of undone documents (newest first), or nil.")
+  (-nundo [b] "How many documents :undo holds.")
+  (-nredo [b] "How many documents :redo holds.")
+  (-eol [b] "The file's line ending, written back on save.")
+  (-rev [b] "How many swaps this buffer has seen.")
+  (-trev [b] "How many of them changed the document.")
+  (-gen [b] "The editor revision this buffer was opened at."))
 
-;; root is a serialized field (holds the RopeNode by Eve's value
-;; encoding, Dataset-style): a ^:RopeNode reference field would name a
-;; type from another namespace, and eve.deftype's generated code
-;; resolves a referenced type's fns in the defining namespace — every
-;; ^:Type reference in Eve's own code at this pin is same-namespace.
-(edt/deftype BufferState [root cursor sel undo redo]
+(edt/deftype BufferState [root cursor sel undo redo eol rev trev gen nundo nredo]
   IBufferState
   (-root [_] root)
   (-cursor [_] cursor)
   (-sel [_] sel)
   (-undo [_] undo)
-  (-redo [_] redo))
+  (-redo [_] redo)
+  (-nundo [_] nundo)
+  (-nredo [_] nredo)
+  (-eol [_] eol)
+  (-rev [_] rev)
+  (-trev [_] trev)
+  (-gen [_] gen))
 
 ;; ---------------------------------------------------------------------------
-;; eve array helpers (undo/redo stacks)
+;; history: a list of documents, the newest at its head. A step back or
+;; forward makes or drops ONE cell — nothing is copied, however long the
+;; history is (an array of them would be copied, and every document it
+;; names counted again, on every keystroke).
 
-(defn- arr-len [a] (if (nil? a) 0 (arr/alength a)))
+(defprotocol IHistory
+  (-doc [h] "The document at this step.")
+  (-older [h] "The steps before it, or nil."))
 
-(defn- arr-push [a v]
-  (let [n (arr-len a)
-        b (arr/make-array (inc n))]
-    (dotimes [i n] (arr/aset b i (arr/aget a i)))
-    (arr/aset b n v)
-    b))
+(edt/deftype History [doc older]
+  IHistory
+  (-doc [_] doc)
+  (-older [_] older))
 
-(defn- arr-pop [a]
-  (let [n (arr-len a)
-        b (arr/make-array (dec n))]
-    (dotimes [i (dec n)] (arr/aset b i (arr/aget a i)))
-    b))
-
-(defn- arr-vec [a]
-  (if (nil? a) [] (vec (arr/array-seq a))))
+(defn- history-docs
+  "The documents of history h, oldest first (a vector of them, in place)."
+  [h]
+  (loop [h h acc ()]
+    (if (nil? h)
+      (vec acc)
+      (recur (-older h) (conj acc (-doc h))))))
 
 ;; ---------------------------------------------------------------------------
 ;; the editor handle
 
 (def editor-name "editor")
-(def empty-state {:buffers {} :tabs [] :active nil})
 
 (defn- sanitize [s] (str/replace s #"[^a-zA-Z0-9._-]" "_"))
 
@@ -115,46 +125,104 @@
 
 (defn- editor-value [ed] (store/atom-deref (:editor ed)))
 
+(defn- bump-editor [s] (update s :rev (fnil inc 0)))
+
+(declare snapshot)
+
 (defn rev
-  "Editor revision: bumped by every state change (buffer swaps
-   included) — the sync token narcis.ops/launcher expose to clients."
-  [ed]
-  (get (editor-value ed) :rev 0))
+  "The sync token clients see: the editor atom's revision, plus the
+   buffer's own when a path is given. Every swap moves one of them."
+  ([ed] (get (editor-value ed) :rev 0))
+  ([ed path]
+   (+ (rev ed) (or (:rev (snapshot ed path)) 0))))
 
-(defn- bump! [ed]
-  (store/atom-swap! (:editor ed) (fn [s] (update s :rev (fnil inc 0)))))
+;; ---------------------------------------------------------------------------
+;; reads
+;;
+;; A buffer is read IN PLACE, inside a read region (narcis.store/
+;; atom-read, Eve's $): a plain deref of the buffer's atom would hand
+;; back a copy of its whole value — the whole document — for every
+;; question asked of it. read is the one door: its f sees the document
+;; where it is, touches what it needs, and answers plain data.
 
-(defn- buffer-state [ed path]
-  (store/atom-deref (buffer-handle ed path)))
+(defn- view-of
+  "A buffer's state as read's f sees it."
+  [path b]
+  {:root (-root b)
+   :cursor (-cursor b)
+   :sel (-sel b)
+   :undo (-nundo b)
+   :redo (-nredo b)
+   :eol (-eol b)
+   :rev (-rev b)
+   ;; names this text and no other: the buffer's opening and how many
+   ;; times its document has changed since (what an analysis of the
+   ;; text may be remembered under)
+   :text-key [path (-gen b) (-trev b)]
+   :undo-docs (-undo b)
+   :redo-docs (-redo b)})
+
+(defn read
+  "(f view) with path's buffer read in place — view is {:root doc
+   :cursor n :sel [a b]|nil :undo depth :redo depth :eol s :rev n
+   :text-key k} and :root is the document itself, not a copy, readable
+   only while f runs. f answers plain data, which read answers; nil when
+   path is not open."
+  [ed path f]
+  (when path
+    (store/atom-read (buffer-handle ed path)
+                     (fn [b] (when (some? b) (f (view-of path b)))))))
+
+(defn open?
+  "True when path is an open buffer."
+  [ed path]
+  (true? (read ed path (fn [_] true))))
+
+(defn snapshot
+  "One read of path's buffer as plain data: {:cursor n :sel [a b]|nil
+   :undo depth :redo depth :eol s :rev n :text-key k :lines n :chars n},
+   or nil when it is not open."
+  [ed path]
+  (read ed path (fn [v] (-> (dissoc v :root :undo-docs :redo-docs)
+                            (assoc :lines (text/lines (:root v))
+                                   :chars (text/chars (:root v)))))))
+
+(defn buffer
+  "path's buffer as plain data (snapshot), or nil."
+  [ed path]
+  (snapshot ed path))
+
+(defn tabs [ed] (:tabs (editor-value ed)))
+(defn active [ed] (:active (editor-value ed)))
 
 (defn state
-  "The whole editor state as plain data (buffer entries as maps with
-   rope roots for :root and root vectors for :undo/:redo) — the shape
-   narcis.buffer has always exposed."
+  "The whole editor state as plain data (see snapshot for each entry)."
   [ed]
   (let [ev (editor-value ed)]
-    {:buffers (into {}
-                    (keep (fn [path]
-                            (when-let [b (buffer-state ed path)]
-                              [path {:root (-root b)
-                                     :cursor (-cursor b)
-                                     :sel (-sel b)
-                                     :undo (arr-vec (-undo b))
-                                     :redo (arr-vec (-redo b))}])))
-                    (:tabs ev))
+    {:buffers (into {} (keep (fn [path] (when-let [b (snapshot ed path)] [path b]))) (:tabs ev))
      :tabs (:tabs ev)
      :active (:active ev)
      :theme (:theme ev)}))
 
-(defn buffer [ed path]
-  (get-in (state ed) [:buffers path]))
+(defn buffer-text
+  "path's whole text (lines joined by \\n). O(chars)."
+  [ed path]
+  (read ed path (fn [v] (text/to-string (:root v)))))
 
-(defn buffer-root [ed path] (:root (buffer ed path)))
-(defn buffer-text [ed path] (r/to-string (buffer-root ed path)))
-(defn cursor [ed path] (:cursor (buffer ed path)))
-(defn selection [ed path] (:sel (buffer ed path)))
-(defn tabs [ed] (:tabs (editor-value ed)))
-(defn active [ed] (:active (editor-value ed)))
+(defn history-texts
+  "The texts of path's history: {:undo [s ...] :redo [s ...]}, oldest
+   first. For tests and tools: it reads every kept document whole."
+  [ed path]
+  (read ed path
+        (fn [v]
+          (let [texts (fn [h] (mapv text/to-string (history-docs h)))]
+            {:undo (texts (:undo-docs v)) :redo (texts (:redo-docs v))}))))
+
+(defn cursor [ed path] (:cursor (snapshot ed path)))
+(defn selection [ed path] (:sel (snapshot ed path)))
+(defn eol [ed path] (or (:eol (snapshot ed path)) "\n"))
+(defn undo-depth [ed path] (or (:undo (snapshot ed path)) 0))
+(defn redo-depth [ed path] (or (:redo (snapshot ed path)) 0))
 
 (defn theme-choice
   "The editor's theme choice (a narcis.theme choice keyword, :auto
@@ -167,157 +235,174 @@
    atom, so the choice is durable in the store and every client reads
    the same one from state."
   [ed choice]
-  (store/atom-swap! (:editor ed) (fn [s] (-> s
-                                             (assoc :theme choice)
-                                             (update :rev (fnil inc 0))))))
-(defn undo-depth [ed path] (count (:undo (buffer ed path))))
-(defn redo-depth [ed path] (count (:redo (buffer ed path))))
+  (store/atom-swap! (:editor ed) (fn [s] (bump-editor (assoc s :theme choice)))))
 
 ;; ---------------------------------------------------------------------------
 ;; mutations — each is one swap! on an Eve atom
 
-(defn- transfer-root
-  "Inside a swap!: a string becomes a rope here (constructed in the
-   atom's domain); a rope root from another domain is rebuilt here;
-   an in-domain root passes by reference."
-  [root-or-text]
-  (cond (string? root-or-text) (r/from-string root-or-text)
-        (and (r/RopeNode? root-or-text)
-             (not (r/in-current-domain? root-or-text))) (r/rebuild root-or-text)
-        :else root-or-text))
+(defn- with-state
+  "b with the given fields replaced and its revision moved on. :undo and
+   :redo are given as [history count]."
+  [b {:keys [root cursor sel undo redo] :as m}]
+  (->BufferState (if (contains? m :root) root (-root b))
+                 (if (contains? m :cursor) cursor (-cursor b))
+                 (if (contains? m :sel) sel (-sel b))
+                 (if (contains? m :undo) (first undo) (-undo b))
+                 (if (contains? m :redo) (first redo) (-redo b))
+                 (-eol b)
+                 (inc (-rev b))
+                 (if (contains? m :root) (inc (-trev b)) (-trev b))
+                 (-gen b)
+                 (if (contains? m :undo) (second undo) (-nundo b))
+                 (if (contains? m :redo) (second redo) (-nredo b))))
 
-(defn- activate-swap [ed path]
-  (store/atom-swap! (:editor ed) (fn [s] (-> s
-                                             (assoc :active path)
-                                             (update :rev (fnil inc 0))))))
+(defn- add-tab [s path]
+  (bump-editor (-> s
+                   (update :tabs (fn [ts] (if (some #(= % path) ts) ts (conj (vec ts) path))))
+                   (assoc :active path))))
+
+(defn activate! [ed path]
+  (store/atom-swap! (:editor ed) (fn [s] (bump-editor (assoc s :active path)))))
 
 (defn open-buffer!
-  "Open path with rope root (or text string) as its content. Opening an
-   already-open path just activates it. New buffers start with an empty
-   undo history — the opened root is version zero."
-  [ed path root-or-text]
-  (if (buffer-state ed path)
-    (activate-swap ed path)
-    (do (store/atom-swap! (buffer-handle ed path)
-                          (fn [_] (->BufferState (transfer-root root-or-text)
-                                                 0 nil nil nil)))
-        (store/atom-swap! (:editor ed)
-                          (fn [s] (-> s
-                                      (update :tabs conj path)
-                                      (assoc :active path)
-                                      (update :rev (fnil inc 0))))))))
+  "Open path holding content — a string, or a document (copied into
+   this buffer's atom) — with line ending eol (\"\\n\" when not given).
+   Opening an already-open path just activates it. A new buffer starts
+   with an empty undo history: what was opened is version zero."
+  ([ed path content] (open-buffer! ed path content "\n"))
+  ([ed path content eol]
+   (if (open? ed path)
+     (activate! ed path)
+     (let [gen (rev ed)]
+       (store/atom-swap! (buffer-handle ed path)
+                           (fn [_] (->BufferState (if (string? content)
+                                                    (text/from-string content)
+                                                    (text/copy-here content))
+                                                  0 nil nil nil eol 0 0 gen 0 0)))
+       (store/atom-swap! (:editor ed) (fn [s] (add-tab s path)))))))
 
 (defn open-file!
-  "Open a file from disk: its text is streamed into a rope inside the
-   buffer atom's swap (narcis.rope/ingest-file — the file is never held
-   whole), so the tree is constructed directly in the atom's domain."
+  "Open a file from disk: its text is read a chunk at a time into a
+   document inside the buffer atom's swap (narcis.text/ingest-file —
+   the file and its lines are never held whole), so the tree is built
+   directly in the atom's domain."
   [ed path]
-  (if (buffer-state ed path)
-    (activate-swap ed path)
-    (do (store/atom-swap! (buffer-handle ed path)
-                          (fn [_] (->BufferState (r/ingest-file path)
-                                                 0 nil nil nil)))
-        (store/atom-swap! (:editor ed)
-                          (fn [s] (-> s
-                                      (update :tabs conj path)
-                                      (assoc :active path)
-                                      (update :rev (fnil inc 0))))))))
+  (if (open? ed path)
+    (activate! ed path)
+    (let [gen (rev ed)]
+      (store/atom-swap! (buffer-handle ed path)
+                        (fn [_] (let [{:keys [doc eol]} (text/ingest-file path)]
+                                  (->BufferState doc 0 nil nil nil eol 0 0 gen 0 0))))
+      (store/atom-swap! (:editor ed) (fn [s] (add-tab s path))))))
 
 (defn close-buffer! [ed path]
   (store/atom-swap! (buffer-handle ed path) (fn [_] nil))
+  (swap! (:buffers ed) dissoc path)
   (store/atom-swap! (:editor ed)
                     (fn [s] (let [tabs (vec (remove #(= % path) (:tabs s)))]
-                              (-> s
-                                  (assoc :tabs tabs)
-                                  (assoc :active (if (= path (:active s))
-                                                   (peek tabs)
-                                                   (:active s)))
-                                  (update :rev (fnil inc 0)))))))
+                              (bump-editor
+                               (-> s
+                                   (assoc :tabs tabs)
+                                   (assoc :active (if (= path (:active s))
+                                                    (peek tabs)
+                                                    (:active s)))))))))
 
-(defn activate! [ed path]
-  (activate-swap ed path))
+(defn set-caret!
+  "Move path's caret to offset with selection sel ([a b] or nil): one
+   swap, no undo step."
+  [ed path offset sel]
+  (store/atom-swap! (buffer-handle ed path)
+                    (fn [b] (with-state b {:cursor offset :sel sel}))))
 
 (defn set-cursor! [ed path offset]
   (store/atom-swap! (buffer-handle ed path)
-                    (fn [b] (->BufferState (-root b) offset (-sel b)
-                                           (-undo b) (-redo b))))
-  (bump! ed))
+                    (fn [b] (with-state b {:cursor offset}))))
 
 (defn set-selection! [ed path sel]
   (store/atom-swap! (buffer-handle ed path)
-                    (fn [b] (->BufferState (-root b) (-cursor b) sel
-                                           (-undo b) (-redo b))))
-  (bump! ed))
+                    (fn [b] (with-state b {:sel sel}))))
 
-(defn edit-buffer!
-  "Replace path's root with new-root as one undoable edit: the prior
-   root is pushed onto :undo and :redo is cleared. Cursor moves to
-   new-cursor when given."
-  ([ed path new-root] (edit-buffer! ed path new-root nil))
-  ([ed path new-root new-cursor]
-   (store/atom-swap! (buffer-handle ed path)
-                     (fn [b] (->BufferState (transfer-root new-root)
-                                            (if (some? new-cursor) new-cursor (-cursor b))
-                                            (-sel b)
-                                            (arr-push (-undo b) (-root b))
-                                            nil)))
-   (bump! ed)))
+(defn edit!
+  "One undoable edit as ONE swap!: (f doc cursor sel text-key) runs
+   inside the swap, in the atom's own domain, and answers {:doc new-doc
+   :caret n :sel [a b]|nil} — or nil when it does not apply, and then
+   nothing changes (text-key is snapshot's: the name of doc's text).
+   The prior document goes onto :undo and :redo is cleared. An answer
+   whose :doc is doc itself moves the caret and selection only: no new
+   text, no undo step. Answers what f answered, less its :doc, or nil.
+
+   A map f answers may carry :undo? false to change the text without
+   an undo step (none of the editor's own ops do)."
+  [ed path f]
+  (let [out (volatile! nil)]
+    (store/atom-swap!
+     (buffer-handle ed path)
+     (fn [b]
+       (let [r (f (-root b) (-cursor b) (-sel b) [path (-gen b) (-trev b)])]
+         (vreset! out (when r (assoc (dissoc r :doc) :caret (get r :caret (-cursor b)))))
+         (cond
+           (nil? r) b
+           ;; the same document back: a move of the caret, nothing to undo
+           (identical? (:doc r) (-root b))
+           (with-state b {:cursor (get r :caret (-cursor b)) :sel (:sel r)})
+           :else
+           (with-state b {:root (:doc r)
+                          :cursor (get r :caret (-cursor b))
+                          :sel (:sel r)
+                          :undo (if (false? (:undo? r))
+                                  [(-undo b) (-nundo b)]
+                                  [(->History (-root b) (-undo b)) (inc (-nundo b))])
+                          :redo [nil 0]})))))
+    @out))
 
 (defn insert-text!
-  "Insert s at char offset in path's buffer, as one undoable edit.
-   The rope op runs inside the swap, constructing the new path of
-   deftyped nodes in the atom's own domain."
+  "Insert s at char offset in path's buffer, as one undoable edit."
   [ed path offset s]
-  (store/atom-swap! (buffer-handle ed path)
-                    (fn [b] (let [nr (r/insert (-root b) offset s)]
-                              (->BufferState nr
-                                             (+ offset (count s))
-                                             (-sel b)
-                                             (arr-push (-undo b) (-root b))
-                                             nil))))
-  (bump! ed))
+  (edit! ed path (fn [doc _ sel _]
+                   {:doc (text/insert doc offset s)
+                    :caret (+ offset (count (text/normalize-breaks s)))
+                    :sel sel})))
 
 (defn delete-range!
   "Delete chars [start end) in path's buffer, as one undoable edit."
   [ed path start end]
-  (store/atom-swap! (buffer-handle ed path)
-                    (fn [b] (let [nr (r/delete (-root b) start end)]
-                              (->BufferState nr
-                                             start
-                                             (-sel b)
-                                             (arr-push (-undo b) (-root b))
-                                             nil))))
-  (bump! ed))
+  (edit! ed path (fn [doc _ sel _]
+                   {:doc (text/delete doc start end) :caret start :sel sel})))
+
+(defn- step!
+  "Move one document between the histories: undo? takes the newest of
+   :undo and gives the current one to :redo; else the other way."
+  [ed path undo?]
+  (let [took (volatile! false)]
+    (store/atom-swap!
+     (buffer-handle ed path)
+     (fn [b]
+       (let [from (if undo? (-undo b) (-redo b))
+             nfrom (if undo? (-nundo b) (-nredo b))
+             to (if undo? (-redo b) (-undo b))
+             nto (if undo? (-nredo b) (-nundo b))]
+         (vreset! took (some? from))
+         (if (nil? from)
+           b
+           (let [doc (-doc from)
+                 kept [(-older from) (dec nfrom)]
+                 given [(->History (-root b) to) (inc nto)]]
+             (with-state b {:root doc
+                            :cursor (min (-cursor b) (text/chars doc))
+                            :sel (let [sel (-sel b)]
+                                   (when (and sel (<= (second sel) (text/chars doc))) sel))
+                            :undo (if undo? kept given)
+                            :redo (if undo? given kept)}))))))
+    @took))
 
 (defn undo!
-  "Step path's buffer back one root. Returns true when a step was
-   taken. The current root moves onto :redo."
+  "Step path's buffer back one document. True when a step was taken.
+   The current document moves onto :redo; the caret is kept, clamped
+   to the document, and the selection while it still fits."
   [ed path]
-  (let [b (buffer-state ed path)]
-    (if (or (nil? b) (zero? (arr-len (-undo b))))
-      false
-      (do (store/atom-swap! (buffer-handle ed path)
-                            (fn [b] (let [u (-undo b)]
-                                      (->BufferState (arr/aget u (dec (arr-len u)))
-                                                     (-cursor b)
-                                                     (-sel b)
-                                                     (arr-pop u)
-                                                     (arr-push (-redo b) (-root b))))))
-          (bump! ed)
-          true))))
+  (if (open? ed path) (step! ed path true) false))
 
 (defn redo!
-  "Step path's buffer forward one root (inverse of undo!)."
+  "Step path's buffer forward one document (inverse of undo!)."
   [ed path]
-  (let [b (buffer-state ed path)]
-    (if (or (nil? b) (zero? (arr-len (-redo b))))
-      false
-      (do (store/atom-swap! (buffer-handle ed path)
-                            (fn [b] (let [r (-redo b)]
-                                      (->BufferState (arr/aget r (dec (arr-len r)))
-                                                     (-cursor b)
-                                                     (-sel b)
-                                                     (arr-push (-undo b) (-root b))
-                                                     (arr-pop r)))))
-          (bump! ed)
-          true))))
+  (if (open? ed path) (step! ed path false) false))

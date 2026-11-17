@@ -5,19 +5,25 @@
    The page renders rope windows fetched from here and sends edits
    back as narcis.ops messages — it never holds the text.
 
+   It also holds the Interactions console (narcis.interactions): Run,
+   the prompt, Stop, and the transcript the page reads.
+
    Usage: run -m narcis.launcher [--dir data] [--port 8377]
           [--serve-secs N] [--file path] [--theme name] [--web-dir web]
+          [--project dir]
    --serve-secs omitted (or 0) serves until killed; the S0 gate passes
    it explicitly. Prints the NARCIS-S0 marker lines the S0 gate checks
    (store-impl, buffer-text-ok, served, ...) and NARCIS-S3 lines for
    the editor gates."
   (:require [narcis.buffer :as buffer]
+            [narcis.interactions :as interactions]
+            [narcis.menus :as menus]
             [narcis.ops :as ops]
-            [narcis.rope :as rope]
             [narcis.store :as store]
             [narcis.theme :as theme]
             [narcis.view :as view]
             [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.string :as str])
   (:import [java.net ServerSocket InetAddress URLDecoder]
            [java.io BufferedReader InputStreamReader OutputStream File]))
@@ -96,39 +102,97 @@
 ;; ---------------------------------------------------------------------------
 ;; API
 
-(defn- state-payload [ed theme-atom]
+(defn- state-payload [ed theme-atom ctx]
   {:tabs (buffer/tabs ed)
    :active (buffer/active ed)
+   :project (:project ctx)
+   :runtime "Jolt"
    :theme (name (or (buffer/theme-choice ed) (:name @theme-atom)))
    :buffers (into {}
-                  (map (fn [p]
-                         (let [root (buffer/buffer-root ed p)]
-                           [p {:lines (rope/lines root)
-                               :chars (rope/chars root)
-                               :cursor (buffer/cursor ed p)
-                               :sel (buffer/selection ed p)
-                               :undo (buffer/undo-depth ed p)
-                               :redo (buffer/redo-depth ed p)}])))
+                  (keep (fn [p]
+                          (when-let [s (buffer/snapshot ed p)]
+                            [p {:lines (:lines s)
+                                :chars (:chars s)
+                                :cursor (:cursor s)
+                                :sel (:sel s)
+                                :undo (:undo s)
+                                :redo (:redo s)}])))
                   (buffer/tabs ed))})
 
 (defn- window-payload [ed path start count]
-  (let [root (buffer/buffer-root ed path)]
-    (merge (view/window root {:start start :count count
-                              :caret (buffer/cursor ed path)})
-           {:path path
-            :caret (buffer/cursor ed path)
-            :sel (buffer/selection ed path)
-            :undo (buffer/undo-depth ed path)
-            :redo (buffer/redo-depth ed path)
-            :rev (buffer/rev ed)})))
+  (assoc (buffer/read ed path
+                      (fn [s]
+                        (merge (view/window (:root s) {:start start :count count
+                                                       :caret (:cursor s)
+                                                       :key (:text-key s)})
+                               {:path path
+                                :caret (:cursor s)
+                                :sel (:sel s)
+                                :undo (:undo s)
+                                :redo (:redo s)})))
+         :rev (buffer/rev ed path)))
 
-(defn- handle-api [ed theme-atom lock req path query]
+(def ^:private menus-payload
+  ;; jonquil's menus (narcis/menus.edn on the classpath), narrowed to what
+  ;; Narcis runs
+  (delay (pr-str (menus/menus (slurp (io/resource "narcis/menus.edn"))))))
+
+(defn- display-name [path]
+  (if (or (nil? path) (str/starts-with? path "untitled"))
+    "Definitions"
+    (last (str/split path #"/"))))
+
+(defn- snapshot-of
+  "The edit-op snapshot ({:text :caret :sel-start :sel-end}) of path at
+   the message's caret, for the commands that read the text."
+  [ed path msg]
+  (buffer/read ed path
+               (fn [s]
+                 (let [caret (get msg :caret (:cursor s))
+                       [a b] (or (:sel msg) (:sel s) [caret caret])]
+                   {:text (:text (view/analysis (:text-key s) (:root s)))
+                    :caret caret :sel-start a :sel-end b}))))
+
+(defn- console-op
+  "One message to the Interactions console; answers what the page needs
+   and where the transcript now ends."
+  [ed con msg]
+  (let [path (or (:path msg) (buffer/active ed))
+        answer (case (:op msg)
+                 :run (if-let [code (buffer/buffer-text ed path)]
+                        (do (interactions/run! con code (display-name path)
+                                               (when (.exists (File. ^String path)) path))
+                            {:ok true})
+                        {:ok false :error (str "no such buffer: " path)})
+                 :run-selection (if (interactions/run-selection! con (snapshot-of ed path msg))
+                                  {:ok true}
+                                  {:ok false :error "nothing to run on this line"})
+                 :run-form (if (interactions/run-form! con (snapshot-of ed path msg))
+                             {:ok true}
+                             {:ok false :error "the caret is on no form"})
+                 :input (assoc (interactions/input! con (or (:text msg) "") (:shift msg)) :ok true)
+                 :stop {:ok true :stopped (interactions/stop! con)}
+                 :clear (do (interactions/clear! con) {:ok true})
+                 :history {:ok true :text (interactions/history! con (:dir msg) (:current msg))}
+                 {:ok false :error (str "unknown console op: " (:op msg))})]
+    (merge answer (select-keys (interactions/read-from con (:since msg)) [:status :ns :next]))))
+
+(defn- handle-api [{:keys [ed theme-atom lock con] :as ctx} req path query]
   (locking lock
     (try
       (case path
-        "/api/state" [200 (pr-str (state-payload ed theme-atom)) "text/plain; charset=utf-8"]
+        "/api/state" [200 (pr-str (state-payload ed theme-atom ctx)) "text/plain; charset=utf-8"]
         "/api/theme" (let [t (theme/theme (keyword (or (:name query) (name (:name @theme-atom)))))]
-                       [200 (pr-str (view/theme-payload t)) "text/plain; charset=utf-8"])
+                       [200 (pr-str (assoc (view/theme-payload t)
+                                           :console (interactions/console-styles t)))
+                        "text/plain; charset=utf-8"])
+        "/api/menus" [200 @menus-payload "text/plain; charset=utf-8"]
+        "/api/console" (if (= "POST" (:method req))
+                         [200 (pr-str (console-op ed con (edn/read-string (:body req))))
+                          "text/plain; charset=utf-8"]
+                         [200 (pr-str (assoc (interactions/read-from con (some-> (:since query) Integer/parseInt))
+                                             :ok true))
+                          "text/plain; charset=utf-8"])
         "/api/themes" [200 (pr-str {:choice (name (or (buffer/theme-choice ed) (:name @theme-atom)))
                                     :themes (mapv (fn [k]
                                                     {:name (name k)
@@ -138,6 +202,7 @@
                                                   theme/choice-names)})
                         "text/plain; charset=utf-8"]
         "/api/list" (let [dir (File. (or (:dir query)
+                                         (:project ctx)
                                          (some-> (buffer/active ed) (File.) (.getParent))
                                          "."))
                           dir (.getCanonicalFile dir)]
@@ -156,13 +221,13 @@
         "/api/window" (let [p (or (:path query) (buffer/active ed))
                             start (Integer/parseInt (or (:start query) "0"))
                             count (Integer/parseInt (or (:count query) "100"))]
-                        (if (and p (buffer/buffer ed p))
+                        (if (and p (buffer/open? ed p))
                           [200 (pr-str (window-payload ed p start count)) "text/plain; charset=utf-8"]
                           [404 "no buffer" "text/plain"]))
         "/api/op" (let [msg (edn/read-string (:body req))
                         res (ops/apply-op ed msg)
                         p (or (:path msg) (buffer/active ed))
-                        res (if (and (:ok res) (:view msg) p (buffer/buffer ed p))
+                        res (if (and (:ok res) (:view msg) p (buffer/open? ed p))
                               (assoc res :window (window-payload ed p
                                                                  (get-in msg [:view :start] 0)
                                                                  (get-in msg [:view :count] 100)))
@@ -188,10 +253,14 @@
                                    (if (.exists f)
                                      [200 (slurp f) "text/javascript; charset=utf-8"]
                                      [404 "app.js not built" "text/plain"]))
-              (str/starts-with? path "/api/") (handle-api (:ed ctx) (:theme-atom ctx) (:lock ctx) req path query)
+              (str/starts-with? path "/api/") (handle-api ctx req path query)
               :else [404 "not found" "text/plain"])]
         (respond! out status body ctype)
-        (println "NARCIS-S0 served" path "->" status)))))
+        ;; the page polls the console and re-reads windows constantly: only
+        ;; what changes something, or fails, is worth a line
+        (when (or (not= 200 status)
+                  (not (or (= path "/api/console") (= path "/api/window") (= path "/api/state"))))
+          (println "NARCIS-S0 served" path "->" status))))))
 
 (defn serve! [ctx port serve-secs]
   (with-open [server (ServerSocket. port 50 (InetAddress/getByName "127.0.0.1"))]
@@ -220,7 +289,7 @@
         port (Integer/parseInt (get m :port "8377"))
         serve-secs (Integer/parseInt (get m :serve-secs "0"))
         web-dir (get m :web-dir "web")
-        st (store/open-store {:dir dir :name "narcis/buffers"})
+        st (store/open-store {:dir dir :name store/store-name})
         ed (buffer/open-editor st)
         _ (when-let [t (:theme m)]
             (when (theme/choice? (keyword t))
@@ -235,13 +304,18 @@
       (println "NARCIS-S0 seeded hello buffer"))
     (when-let [f (:file m)]
       (buffer/open-file! ed f)
-      (println "NARCIS-S3 file-opened:" f "lines:" (rope/lines (buffer/buffer-root ed f))))
+      (println "NARCIS-S3 file-opened:" f "lines:" (:lines (buffer/snapshot ed f))))
     (let [text (store/current-buffer st "hello")
           versions (store/version-count st "hello")]
       (println "NARCIS-S0 buffer-versions:" versions)
       (println "NARCIS-S0 buffer-text-ok:" (= text hello-text))
       (attempt-auto-open! (str "http://127.0.0.1:" port "/"))
-      (let [ctx {:store st :ed ed :theme-atom theme-atom
+      (let [con (interactions/open st)
+            project (.getCanonicalPath
+                     (File. ^String (or (:project m)
+                                        (some-> (:file m) (File.) (.getAbsoluteFile) (.getParent))
+                                        ".")))
+            ctx {:store st :ed ed :theme-atom theme-atom :con con :project project
                  :lock (Object.) :web-dir web-dir}
             n (serve! ctx port serve-secs)]
         (println "NARCIS-S0 requests-served:" n)))

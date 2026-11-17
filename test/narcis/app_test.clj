@@ -13,7 +13,7 @@
 (defn- fresh-store []
   (let [dir (str (or (System/getenv "TMPDIR") (System/getProperty "java.io.tmpdir"))
                  "/narcis-app-" (System/nanoTime))]
-    (store/open-store {:dir dir :name "narcis/buffers"})))
+    (store/open-store {:dir dir :name store/store-name})))
 
 (defn- text [ed path] (buffer/buffer-text ed path))
 

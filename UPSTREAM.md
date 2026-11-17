@@ -3,8 +3,9 @@
 **Repository:** https://github.com/b12n-oss/jonquil
 **Pinned commit:** `0ac909914bd5e355967c1acab7022014d1e97711` (v0.4.4, 2026-11-16)
 
-Narcis lifts Jonquil's pure text-analysis core, re-expressing it over
-Eve ropes (see SPIKE-PLAN.md). Jonquil itself ports DrClojure-Neo; the
+Narcis lifts Jonquil's pure core — text analysis, editing and
+structural ops, the formatter, the console's decisions, the evaluator,
+the menus as data — and runs it over an Eve document in a browser page. Jonquil itself ports DrClojure-Neo; the
 original UPSTREAM.md follows below the lift table, unchanged.
 
 | Narcis file | Jonquil source | How |
@@ -14,10 +15,40 @@ original UPSTREAM.md follows below the lift table, unchanged.
 | `test/narcis/syntax_test.clj` | `test/jonquil/syntax_test.clj` | Ported (namespace only) |
 | `test/narcis/upstream_syntax_test.clj` | `test/jonquil/upstream/syntax_test.clj` | Ported (namespace only; DrClojure's tests via Jonquil) |
 | `test/narcis/edit_test.clj` | `test/jonquil/edit_test.clj` | Ported (namespace only; the `apply-edits` oracle is unchanged) |
-| `test/narcis/edit_rope_test.clj` | — | Narcis's own: the same ops driven through the rope layer, checked against the text oracle |
+| `test/narcis/edit_doc_test.clj` | — | Narcis's own: the same ops driven through the document layer (`narcis.text`), checked against the text oracle |
+| `src/narcis/paint.clj`, `src/narcis/theme.clj` | `src/jonquil/paint.clj`, `src/jonquil/theme.clj` | Lifted (S3); their own headers name the deltas |
+| `src/narcis/eval.clj` | `src/jonquil/eval.clj` | Lifted verbatim apart from the namespace: Run, stdin, output and Stop over Jolt's interrupt token (`jolt.host`) |
+| `test/narcis/eval_test.clj` | `test/jonquil/eval_test.clj` | Ported (namespace only) |
+| `src/narcis/console.clj` | `src/jonquil/console.clj` | Lifted verbatim apart from the namespaces it requires: what Return does, how a result reads, the console's styles |
+| `test/narcis/console_test.clj` | `test/jonquil/console_test.clj` | Ported (namespace only) |
+| `src/narcis/commands.clj` | `src/jonquil/commands.clj` | Lifted verbatim apart from the namespaces: Run Selection, Run Form, the bracket check before Run, the formatter's ops, find and replace over a snapshot, zoom steps |
+| `test/narcis/commands_test.clj` | `test/jonquil/commands_test.clj` | Ported; delta: the two Paren-stable format tests are left out (they drive `jonquil.parinfer-edit`, not lifted) |
+| `src/narcis/structural.clj` | `src/jonquil/structural.clj` | Lifted verbatim apart from the namespaces: slurp and barf, raise, splice, wrap, rewrap, drag, transpose, join, split, convolute, kill and copy a form, select and move by form |
+| `test/narcis/structural_test.clj` | `test/jonquil/structural_test.clj` | Ported (namespaces only) |
+| `src/narcis/menus.edn` | `src/jonquil/menus.edn` | Copied unchanged apart from the namespace named in its header comment; `narcis.menus` narrows it to the commands Narcis has |
 
 Jonquil is distributed under the Eclipse Public License 2.0 (see
 LICENSE and NOTICE in this repo, copied from Jonquil).
+
+# Narcis upstream: eve.text
+
+**Repository:** https://github.com/johnmn3/atom.broker (`libs/eve-text`)
+**Pinned commit:** `03f5277a9` (branch `claude/trusting-planck-luz9w2`, 2026-11-17)
+
+The buffer's text is an `eve.text` document: CodeMirror 6's `Text` as Eve
+data (a B-tree of lines, every edit a path copy). The library's two source
+files are carried here unchanged so the app runs from this clone and an Eve
+checkout alone; its tests, bench and report stay in the library. A change
+to either file is made there and re-copied, never edited here.
+
+| Narcis file | eve-text source | sha256 |
+|---|---|---|
+| `src/eve/text.cljc` | `libs/eve-text/src/eve/text.cljc` | `bef1719dca1299c979e1220b528bb0b1a3e2f87c3c7f7cebe3dc5fc36fd76d1e` |
+| `src/eve/text/store.cljc` | `libs/eve-text/src/eve/text/store.cljc` | `eeb3a07a3a2e43683b06565dce652629c1092ce497e9033570649aef4db3c3d9` |
+
+`src/narcis/text.clj` is Narcis's own: the document read and edited in
+Narcis's conventions (0-based lines, the file's line ending kept beside the
+document), and the file door (a file read in through eve.text's builder).
 
 ---
 

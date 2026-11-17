@@ -11,7 +11,7 @@
 (defn- fresh-editor []
   (let [dir (str (or (System/getenv "TMPDIR") (System/getProperty "java.io.tmpdir"))
                  "/narcis-ops-" (System/nanoTime))
-        st (store/open-store {:dir dir :name "narcis/buffers"})]
+        st (store/open-store {:dir dir :name store/store-name})]
     (buffer/open-editor st)))
 
 (defn- text [ed path] (buffer/buffer-text ed path))
