@@ -108,6 +108,14 @@
 
 (defonce metrics (atom {:char-w 8}))
 
+(def code-pad-x
+  "The code column's left padding, in px: character 0 of a line is
+   drawn this far right of the gutter's edge. The caret's x and the
+   mouse's x both count from here — when this was left out of the
+   caret math, the caret drew exactly one character behind the text
+   and clicks landed one character past the spot clicked."
+  8)
+
 (declare render! update-status! refresh-state! apply-theme-choice! render-tree!
          render-console! poll-console! close-complete! run-command! render-title!
          refresh-complete! accept-complete!)
@@ -162,7 +170,9 @@
            own? (not (contains? msg :path))
            msg (if own?
                  (assoc msg :path (:path s) :caret (:caret s) :sel (:sel s))
-                 msg)]
+                 msg)
+           carried-caret (:caret msg)
+           carried-sel (:sel msg)]
        ;; this op carries the caret: a caret sync still waiting has nothing
        ;; left to say (and sent later it would say a caret that has moved)
        (when own?
@@ -170,7 +180,14 @@
          (swap! state assoc :sync-timer nil))
        (-> (fetch-edn "/api/op" #js {:method "POST" :body (pr-str msg)})
            (.then (fn [res]
-                    (when (and (:ok res) (contains? res :caret) (= (:path msg) (:path @state)))
+                    ;; adopt the reply's caret only when the user has not
+                    ;; moved since this op read it: a reply that lands
+                    ;; after an arrow key or a click must not drag the
+                    ;; caret back to where the op left it (the user's
+                    ;; pending sync tells the server where they went)
+                    (when (and (:ok res) (contains? res :caret) (= (:path msg) (:path @state))
+                               (= (:caret @state) carried-caret)
+                               (= (:sel @state) carried-sel))
                       (swap! state assoc :caret (:caret res) :sel (:sel res)))
                     res)))))))
 
@@ -349,7 +366,7 @@
         pos (caret-pos win (:caret s))]
     (when pos
       (let [[_ col line] pos]
-        [(+ (gutter-w (:total-lines win)) (* col (:char-w @metrics)))
+        [(+ (gutter-w (:total-lines win)) code-pad-x (* col (:char-w @metrics)))
          (* (:n line) (line-h))]))))
 
 (defn render-caret! []
@@ -1582,7 +1599,7 @@
     (when win
       (let [line-n (max 0 (min (dec (:total-lines win)) (js/Math.floor (/ y (line-h)))))
             gw (gutter-w (:total-lines win))
-            col (js/Math.max 0 (js/Math.round (/ (- x gw) (:char-w @metrics))))
+            col (js/Math.max 0 (js/Math.round (/ (- x gw code-pad-x) (:char-w @metrics))))
             line (first (filter (fn [l] (= (:n l) line-n)) (:lines win)))]
         (when line
           (+ (:start line) (min col (count (:text line)))))))))
@@ -1697,7 +1714,7 @@
    ".line{display:flex;}"
    ".line.current{background:var(--current);}"
    ".gutter{flex:0 0 auto;box-sizing:border-box;text-align:right;padding-right:10px;user-select:none;color:var(--muted);}"
-   ".code{white-space:pre;padding-left:8px;}"
+   ".code{white-space:pre;padding-left:" code-pad-x "px;}"
    "@keyframes narcis-blink{0%,55%{opacity:1}56%,100%{opacity:0}}"
    ;; divider + console
    "#divider{flex:0 0 5px;cursor:row-resize;background:var(--bg);border-top:1px solid var(--chrome-border);}"
