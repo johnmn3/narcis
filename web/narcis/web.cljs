@@ -50,6 +50,9 @@
          :tree {:open false :root nil :expanded #{} :kids {}}
          :console {:entries [] :base 0 :next 0 :status "idle" :ns "user"}
          :console-h nil      ; px, or nil for the default share
+         :breakpoints {}     ; path -> #{line} the gutter marks
+         :debug nil          ; last debug-state from the console
+         :frames {:open false :data nil :frame 0 :local nil :eval nil}
          :complete nil       ; {:start :end :candidates :sel :doc} while open
          :dialog nil
          :focused false}))
@@ -118,7 +121,8 @@
 
 (declare render! update-status! refresh-state! apply-theme-choice! render-tree!
          render-console! poll-console! close-complete! run-command! render-title!
-         refresh-complete! accept-complete!)
+         refresh-complete! accept-complete!
+         toggle-breakpoint! render-frames! open-frames! close-frames! with-id)
 
 (defn gutter-w [total-lines]
   (if (:line-numbers @state)
@@ -349,11 +353,18 @@
             caret-line (when (:focused s) (first (caret-pos win (:caret s))))]
         (css! box (str "position:absolute;left:0;right:0;top:" (* (:start-line win) lh) "px;"))
         (doseq [[i line] (map-indexed vector (:lines win))]
-          (let [row (css! (el "div" (if (= i caret-line) "line current" "line") nil)
+          (let [line-no (inc (:n line))
+                bp? (contains? (get-in s [:breakpoints (:path s)] #{}) line-no)
+                row (css! (el "div" (if (= i caret-line) "line current" "line") nil)
                           (str "height:" lh "px;line-height:" lh "px;"))
-                gut (css! (el "span" "gutter" (when numbers? (str (inc (:n line)))))
-                          (str "width:" gw "px;"))
+                gut (css! (el "span" "gutter"
+                              (str (when bp? "● ") (when numbers? line-no)))
+                          (str "width:" gw "px;cursor:pointer;"
+                               (when bp? "color:#d33;font-weight:bold;")))
                 code (el "span" "code" nil)]
+            (on! gut "mousedown"
+                 (fn [e] (.preventDefault e) (.stopPropagation e)
+                   (toggle-breakpoint! line-no)))
             (doseq [seg (line-segments line (:sel s) (:match win))]
               (.appendChild code
                             (css! (el "span" nil (:text seg))
@@ -800,6 +811,12 @@
    "find/next" {:run (fn [] (find-step! :next)) :keys "Ctrl+G"}
    "find/previous" {:run (fn [] (find-step! :prev)) :keys "Ctrl+Shift+G"}
    "run/run" {:run (fn [] (console-op! {:op :run})) :keys "F5"}
+   "run/frames" {:run (fn [] (if (get-in @state [:frames :open]) (close-frames!) (open-frames!)))}
+   "run/break-on-error" {:run (fn [] (console-op! {:op :debug-toggle-break}))}
+   "run/continue" {:run (fn [] (console-op! {:op :debug-continue})) :keys "F8"}
+   "run/step-over" {:run (fn [] (console-op! {:op :debug-step :mode :over})) :keys "F10"}
+   "run/step-into" {:run (fn [] (console-op! {:op :debug-step :mode :step})) :keys "F11"}
+   "run/step-out" {:run (fn [] (console-op! {:op :debug-step :mode :out})) :keys "Shift+F11"}
    "run/selection" {:run (fn [] (console-op! {:op :run-selection})) :keys "Ctrl+E"}
    "run/form" {:run (fn [] (console-op! {:op :run-form})) :keys "Ctrl+Enter"}
    "run/stop" {:run (fn [] (console-op! {:op :stop})) :keys "Esc"}
@@ -1230,6 +1247,14 @@
       (render-console! (if (pos? gone) 0 keep-n))))
   (when (and res (contains? res :status) (not (contains? res :entries)))
     (swap! state update :console assoc :status (:status res) :ns (:ns res)))
+  (when (and res (contains? res :debug))
+    (let [was (boolean (get-in @state [:debug :paused?]))
+          now (boolean (:paused? (:debug res)))]
+      (swap! state assoc :debug (:debug res))
+      (cond
+        (and now (not was)) (open-frames!)
+        (and was (not now)) (do (swap! state assoc-in [:frames :data] nil)
+                                (render-frames!)))))
   (update-status!))
 
 (defn poll-console! []
@@ -1251,7 +1276,10 @@
   (chained
    (fn []
      (let [s @state
-           msg (merge {:path (:path s) :caret (:caret s) :sel (:sel s)} msg)]
+           msg (merge {:path (:path s) :caret (:caret s) :sel (:sel s)}
+                      (when (= :run (:op msg))
+                        {:breakpoints (vec (get-in s [:breakpoints (:path s)]))})
+                      msg)]
        (-> (fetch-edn "/api/console" #js {:method "POST" :body (pr-str msg)})
            (.then (fn [res]
                     (when (and (false? (:ok res)) (:error res)) (say! (:error res)))
@@ -1259,6 +1287,136 @@
                     (take-console! res)
                     (poll-console!)
                     res)))))))
+
+;; ---------------------------------------------------------------------------
+;; the debugger: breakpoints in the gutter, the Frames panel
+
+(defn toggle-breakpoint!
+  "Mark or unmark line (1-based) of the active buffer. The first mark
+   arms the console's breakpoint hook; a failed arm (a Jolt without
+   jolt.debug) takes the marks away again, as upstream's does."
+  [line]
+  (let [path (:path @state)
+        cur (get-in @state [:breakpoints path] #{})
+        on? (not (contains? cur line))
+        next (if on? (conj cur line) (disj cur line))
+        first? (and on? (empty? cur))
+        last? (and (not on?) (empty? next))]
+    (swap! state assoc-in [:breakpoints path] next)
+    (render-lines!)
+    (when (or first? last?)
+      (-> (console-op! {:op :debug-arm :on on?})
+          (.then (fn [res]
+                   (when (:error res)
+                     (swap! state assoc-in [:breakpoints path] #{})
+                     (render-lines!))))))))
+
+(defn open-frames!
+  "Show the Frames panel with the pause's (or last error's) frames."
+  []
+  (swap! state assoc-in [:frames :open] true)
+  (-> (console-op! {:op :debug-frames})
+      (.then (fn [res]
+               (when (:frames res)
+                 (swap! state assoc-in [:frames :data] (:frames res))
+                 (swap! state assoc-in [:frames :frame] 0)
+                 (swap! state assoc-in [:frames :local] nil)
+                 (render-frames!))))))
+
+(defn close-frames! []
+  (swap! state assoc-in [:frames :open] false)
+  (render-frames!))
+
+(defn frames-eval! []
+  (let [ta (by-id "frames-eval-in")
+        code (.-value ta)
+        d (get-in @state [:frames :data])]
+    (when (and d (not (str/blank? code)))
+      (-> (console-op! {:op :debug-eval :error-id (:error-id d)
+                        :frame (get-in @state [:frames :frame]) :code code})
+          (.then (fn [res]
+                   (swap! state assoc-in [:frames :eval]
+                          (if (:error res)
+                            (str "Error: " (:error res))
+                            (str (when (seq (:out res)) (str (:out res) "\n")) (:text res))))
+                   (render-frames!)))))))
+
+(defn render-frames!
+  "Draw the Frames panel: the pause's controls, the frame and local
+   rows, one local's full text, and the evaluate-in-a-frame line."
+  []
+  (when-let [box (by-id "frames")]
+    (let [s @state
+          {:keys [open data frame local]} (:frames s)
+          eval-text (:eval (:frames s))
+          ;; a redraw must not eat what is being typed in the eval line
+          typed (when-let [ta (by-id "frames-eval-in")] (.-value ta))
+          dbg (:debug s)
+          paused? (boolean (:paused? dbg))]
+      (clear! box)
+      (show! box open)
+      (when open
+        (css! box "border-top:1px solid #8884;padding:4px 8px;max-height:40%;overflow:auto;")
+        (let [head (el "div" nil nil)
+              title (el "span" nil (or (:title data) "Frames"))
+              btn (fn [label f]
+                    (let [b (el "button" nil label)]
+                      (css! b "margin-left:6px;")
+                      (on! b "click" f)
+                      b))]
+          (css! title "font-weight:bold;")
+          (append! head title)
+          (when paused?
+            (append! head
+                     (btn "Continue" (fn [] (console-op! {:op :debug-continue})))
+                     (btn "Step Into" (fn [] (console-op! {:op :debug-step :mode :step})))
+                     (btn "Step Over" (fn [] (console-op! {:op :debug-step :mode :over})))
+                     (btn "Step Out" (fn [] (console-op! {:op :debug-step :mode :out})))
+                     (btn "Stop" (fn [] (console-op! {:op :stop})))))
+          (append! head
+                   (btn (if (:break-on? dbg) "Break on error: on" "Break on error: off")
+                        (fn [] (-> (console-op! {:op :debug-toggle-break})
+                                   (.then (fn [_] (render-frames!))))))
+                   (btn "✕" close-frames!))
+          (.appendChild box head))
+        (if (nil? data)
+          (.appendChild box (el "div" nil (if (false? (:available dbg))
+                                            "Frames need a Jolt with jolt.debug (this one has none)."
+                                            "No frames yet: they come with a pause or an error.")))
+          (do
+            (doseq [row (:rows data)]
+              (case (:kind row)
+                :frame (let [r (el "div" nil (:text row))]
+                         (css! r (str "cursor:pointer;font-weight:bold;"
+                                      (when (= frame (:frame row)) "text-decoration:underline;")))
+                         (on! r "click" (fn [] (swap! state assoc-in [:frames :frame] (:frame row))
+                                         (render-frames!)))
+                         (.appendChild box r))
+                :local (let [r (el "div" nil (:text row))]
+                         (css! r "cursor:pointer;white-space:pre;")
+                         (on! r "click"
+                              (fn [] (-> (console-op! {:op :debug-local :error-id (:error-id data)
+                                                       :frame (:frame row) :local (:name row)})
+                                         (.then (fn [res]
+                                                  (swap! state assoc-in [:frames :local]
+                                                         (or (:text res) (:error res)))
+                                                  (render-frames!))))))
+                         (.appendChild box r))
+                (.appendChild box (el "div" nil (:text row)))))
+            (when local
+              (.appendChild box (css! (el "pre" nil local) "white-space:pre-wrap;margin:4px 0;")))
+            (let [row (el "div" nil nil)
+                  inp (with-id (el "input" nil nil) "frames-eval-in")
+                  b (el "button" nil "Eval in frame")]
+              (set! (.-placeholder inp) "evaluate in the selected frame")
+              (when typed (set! (.-value inp) typed))
+              (css! inp "width:60%;margin-right:6px;")
+              (on! inp "keydown" (fn [e] (when (= "Enter" (.-key e)) (.preventDefault e) (frames-eval!))))
+              (on! b "click" (fn [] (frames-eval!)))
+              (append! row inp b)
+              (.appendChild box row))
+            (when eval-text
+              (.appendChild box (css! (el "pre" nil eval-text) "white-space:pre-wrap;margin:4px 0;")))))))))
 
 (defn grow-console-input! []
   (let [ta (by-id "console-in")]
@@ -1511,6 +1669,15 @@
         lower (str/lower-case k)
         run (fn [id] (.preventDefault e) (run-command! id) true)]
     (cond
+      ;; the debugger's keys, live only while a pause is being served
+      (and (= k "F8") (get-in @state [:debug :paused?]))
+      (do (.preventDefault e) (console-op! {:op :debug-continue}) true)
+      (and (= k "F10") (get-in @state [:debug :paused?]))
+      (do (.preventDefault e) (console-op! {:op :debug-step :mode :over}) true)
+      (and (= k "F11") shift (get-in @state [:debug :paused?]))
+      (do (.preventDefault e) (console-op! {:op :debug-step :mode :out}) true)
+      (and (= k "F11") (get-in @state [:debug :paused?]))
+      (do (.preventDefault e) (console-op! {:op :debug-step :mode :step}) true)
       (and (= k "F5") shift) (run "run/stop")
       (= k "F5") (run "run/run")
       (and cmd (not shift) (not alt) (= lower "r")) (run "run/run")
@@ -1842,6 +2009,7 @@
           divider (with-id (el "div" nil nil) "divider")
           console (with-id (el "div" nil nil) "console")
           con-out (with-id (el "div" nil nil) "console-out")
+          frames (with-id (el "div" nil nil) "frames")
           con-row (with-id (el "div" nil nil) "console-row")
           con-prompt (with-id (el "span" nil "user=> ") "console-prompt")
           con-in (with-id (el "textarea" nil nil) "console-in")]
@@ -1873,7 +2041,8 @@
       (set! (.-spellcheck con-in) false)
       (.setAttribute con-in "autocapitalize" "off")
       (append! con-row con-prompt con-in)
-      (append! console con-out con-row)
+      (css! frames "display:none;")
+      (append! console con-out frames con-row)
       (append! work tabs findbar sc divider console)
       (append! main tree work)
       (.appendChild app main)

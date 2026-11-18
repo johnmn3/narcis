@@ -27,7 +27,14 @@ scoped to the files Narcis carries.
 | `test/narcis/structural_test.clj` | `test/jonquil/structural_test.clj` | Ported (namespaces only) |
 | `src/narcis/menus.edn` | `src/jonquil/menus.edn` | Copied unchanged apart from the namespace named in its header comment; `narcis.menus` narrows it to the commands Narcis has |
 | `src/narcis/docs.clj` | `src/jonquil/docs.clj` | Lifted verbatim apart from the namespace: documentation and completion lookups resolved in the buffer's namespace |
-| `src/narcis/interactions.clj` | `src/jonquil/session.clj` | Re-expresses Jonquil's session — Run's reset rule and the prompt's namespace rule — over `narcis.eval` and an Eve-atom transcript, without Jonquil's debugger/trace runtime |
+| `src/narcis/interactions.clj` | `src/jonquil/session.clj` | Re-expresses Jonquil's session — Run's reset rule and the prompt's namespace rule — over `narcis.eval` and an Eve-atom transcript; the debugger wiring (the break hook, arming, the pause the page serves) is composed here, as Jonquil composes it in its session |
+| `src/narcis/debugger.clj` | `src/jonquil/debugger.clj` | Lifted apart from the namespaces: the frames and locals of an error or a pause, the breakpoint pause and the stepping machinery, all over the host's `jolt.debug`; the frame filter names Narcis's own harness namespaces first and keeps Jonquil's, so the lifted tests' fake frames filter the same way |
+| `src/narcis/breakpoints.clj` | `src/jonquil/breakpoints.clj` | Lifted apart from the namespaces: where in a buffer's text a breakpoint form can go, and the instrumentation of a Run (breakpoints and step points as inserted forms) |
+| `src/narcis/changed.clj` | `src/jonquil/changed.clj` | Lifted apart from the namespaces: which top-level forms changed since they last ran (a `narcis.breakpoints` dependency) |
+| `src/narcis/instrument_lock.clj` | `src/jonquil/instrument-lock.clj` | Lifted verbatim apart from the namespace: the lock around the host's instrumentation-mode read-then-set |
+| `test/narcis/debugger_test.clj` | `test/jonquil/debugger_test.clj` | Ported (namespaces only) |
+| `test/narcis/breakpoints_test.clj` | `test/jonquil/breakpoints_test.clj` | Ported (namespaces only), with one test-only delta: where the Jolt running it has no `jolt.debug`, the file stands in the one macro its instrumentation checks expand (`with-break-handler`, catch-all semantics) so the placement corpus still runs, and the live sections take their "not available" path |
+| `test/narcis/debugger_wiring_test.clj`, `test/narcis/debugger_live_test.clj`, `test/page/debugger_e2e.cjs` | — | Narcis's own: the console wiring on a Jolt without `jolt.debug` (arming fails clean, a marked Run still runs), the live pause/step/eval flow on one with it, and the same flow driven through the real page |
 
 Everything else — `narcis.buffer`, `narcis.store`, `narcis.text`,
 `narcis.view`, `narcis.nav`, `narcis.ops`, `narcis.launcher` and the

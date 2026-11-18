@@ -66,6 +66,8 @@ every keystroke, and at the current Eve pin the journaled path measured
 |---|---|
 | Run the Definitions | **▶ Run**, F5 or Ctrl/Cmd+R |
 | Stop a running program | **Stop**, or Esc |
+| Breakpoints | click a line's gutter to mark it; Run pauses there |
+| While paused | the Frames panel: Continue F8, Step Over F10, Step Into F11, Step Out Shift+F11, evaluate in the selected frame; **Break on error** in the panel makes a throw pause the same way |
 | Run the form at the caret / the selection or line | Ctrl/Cmd+Enter / Ctrl/Cmd+E |
 | The console's prompt | type, Enter; Shift+Enter or an open bracket continues the input; ↑ ↓ recall |
 | Switch between editor and console | F6 |
@@ -84,11 +86,16 @@ program created are removed and the Definitions are evaluated into a fresh
 `user`, while libraries stay. The console's transcript is kept in an Eve
 atom beside the editor's, so it survives a restart too.
 
+The debugger — gutter breakpoints, the Frames panel with each frame's
+locals, stepping, evaluating in a paused frame, Break on error — rides the
+host's `jolt.debug`, which the released Jolt (v0.8.23) does not carry yet;
+the nightly Jolt does. On a Jolt without it the panel says so, arming a
+breakpoint fails clean, and a marked Run still runs uninstrumented.
+
 ## What is not in it
 
 Jonquil is a large program. Not ported: Parinfer, find-and-replace, jump to
-definition and the Locations list, the inspector, the debugger (breakpoints,
-Break on error, stepping), tracing and line counts, Run Tests, the dialects
+definition and the Locations list, the inspector, tracing and line counts, Run Tests, the dialects
 other than Jolt (JVM Clojure, ClojureScript, ClojureDart, jank, nREPL
 attach), out-of-process Jolt, plugins, the MCP server, the terminal, change
 sets and Compare, Save World, preferences and editable key bindings, and
@@ -105,8 +112,8 @@ JVM.
 - `src/narcis/buffer.cljc` — a buffer is a `BufferState` at the root of its
   own Eve atom; every mutation is one `swap!` with the text op inside it.
 - `src/narcis/` (syntax, edit, structural, commands, eval, console, docs,
-  theme, paint, menus) — Jonquil's language core, lifted; `UPSTREAM.md` has
-  the file-by-file table.
+  theme, paint, menus, debugger, breakpoints) — Jonquil's language core,
+  lifted; `UPSTREAM.md` has the file-by-file table.
 - `src/narcis/launcher.clj` — the server: it holds the store, answers the
   page's window/edit/run messages, and serves the page.
 - `web/narcis/web.cljs` — the page: a viewport over the server's windows,
@@ -136,21 +143,32 @@ bash scripts/page-gate.sh
 bash scripts/editor-e2e.sh
 ```
 
+```bash
+bash scripts/debugger-e2e.sh
+```
+
 `run-all-tests` is the lifted Jonquil corpus and Narcis's own tests;
 `buffer-gate` walks undo and redo across a restart; `editor-gate` is an
 editing session over HTTP with a `kill -9` in the middle; `page-gate` drives
 the real page in headless Chromium (it needs `node` with `playwright`), and
 `editor-e2e` drives the same page through the editing behaviours themselves:
 caret geometry, clicks, arrow/Home/End/Page movement, selection, fast
-typing, auto-pair, smart enter, a paredit op and find.
+typing, auto-pair, smart enter, a paredit op and find. `debugger-e2e`
+drives the debugger through the page — a gutter breakpoint, the pause with
+its locals, evaluating in the frame, Continue, Break on error — and needs a
+Jolt with `jolt.debug` (run it with `BIN` pointing at one, e.g. the
+nightly); on a Jolt without it, it prints SKIP and exits 0, and the corpus'
+live debugger tests take the same skipped path there.
 
 Latest results at the current tip (2026-11-17, Jolt v0.8.23, Eve
-`84bfc7c8`): 153 tests, 1,333 assertions, 0 failures across the corpus;
-buffer and store gates pass; the editor gate passes 27/27; the page gate
-passes 44/44; the editor e2e passes 38/38; the viewport gate passes 3/3
-with a 1,000,000-line file opening inside a 60 s run. Over HTTP at 4,000
-lines, a keystroke with its repaint measures 33 ms and a 100-line window
-fetch 26 ms.
+`84bfc7c8`): 248 tests, 1,677 assertions, 0 failures across the corpus
+(the debugger suites included; their live sections take the skipped path
+on this Jolt and run on the nightly); buffer and store gates pass; the
+editor gate passes 27/27; the page gate passes 44/44; the editor e2e
+passes 38/38; the debugger e2e passes 12/12 on the nightly Jolt; the
+viewport gate passes 3/3 with a 1,000,000-line file opening inside a
+60 s run. Over HTTP at 4,000 lines, a keystroke with its repaint measures
+33 ms and a 100-line window fetch 26 ms.
 
 ## License and attribution
 

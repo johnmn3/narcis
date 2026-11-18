@@ -15,6 +15,10 @@
             [narcis.commands-test]
             [narcis.console-test]
             [narcis.eval-test]
+            [narcis.debugger-test]
+            [narcis.breakpoints-test]
+            [narcis.debugger-wiring-test]
+            [narcis.debugger-live-test]
             [narcis.docs-test]
             [narcis.view-test]
             [narcis.ops-test]
@@ -28,6 +32,8 @@
                      'narcis.edit-test 'narcis.edit-doc-test
                      'narcis.structural-test 'narcis.commands-test
                      'narcis.console-test 'narcis.eval-test 'narcis.docs-test
+                     'narcis.debugger-test 'narcis.breakpoints-test
+                     'narcis.debugger-wiring-test 'narcis.debugger-live-test
                      'narcis.view-test 'narcis.ops-test 'narcis.app-test
                      'narcis.features-test)]
     (println "TEST-SUMMARY" m)

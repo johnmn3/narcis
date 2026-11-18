@@ -161,7 +161,8 @@
         answer (case (:op msg)
                  :run (if-let [code (buffer/buffer-text ed path)]
                         (do (interactions/run! con code (display-name path)
-                                               (when (.exists (File. ^String path)) path))
+                                               (when (.exists (File. ^String path)) path)
+                                               (set (:breakpoints msg)))
                             {:ok true})
                         {:ok false :error (str "no such buffer: " path)})
                  :run-selection (if (interactions/run-selection! con (snapshot-of ed path msg))
@@ -174,8 +175,20 @@
                  :stop {:ok true :stopped (interactions/stop! con)}
                  :clear (do (interactions/clear! con) {:ok true})
                  :history {:ok true :text (interactions/history! con (:dir msg) (:current msg))}
+                 :debug-arm (let [r (interactions/arm-breakpoints! con (boolean (:on msg)))]
+                              (assoc r :ok (not (:error r))))
+                 :debug-frames {:ok true :frames (interactions/frames! con)}
+                 :debug-local (let [r (interactions/local! con (:error-id msg) (:frame msg) (:local msg))]
+                                (assoc r :ok (not (:error r))))
+                 :debug-eval (let [r (interactions/debug-eval! con (:error-id msg) (:frame msg) (or (:code msg) ""))]
+                               (assoc r :ok (not (:error r))))
+                 :debug-continue {:ok (boolean (interactions/continue! con))}
+                 :debug-step {:ok (boolean (interactions/step! con (or (:mode msg) :step)))}
+                 :debug-toggle-break (let [r (interactions/toggle-break! con)]
+                                       (assoc r :ok (not (:error r))))
                  {:ok false :error (str "unknown console op: " (:op msg))})]
-    (merge answer (select-keys (interactions/read-from con (:since msg)) [:status :ns :next]))))
+    (merge answer (select-keys (interactions/read-from con (:since msg)) [:status :ns :next])
+           {:debug (interactions/debug-state con)})))
 
 (defn- handle-api [{:keys [ed theme-atom lock con] :as ctx} req path query]
   (locking lock
@@ -191,7 +204,8 @@
                          [200 (pr-str (console-op ed con (edn/read-string (:body req))))
                           "text/plain; charset=utf-8"]
                          [200 (pr-str (assoc (interactions/read-from con (some-> (:since query) Integer/parseInt))
-                                             :ok true))
+                                             :ok true
+                                             :debug (interactions/debug-state con)))
                           "text/plain; charset=utf-8"])
         "/api/themes" [200 (pr-str {:choice (name (or (buffer/theme-choice ed) (:name @theme-atom)))
                                     :themes (mapv (fn [k]
