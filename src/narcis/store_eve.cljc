@@ -3,28 +3,30 @@
    narcis.store only on hosts where eve.atom loads.
 
    The store is a disk DOMAIN at a base path (release Eve,
-   examples/disk_domain.cljc). It holds NAMED Eve atoms in that
-   domain; every process that opens the same base joins the same
-   domain and sees the same atoms.
+   examples/disk_domain.cljc) holding ONE Eve atom — the app
+   state atom, the way a cljs app has one. Its value is a plain
+   map, the whole app state:
 
-   Buffer versions live one atom per buffer name, and the atom's
-   value is a Versioned eve.deftype at the root:
+     {:buffers  {<path> BufferState}   ; narcis.buffer's documents
+      :editor   {:tabs [...] :active <path> :rev n :theme <choice>}
+      :console  {:entries [...] :dropped n :ns <string>}
+      :versions {<name> Versioned}}     ; the launcher's text buffers
 
-     Versioned{:cur <current value> :hist <eve array of prior values>}
+   One atom because everything in it shares the one contention
+   domain anyway; a collection of atoms bought nothing. Every
+   change is one swap! on the atom, updating one slot of the map.
 
-   A deftype value must sit at an atom's root: nested inside a
-   collection value it would be frozen by its plain field view, and
-   a field held by reference (a rope's children array) cannot be
-   packed (measured at Eve @84bfc7c8). At the root the value is
-   owned, never packed.
-
-   Values enter by swap!. The versions atoms hold plain values (the
-   launcher's hello text); a buffer's document is built inside its own
-   atom's swap by narcis.buffer."
+   BufferState and Versioned are eve.deftype values nested in the
+   map. That is sound because they are only ever built and read
+   inside the atom's own machinery: constructed in a swap fn,
+   where the domain is bound and a deftype value is Eve pointers,
+   and read in a read region (eve.alpha/$), where they are read
+   in place. A plain deref of the atom refuses — a value held by
+   reference cannot be packed for delivery — so no path derefs
+   it: writes go through swap-in!, reads through read-in."
   (:require [eve.alpha :as e] [eve.atom :as ea]
             [eve.host :as eh] [eve.deftype :as edt]
-            [eve.deftype.array :as arr]
-            [clojure.string :as str]))
+            [eve.deftype.array :as arr]))
 
 (defprotocol IVersioned
   (-cur [v] "The current version's value.")
@@ -34,8 +36,6 @@
   IVersioned
   (-cur [_] cur)
   (-hist [_] hist))
-
-(defn- sanitize [s] (str/replace s #"[^a-zA-Z0-9._-]" "_"))
 
 (defn- arr-len [a] (if (nil? a) 0 (arr/alength a)))
 
@@ -49,74 +49,60 @@
 (defn- arr-vec [a]
   (if (nil? a) [] (vec (arr/array-seq a))))
 
-(defn- named-atom
-  "The store's atom for one namespaced key, created (with initial
-   value nil) on first use and cached in the store handle."
-  [{:keys [base atoms]} kind key]
-  (let [k [kind key]]
-    (or (get @atoms k)
-        (let [a (e/atom {:id (keyword "narcis.store" (str kind "-" (sanitize key)))
-                         :persistent base}
-                        nil)]
-          (swap! atoms assoc k a)
-          a))))
+(def empty-state
+  "The app atom's first value: every slot empty."
+  {:buffers {} :editor nil :console nil :versions {}})
 
 (defn open [{:keys [dir name]}]
   (let [base (str dir "/" name)]
     ;; A regular Eve disk domain at base, with Eve's defaults —
     ;; journal included. Opening it now is the store's lifecycle:
-    ;; the domain is created at open, closed at close!. The store's
-    ;; atoms are regular Eve atoms in it (see named-atom).
+    ;; the domain is created at open, closed at close!.
     (ea/persistent-atom-domain base)
-    {:impl :eve :base base :atoms (atom {})}))
+    (let [a (e/atom {:id :narcis.store/app :persistent base} nil)]
+      (when (e/$ (nil? @a))
+        (eh/swap! a (fn [_] empty-state)))
+      {:impl :eve :base base :atom a})))
+
+(defn swap-in!
+  "One swap! on the app atom: the value at ks becomes
+   (f <current value at ks>). f runs inside the swap, in the
+   atom's domain. Answers nil."
+  [store ks f]
+  (eh/swap! (:atom store)
+            (fn [app] (assoc-in app ks (f (get-in app ks)))))
+  nil)
+
+(defn read-in
+  "(f value-at-ks) inside a read region: the value in place, f's
+   answer as plain data (see narcis.store/read-in)."
+  [store ks f]
+  (e/$ (f (get-in @(:atom store) ks))))
+
+;; -- versions: the launcher's plain text buffers, one slot each --
 
 (defn put! [store buffer-name value]
-  (let [a (named-atom store "versions" buffer-name)]
-    (eh/swap! a
-              (fn [v]
-                (if (nil? v)
-                  (->Versioned value nil)
-                  (->Versioned value
-                               (arr-push (-hist v) (-cur v))))))
-    (let [v @a]
-      (dec (inc (arr-len (-hist v)))))))
+  (swap-in! store [:versions buffer-name]
+            (fn [v]
+              (if (nil? v)
+                (->Versioned value nil)
+                (->Versioned value
+                             (arr-push (-hist v) (-cur v))))))
+  (read-in store [:versions buffer-name]
+           (fn [v] (arr-len (-hist v)))))
 
 (defn current [store buffer-name]
-  (let [v @(named-atom store "versions" buffer-name)]
-    (when (some? v) (-cur v))))
+  (read-in store [:versions buffer-name]
+           (fn [v] (when (some? v) (-cur v)))))
 
 (defn version [store buffer-name i]
-  (let [v @(named-atom store "versions" buffer-name)]
-    (when (some? v)
-      (nth (conj (arr-vec (-hist v)) (-cur v)) i nil))))
+  (read-in store [:versions buffer-name]
+           (fn [v] (when (some? v)
+                     (nth (conj (arr-vec (-hist v)) (-cur v)) i nil)))))
 
 (defn version-count [store buffer-name]
-  (let [v @(named-atom store "versions" buffer-name)]
-    (if (nil? v) 0 (inc (arr-len (-hist v))))))
-
-;; -- generic named atoms (narcis.buffer's editor + buffer state) --
-
-(defn open-atom
-  "Open the store's atom named key in the domain, with initial
-   value init when the atom has never been set. Returns a handle
-   for store/atom-deref and store/atom-swap!."
-  [store key init]
-  (let [a (named-atom store "atom" key)]
-    (when (nil? @a)
-      (eh/swap! a (fn [v] (if (nil? v) init v))))
-    {:kind :eve :atom a}))
-
-(defn atom-deref [handle]
-  @(:atom handle))
-
-(defn atom-read
-  "(f value) inside a read region: the value in place, f's answer
-   as plain data (see narcis.store/atom-read)."
-  [handle f]
-  (e/$ (f @(:atom handle))))
-
-(defn atom-swap! [handle f]
-  (eh/swap! (:atom handle) f))
+  (read-in store [:versions buffer-name]
+           (fn [v] (if (nil? v) 0 (inc (arr-len (-hist v)))))))
 
 (defn close! [{:keys [base]}]
   (ea/close-atom-domain! (ea/persistent-atom-domain base))

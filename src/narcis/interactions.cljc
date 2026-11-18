@@ -51,18 +51,18 @@
   #?(:clj (deref p 5000 {:error "The paused program did not answer."})
      :cljs {:error "The paused program did not answer."}))
 
-(def atom-name "console")
-
 (def max-chars
   "The transcript keeps about this many characters; older entries go."
   400000)
 
 (defn open
-  "The console of store st: its evaluator context, its transcript atom,
-   and the queue between them."
+  "The console of store st: its evaluator context, its transcript
+   (the app atom's :console slot), and the queue between them."
   [st]
+  (store/swap-in! st [:console]
+                  (fn [v] (or v {:entries [] :dropped 0 :ns "user"})))
   (let [con {:ctx (eval/make-eval-context)
-             :atom (store/open-atom st atom-name {:entries [] :dropped 0 :ns "user"})
+             :store st
              :pending (pending-queue)
              :ns (atom nil)
              ;; what was here before the user's program: never reset
@@ -109,7 +109,7 @@
   [con]
   (debugger/arm-breakpoints! (:hook con)))
 
-(defn- value [con] (store/atom-deref (:atom con)))
+(defn- value [con] (store/read-in (:store con) [:console] identity))
 
 (defn console-styles
   "The console's style table under theme t, for the page: each kind's
@@ -171,13 +171,13 @@
 
 (defn flush!
   "Write what the evaluator has said since the last flush! into the
-   transcript atom: one swap. Called with the server's lock held."
+   transcript slot: one swap. Called with the server's lock held."
   [con]
   (let [new (joined (drain (:pending con)))
         ns-now (some-> @(:ns con) str)]
     (when (or (seq new) (and ns-now (not= ns-now (:ns (value con)))))
-      (store/atom-swap! (:atom con)
-                        (fn [s]
+      (store/swap-in! (:store con) [:console]
+                      (fn [s]
                           (let [es (:entries s)
                                 ;; a chunk continuing the last entry's kind joins it
                                 merged (joined (into (if (seq es) [(peek es)] []) new))
@@ -208,8 +208,8 @@
   "Forget the transcript (positions go on from where they were)."
   [con]
   (flush! con)
-  (store/atom-swap! (:atom con)
-                    (fn [s] (assoc s :dropped (+ (:dropped s) (count (:entries s))) :entries [])))
+  (store/swap-in! (:store con) [:console]
+                  (fn [s] (assoc s :dropped (+ (:dropped s) (count (:entries s))) :entries [])))
   nil)
 
 ;; ---------------------------------------------------------------------------

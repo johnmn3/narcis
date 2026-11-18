@@ -368,7 +368,7 @@
                      (buffer/open? ed np) {:ok false :error (str "already open: " np)}
                      :else (do (save! ed path np)
                                ;; the new buffer is the saved file opened: its own
-                               ;; document in its own atom (two atoms never hold
+                               ;; document in its own slot (two slots never hold
                                ;; one tree)
                                (buffer/open-file! ed np)
                                (buffer/close-buffer! ed path)
