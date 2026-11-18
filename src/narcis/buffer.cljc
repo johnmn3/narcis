@@ -41,7 +41,7 @@
 
    The editor requires the store's Eve arm: open-editor says so when
    handed a file store."
-  (:require [eve.deftype :as edt]
+  (:require [eve.alpha :as eve]
             [narcis.text :as text]
             [narcis.store :as store]))
 
@@ -61,7 +61,7 @@
   (-trev [b] "How many of them changed the document.")
   (-gen [b] "The editor revision this buffer was opened at."))
 
-(edt/deftype BufferState [root cursor sel undo redo eol rev trev gen nundo nredo]
+(eve/deftype BufferState [root cursor sel undo redo eol rev trev gen nundo nredo]
   IBufferState
   (-root [_] root)
   (-cursor [_] cursor)
@@ -85,7 +85,7 @@
   (-doc [h] "The document at this step.")
   (-older [h] "The steps before it, or nil."))
 
-(edt/deftype History [doc older]
+(eve/deftype History [doc older]
   IHistory
   (-doc [_] doc)
   (-older [_] older))

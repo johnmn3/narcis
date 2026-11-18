@@ -24,15 +24,14 @@
    in place. A plain deref of the atom refuses — a value held by
    reference cannot be packed for delivery — so no path derefs
    it: writes go through swap-in!, reads through read-in."
-  (:require [eve.alpha :as e] [eve.atom :as ea]
-            [eve.host :as eh] [eve.deftype :as edt]
+  (:require [eve.alpha :as eve]
             [eve.deftype.array :as arr]))
 
 (defprotocol IVersioned
   (-cur [v] "The current version's value.")
   (-hist [v] "Eve array of prior values, oldest first, or nil."))
 
-(edt/deftype Versioned [cur hist]
+(eve/deftype Versioned [cur hist]
   IVersioned
   (-cur [_] cur)
   (-hist [_] hist))
@@ -58,10 +57,10 @@
     ;; A regular Eve disk domain at base, with Eve's defaults —
     ;; journal included. Opening it now is the store's lifecycle:
     ;; the domain is created at open, closed at close!.
-    (ea/persistent-atom-domain base)
-    (let [a (e/atom {:id :narcis.store/app :persistent base} nil)]
-      (when (e/$ (nil? @a))
-        (eh/swap! a (fn [_] empty-state)))
+    (eve/persistent-atom-domain base)
+    (let [a (eve/atom {:id :narcis.store/app :persistent base} nil)]
+      (when (eve/$ (nil? @a))
+        (eve/swap! a (fn [_] empty-state)))
       {:impl :eve :base base :atom a})))
 
 (defn swap-in!
@@ -69,7 +68,7 @@
    (f <current value at ks>). f runs inside the swap, in the
    atom's domain. Answers nil."
   [store ks f]
-  (eh/swap! (:atom store)
+  (eve/swap! (:atom store)
             (fn [app] (assoc-in app ks (f (get-in app ks)))))
   nil)
 
@@ -77,7 +76,7 @@
   "(f value-at-ks) inside a read region: the value in place, f's
    answer as plain data (see narcis.store/read-in)."
   [store ks f]
-  (e/$ (f (get-in @(:atom store) ks))))
+  (eve/$ (f (get-in @(:atom store) ks))))
 
 ;; -- versions: the launcher's plain text buffers, one slot each --
 
@@ -105,5 +104,5 @@
            (fn [v] (if (nil? v) 0 (inc (arr-len (-hist v)))))))
 
 (defn close! [{:keys [base]}]
-  (ea/close-atom-domain! (ea/persistent-atom-domain base))
+  (eve/close-atom-domain! (eve/persistent-atom-domain base))
   nil)

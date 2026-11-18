@@ -10,7 +10,7 @@
    rope spike. This probe re-derives that at the current pin for
    the one-atom shape before any caller is rewritten on it.
    Run: scripts/jolt-run.sh narcis.probe-oneatom <dir>"
-  (:require [eve.alpha :as e] [eve.atom :as ea] [eve.host :as eh]
+  (:require [eve.alpha :as eve]
             [eve.deftype.array :as arr]
             [narcis.text :as text] [narcis.buffer :as buffer]
             [narcis.store-eve :as se]))
@@ -25,7 +25,7 @@
    :theme :dark :cur "v2" :hist0 "v1"})
 
 (defn- read-back [a]
-  (e/$ (let [app @a
+  (eve/$ (let [app @a
              b (get-in app [:buffers "x.clj"])
              v (get-in app [:versions "hello"])]
          {:chars (text/chars (buffer/-root b))
@@ -45,19 +45,19 @@
 (defn -main [dir]
   (let [base (str dir "/db")
         results (atom [])]
-    (ea/persistent-atom-domain base)
-    (let [a (e/atom {:id :narcis.store/app :persistent base} nil)]
-      (eh/swap! a (fn [_] {:buffers {}
+    (eve/persistent-atom-domain base)
+    (let [a (eve/atom {:id :narcis.store/app :persistent base} nil)]
+      (eve/swap! a (fn [_] {:buffers {}
                            :editor {:tabs [] :active nil :rev 0 :theme nil}
                            :versions {}}))
       (timed "open-buffer swap"
-             #(eh/swap! a (fn [app]
+             #(eve/swap! a (fn [app]
                             (assoc-in app [:buffers "x.clj"]
                                       (buffer/->BufferState
                                        (text/from-string "hello\nworld\n")
                                        0 nil nil nil "\n" 0 0 0 0 0)))))
       (timed "edit swap"
-             #(eh/swap! a (fn [app]
+             #(eve/swap! a (fn [app]
                             (let [b (get-in app [:buffers "x.clj"])]
                               (assoc-in app [:buffers "x.clj"]
                                         (buffer/->BufferState
@@ -65,10 +65,10 @@
                                          6 nil
                                          (buffer/->History (buffer/-root b) nil)
                                          nil "\n" 1 1 0 1 0))))))
-      (eh/swap! a (fn [app] (assoc-in app [:editor :theme] :dark)))
-      (eh/swap! a (fn [app] (assoc-in app [:versions "hello"]
+      (eve/swap! a (fn [app] (assoc-in app [:editor :theme] :dark)))
+      (eve/swap! a (fn [app] (assoc-in app [:versions "hello"]
                                       (se/->Versioned "v1" nil))))
-      (eh/swap! a (fn [app]
+      (eve/swap! a (fn [app]
                     (let [h (arr/make-array 1)]
                       (arr/aset h 0 "v1")
                       (assoc-in app [:versions "hello"]
@@ -79,9 +79,9 @@
                       (str "delivered buffers=" (count (:buffers v))))
                     (catch :default t
                       (str "THREW " (type t) ": " (ex-message t))))))
-    (ea/close-atom-domain! (ea/persistent-atom-domain base))
-    (ea/persistent-atom-domain base)
-    (let [a2 (e/atom {:id :narcis.store/app :persistent base} nil)]
+    (eve/close-atom-domain! (eve/persistent-atom-domain base))
+    (eve/persistent-atom-domain base)
+    (let [a2 (eve/atom {:id :narcis.store/app :persistent base} nil)]
       (swap! results conj (check "after reopen" expected (read-back a2))))
-    (ea/close-atom-domain! (ea/persistent-atom-domain base))
+    (eve/close-atom-domain! (eve/persistent-atom-domain base))
     (println "PROBE-ONEATOM" (if (every? true? @results) "PASS" "FAIL"))))
