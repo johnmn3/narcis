@@ -300,12 +300,16 @@
   (let [win (:win @state)
         sc (by-id "scroll")]
     (when (and win sc (seq (:lines win)))
-      (let [rel (- (.-scrollTop sc) (* (:start-line win) (px-per-line)))
-            idx (max 0 (min (dec (count (:lines win)))
-                            (js/Math.floor (/ rel (line-h)))))]
-        {:line (:n (nth (:lines win) idx))
-         :off (- (* idx (line-h)) rel)
-         :top (.-scrollTop sc)}))))
+      (let [rel (- (.-scrollTop sc) (* (:start-line win) (px-per-line)))]
+        ;; no anchor when the viewport's top is not on a held row
+        ;; at all (the window sits wholly above or below it):
+        ;; clamping to an edge row would pin that row and mask
+        ;; the window being in the wrong place
+        (when (and (<= 0 rel) (< rel (* (count (:lines win)) (line-h))))
+          (let [idx (js/Math.floor (/ rel (line-h)))]
+            {:line (:n (nth (:lines win) idx))
+             :off (- (* idx (line-h)) rel)
+             :top (.-scrollTop sc)}))))))
 
 (defn- restore-view!
   "Put the anchor line back where it was in the viewport, under
@@ -462,7 +466,16 @@
                  (render-tree!)
                  (watch-load!)
                  (if (and (= active prev-path) (seq (:lines prev-win)))
-                   (-> (fetch-window! (:n (first (:lines prev-win))) true true)
+                   ;; re-fetch the window the page already holds, at
+                   ;; its own start: fetch-window! covers `around`
+                   ;; by overscan lines above it, so the around for
+                   ;; "this very window" is its start plus overscan.
+                   ;; Passing its first line instead ratcheted the
+                   ;; window one overscan earlier on every tick —
+                   ;; the text slid up the page for as long as the
+                   ;; file loaded, and the viewport ended up below
+                   ;; the window altogether, looking at blank space
+                   (-> (fetch-window! (+ (:start-line prev-win) overscan) true true)
                        (.then (fn [_] (render!))))
                    ;; a new buffer on screen: the window opens at its
                    ;; caret, wherever in the file it sits — not at the
