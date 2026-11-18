@@ -136,16 +136,18 @@
    :project (:project ctx)
    :runtime "Jolt"
    :theme (name (or (buffer/theme-choice ed) (:name @theme-atom)))
-   :buffers (into {}
-                  (keep (fn [p]
-                          (when-let [s (buffer/snapshot ed p)]
-                            [p {:lines (:lines s)
-                                :chars (:chars s)
-                                :cursor (:cursor s)
-                                :sel (:sel s)
-                                :undo (:undo s)
-                                :redo (:redo s)}])))
-                  (buffer/tabs ed))})
+   :buffers (loop [ps (buffer/tabs ed) acc {}]
+              (if-let [p (first ps)]
+                (recur (rest ps)
+                       (if-let [s (buffer/snapshot ed p)]
+                         (assoc acc p {:lines (:lines s)
+                                       :chars (:chars s)
+                                       :cursor (:cursor s)
+                                       :sel (:sel s)
+                                       :undo (:undo s)
+                                       :redo (:redo s)})
+                         acc))
+                acc))})
 
 (defn- window-payload [ed path start count]
   (assoc (buffer/read ed path

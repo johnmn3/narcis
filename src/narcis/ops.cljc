@@ -321,9 +321,18 @@
   (buffer/read ed path (fn [{doc :root eol :eol}] (text/spit-file! to doc eol) true)))
 
 (defn- fresh-name [ed]
-  (first (filter (fn [p] (not (buffer/open? ed p)))
-                 (map (fn [i] (if (zero? i) "untitled" (str "untitled-" (inc i))))
-                      (range 1000)))))
+  ;; A loop, not a filter over candidates: the first call of a
+  ;; closure that enters the buffer read path from inside a lazy
+  ;; seq costs ~30 s on jolt (measured: filter with an open?
+  ;; predicate 33 s, open? alone 0.08 s, the same call after the
+  ;; first 0 s — probe-newatom9). No ad-hoc closure calls into the
+  ;; read path from a seq fn anywhere; loops call it directly.
+  (loop [i 0]
+    (when (< i 1000)
+      (let [p (if (zero? i) "untitled" (str "untitled-" (inc i)))]
+        (if (buffer/open? ed p)
+          (recur (inc i))
+          p)))))
 
 ;; ---------------------------------------------------------------------------
 ;; the dispatch
@@ -359,7 +368,7 @@
                      (buffer/open? ed np) {:ok false :error (str "already open: " np)}
                      :else (do (save! ed path np)
                                ;; the new buffer is the saved file opened: its own
-                               ;; document in its own atom (two atoms never hold
+                               ;; document in its own slot (two slots never hold
                                ;; one tree)
                                (buffer/open-file! ed np)
                                (buffer/close-buffer! ed path)

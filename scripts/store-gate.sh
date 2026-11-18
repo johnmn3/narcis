@@ -20,7 +20,7 @@ run_phase() {
 }
 
 echo "== store gate host=$HOST data=$DATA"
-run_phase write
-run_phase read
+run_phase write || { echo "STORE-GATE write phase FAILED"; exit 1; }
+run_phase read || { echo "STORE-GATE read phase FAILED"; exit 1; }
 ls "$DATA/db" 2>/dev/null | head
 echo "== data dir kept at $DATA"

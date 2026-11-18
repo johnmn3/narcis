@@ -1,24 +1,30 @@
 (ns narcis.store
   "Buffer store seam: open-by-name persistence for editor/buffer state.
 
-   The store is opened by name (\"narcis/buffers\") in a directory.
-   On the Eve arm the store is a disk DOMAIN holding named Eve atoms:
-   one versions atom per buffer name (value: a Versioned eve.deftype —
-   current value + history — at the atom's root), plus generic named
-   atoms for narcis.buffer's editor state. Buffer values are swapped
-   on those atoms; nothing is serialized in or out.
+   The store is opened by name in a directory. On the Eve arm the
+   store is a disk DOMAIN holding ONE Eve atom — the app state
+   atom, the way a cljs app has one — whose value is a plain map:
+
+     {:buffers  {<path> BufferState}   ; narcis.buffer's documents
+      :editor   {...}                  ; narcis.buffer's editor state
+      :console  {...}                  ; the Interactions transcript
+      :versions {<name> Versioned}}    ; the launcher's text buffers
+
+   Everything shares the one atom because everything shares the
+   one contention domain anyway. A change is one swap! on the
+   atom at a key path (swap-in!); a read is read in place at a
+   key path (read-in). Nothing is serialized in or out.
 
    Implementations, tried in order:
-   1. Eve disk atoms (narcis.store-eve) — when eve.atom loads on this
-      host. This is the default on jolt (Eve @84bfc7c8) and the JVM.
-   2. File fallback (this namespace) — buffer values in an EDN file,
-      written atomically (tmp + rename) on every put, in the shape
-        {:buffers {<buffer-name> {:current <value> :versions [...]}}}
+   1. Eve disk atom (narcis.store-eve) — when eve.atom loads on this
+      host. This is the default on jolt and the JVM.
+   2. File fallback (this namespace) — the same map shape in an EDN
+      file, written atomically (tmp + rename) on every swap.
       This arm remains ONLY for hosts where Eve genuinely cannot run
       yet — today bb, whose SCI blocks the ByteBuffer put Eve's vector
       path needs — and this seam is the one place
       that says so. It holds EDN-representable values (the launcher's
-      text buffers); eve.deftype rope values require the Eve arm —
+      text buffers); eve.deftype values require the Eve arm —
       narcis.buffer says so when opened on a file store.
       App code cannot tell the difference except via (:impl store)."
   (:require [clojure.string :as str]
@@ -28,10 +34,11 @@
 
 (def store-name
   "The store the editor opens. The name carries the layout of what is in
-   it: text2 buffers are eve.text documents (the first layout's were
-   narcis.rope trees, a type this code no longer has — a store of that
-   layout is left as it is, under its own name, and not read)."
-  "narcis/text2")
+   it: text3 is the one-atom layout (text2's buffers are eve.text
+   documents too, but each in its own named atom; the first layout's
+   were narcis.rope trees, a type this code no longer has). A store of
+   an older layout is left as it is, under its own name, and not read."
+  "narcis/text3")
 
 (defn- class-name [v] #?(:clj (.getName (class v)) :cljs (.-name (type v))))
 
@@ -47,7 +54,7 @@
             :path path
             :state (atom (if (.exists f)
                            (edn/read-string (slurp f))
-                           {:buffers {}}))}))
+                           {:buffers {} :editor nil :console nil :versions {}}))}))
        (defn- file-persist! [{:keys [path state]}]
          (let [tmp (str path ".tmp")]
            (spit tmp (pr-str @state))
@@ -58,7 +65,7 @@
     (require 'narcis.store-eve)
     (let [open-fn (resolve 'narcis.store-eve/open)]
       (when open-fn (open-fn opts)))
-    (catch :default t
+    (catch #?(:cljs :default :default Throwable) t
       {:eve-error (str (class-name t) ": " (ex-message t))})))
 
 (defn open-store
@@ -72,17 +79,18 @@
       (assoc (file-open opts) :eve-error (:eve-error r)))))
 
 (defn put-buffer!
-  "Store value as the current version of buffer-name; returns the
-   new version index. Every put appends a durable version."
+  "Store value as the current version of buffer-name, in the app
+   atom's :versions slot; returns the new version index. Every
+   put appends a durable version."
   [store buffer-name value]
   (if (= :eve (:impl store))
     ((resolve 'narcis.store-eve/put!) store buffer-name value)
     (let [idx (atom nil)]
       (swap! (:state store)
              (fn [s]
-               (let [versions (get-in s [:buffers buffer-name :versions] [])]
+               (let [versions (get-in s [:versions buffer-name :versions] [])]
                  (reset! idx (count versions))
-                 (assoc-in s [:buffers buffer-name]
+                 (assoc-in s [:versions buffer-name]
                            {:current value
                             :versions (conj versions value)}))))
       (file-persist! store)
@@ -91,68 +99,45 @@
 (defn current-buffer [store buffer-name]
   (if (= :eve (:impl store))
     ((resolve 'narcis.store-eve/current) store buffer-name)
-    (get-in @(:state store) [:buffers buffer-name :current])))
+    (get-in @(:state store) [:versions buffer-name :current])))
 
 (defn buffer-version [store buffer-name i]
   (if (= :eve (:impl store))
     ((resolve 'narcis.store-eve/version) store buffer-name i)
-    (get-in @(:state store) [:buffers buffer-name :versions i])))
+    (get-in @(:state store) [:versions buffer-name :versions i])))
 
 (defn version-count [store buffer-name]
   (if (= :eve (:impl store))
     ((resolve 'narcis.store-eve/version-count) store buffer-name)
-    (count (get-in @(:state store) [:buffers buffer-name :versions]))))
+    (count (get-in @(:state store) [:versions buffer-name :versions]))))
 
-(defn open-atom
-  "Open the store's atom named key, with initial value init when
-   the atom has never been set. Returns a handle for atom-deref /
-   atom-swap!. On the Eve arm this is a named Eve atom in the
-   store's disk domain — swaps on it are Eve swaps, and a swap
-   fn that constructs eve.deftype values constructs them in the
-   domain. On the file arm it is an EDN-backed atom (values must
-   be EDN-representable)."
-  [store key init]
+(defn swap-in!
+  "One swap on the store's app atom at key path ks: the value
+   there becomes (f <current value there>). On the Eve arm f runs
+   inside the swap, in the atom's domain — a swap fn that
+   constructs eve.deftype values constructs them in the domain.
+   Answers nil; read results back with read-in."
+  [store ks f]
   (if (= :eve (:impl store))
-    ((resolve 'narcis.store-eve/open-atom) store key init)
+    ((resolve 'narcis.store-eve/swap-in!) store ks f)
     (do (swap! (:state store)
-               (fn [s] (if (contains? (:atoms s) key)
-                         s
-                         (assoc-in s [:atoms key] init))))
+               (fn [s] (assoc-in s ks (f (get-in s ks)))))
         (file-persist! store)
-        {:kind :file :store store :key key})))
+        nil)))
 
-(defn atom-deref [handle]
-  (if (= :eve (:kind handle))
-    ((resolve 'narcis.store-eve/atom-deref) handle)
-    (get-in @(:state (:store handle)) [:atoms (:key handle)])))
-
-(defn atom-read
-  "(f value) with the atom's value read IN PLACE, and f's answer
+(defn read-in
+  "(f value-at-ks) with the value read IN PLACE, and f's answer
    as plain data. On the Eve arm this is a read region
-   (eve.alpha/$): a deref outside one hands back a copy of the
-   whole value, which for a buffer is the whole document; inside
-   one, f reads only what it touches, and what it answers is
-   materialized as it leaves — so f answers plain data (numbers,
-   strings, maps of them), never the value or a part of it."
-  [handle f]
-  (if (= :eve (:kind handle))
-    ((resolve 'narcis.store-eve/atom-read) handle f)
-    (f (atom-deref handle))))
-
-(defn atom-swap!
-  "Swap the atom behind handle with f (a fn of its current value).
-   Returns the new value."
-  [handle f]
-  (let [store (:store handle)
-        new (atom nil)]
-    (if (= :eve (:kind handle))
-      ((resolve 'narcis.store-eve/atom-swap!) handle f)
-      (do (swap! (:state store)
-                 (fn [s] (let [v (f (get-in s [:atoms (:key handle)]))]
-                           (reset! new v)
-                           (assoc-in s [:atoms (:key handle)] v))))
-          (file-persist! store)
-          @new))))
+   (eve.alpha/$): a deref outside one would have to pack the
+   whole app state for delivery (and refuses, where a value is
+   held by reference); inside one, f reads only what it touches,
+   and what it answers is materialized as it leaves — so f
+   answers plain data (numbers, strings, maps of them), never
+   the value or a part of it."
+  [store ks f]
+  (if (= :eve (:impl store))
+    ((resolve 'narcis.store-eve/read-in) store ks f)
+    (f (get-in @(:state store) ks))))
 
 (defn close-store [store]
   (when (= :eve (:impl store))

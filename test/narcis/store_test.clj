@@ -4,9 +4,9 @@
    reads the new text, version 0 still reads the old text, and the
    count holds across the reopen. Run by scripts/store-gate.sh in two
    processes: phase 'write' then phase 'read'. (A buffer's document
-   lives in its own atom — narcis.buffer, and the buffer gate walks its
-   history across a restart; these versions are the store's plain
-   values.)"
+   lives in the app atom's :buffers slot — narcis.buffer, and the
+   buffer gate walks its history across a restart; these versions
+   are the store's plain values.)"
   (:require [narcis.store :as store]))
 
 (def v1-text "alpha\nbeta\ngamma\n")
