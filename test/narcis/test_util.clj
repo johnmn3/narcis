@@ -33,5 +33,5 @@
     (f)
     (binding [*in-doc-domain* true]
       (let [out (volatile! nil)]
-        (eve/swap! @doc-domain (fn [_] (vreset! out (f)) nil))
+        (swap! @doc-domain (fn [_] (vreset! out (f)) nil))
         @out))))

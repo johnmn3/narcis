@@ -12,8 +12,9 @@
 
    Everything shares the one atom because everything shares the
    one contention domain anyway. A change is one swap! on the
-   atom at a key path (swap-in!); a read is read in place at a
-   key path (read-in). Nothing is serialized in or out.
+   atom itself; a read is read in place, inside a read region.
+   Nothing is serialized in or out. The store map carries the
+   atom as (:atom store) on the Eve arm.
 
    Implementations, tried in order:
    1. Eve disk atom (narcis.store-eve) — when eve.atom loads on this
@@ -110,34 +111,6 @@
   (if (= :eve (:impl store))
     ((resolve 'narcis.store-eve/version-count) store buffer-name)
     (count (get-in @(:state store) [:versions buffer-name :versions]))))
-
-(defn swap-in!
-  "One swap on the store's app atom at key path ks: the value
-   there becomes (f <current value there>). On the Eve arm f runs
-   inside the swap, in the atom's domain — a swap fn that
-   constructs eve.deftype values constructs them in the domain.
-   Answers nil; read results back with read-in."
-  [store ks f]
-  (if (= :eve (:impl store))
-    ((resolve 'narcis.store-eve/swap-in!) store ks f)
-    (do (swap! (:state store)
-               (fn [s] (assoc-in s ks (f (get-in s ks)))))
-        (file-persist! store)
-        nil)))
-
-(defn read-in
-  "(f value-at-ks) with the value read IN PLACE, and f's answer
-   as plain data. On the Eve arm this is a read region
-   (eve.alpha/$): a deref outside one would have to pack the
-   whole app state for delivery (and refuses, where a value is
-   held by reference); inside one, f reads only what it touches,
-   and what it answers is materialized as it leaves — so f
-   answers plain data (numbers, strings, maps of them), never
-   the value or a part of it."
-  [store ks f]
-  (if (= :eve (:impl store))
-    ((resolve 'narcis.store-eve/read-in) store ks f)
-    (f (get-in @(:state store) ks))))
 
 (defn close-store [store]
   (when (= :eve (:impl store))

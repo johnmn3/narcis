@@ -23,7 +23,8 @@
    and read in a read region (eve.alpha/$), where they are read
    in place. A plain deref of the atom refuses — a value held by
    reference cannot be packed for delivery — so no path derefs
-   it: writes go through swap-in!, reads through read-in."
+   it: writes are swap!s on the atom itself, reads are read in
+   place inside a read region (eve/$)."
   (:require [eve.alpha :as eve]))
 
 (defprotocol IVersioned
@@ -59,48 +60,32 @@
     (eve/persistent-atom-domain base)
     (let [a (eve/atom {:id :narcis.store/app :persistent base} nil)]
       (when (eve/$ (nil? @a))
-        (eve/swap! a (fn [_] empty-state)))
+        (swap! a (fn [_] empty-state)))
       {:impl :eve :base base :atom a})))
-
-(defn swap-in!
-  "One swap! on the app atom: the value at ks becomes
-   (f <current value at ks>). f runs inside the swap, in the
-   atom's domain. Answers nil."
-  [store ks f]
-  (eve/swap! (:atom store)
-            (fn [app] (assoc-in app ks (f (get-in app ks)))))
-  nil)
-
-(defn read-in
-  "(f value-at-ks) inside a read region: the value in place, f's
-   answer as plain data (see narcis.store/read-in)."
-  [store ks f]
-  (eve/$ (f (get-in @(:atom store) ks))))
 
 ;; -- versions: the launcher's plain text buffers, one slot each --
 
 (defn put! [store buffer-name value]
-  (swap-in! store [:versions buffer-name]
-            (fn [v]
-              (if (nil? v)
-                (->Versioned value nil)
-                (->Versioned value
-                             (arr-push (-hist v) (-cur v))))))
-  (read-in store [:versions buffer-name]
-           (fn [v] (arr-len (-hist v)))))
+  (swap! (:atom store) update-in [:versions buffer-name]
+             (fn [v]
+               (if (nil? v)
+                 (->Versioned value nil)
+                 (->Versioned value
+                              (arr-push (-hist v) (-cur v))))))
+  (eve/$ (arr-len (-hist (get-in @(:atom store) [:versions buffer-name])))))
 
 (defn current [store buffer-name]
-  (read-in store [:versions buffer-name]
-           (fn [v] (when (some? v) (-cur v)))))
+  (eve/$ (let [v (get-in @(:atom store) [:versions buffer-name])]
+           (when (some? v) (-cur v)))))
 
 (defn version [store buffer-name i]
-  (read-in store [:versions buffer-name]
-           (fn [v] (when (some? v)
-                     (nth (conj (arr-vec (-hist v)) (-cur v)) i nil)))))
+  (eve/$ (let [v (get-in @(:atom store) [:versions buffer-name])]
+           (when (some? v)
+             (nth (conj (arr-vec (-hist v)) (-cur v)) i nil)))))
 
 (defn version-count [store buffer-name]
-  (read-in store [:versions buffer-name]
-           (fn [v] (if (nil? v) 0 (inc (arr-len (-hist v)))))))
+  (eve/$ (let [v (get-in @(:atom store) [:versions buffer-name])]
+           (if (nil? v) 0 (inc (arr-len (-hist v)))))))
 
 (defn close! [{:keys [base]}]
   (eve/close-atom-domain! (eve/persistent-atom-domain base))

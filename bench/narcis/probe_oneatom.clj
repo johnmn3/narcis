@@ -46,17 +46,17 @@
         results (atom [])]
     (eve/persistent-atom-domain base)
     (let [a (eve/atom {:id :narcis.store/app :persistent base} nil)]
-      (eve/swap! a (fn [_] {:buffers {}
+      (swap! a (fn [_] {:buffers {}
                            :editor {:tabs [] :active nil :rev 0 :theme nil}
                            :versions {}}))
       (timed "open-buffer swap"
-             #(eve/swap! a (fn [app]
+             #(swap! a (fn [app]
                             (assoc-in app [:buffers "x.clj"]
                                       (buffer/->BufferState
                                        (text/from-string "hello\nworld\n")
                                        0 nil nil nil "\n" 0 0 0 0 0)))))
       (timed "edit swap"
-             #(eve/swap! a (fn [app]
+             #(swap! a (fn [app]
                             (let [b (get-in app [:buffers "x.clj"])]
                               (assoc-in app [:buffers "x.clj"]
                                         (buffer/->BufferState
@@ -64,10 +64,10 @@
                                          6 nil
                                          (buffer/->History (buffer/-root b) nil)
                                          nil "\n" 1 1 0 1 0))))))
-      (eve/swap! a (fn [app] (assoc-in app [:editor :theme] :dark)))
-      (eve/swap! a (fn [app] (assoc-in app [:versions "hello"]
+      (swap! a (fn [app] (assoc-in app [:editor :theme] :dark)))
+      (swap! a (fn [app] (assoc-in app [:versions "hello"]
                                       (se/->Versioned "v1" nil))))
-      (eve/swap! a (fn [app]
+      (swap! a (fn [app]
                     (let [h (eve/make-array 1)]
                       (eve/aset h 0 "v1")
                       (assoc-in app [:versions "hello"]

@@ -42,8 +42,7 @@
    The editor requires the store's Eve arm: open-editor says so when
    handed a file store."
   (:require [eve.alpha :as eve]
-            [narcis.text :as text]
-            [narcis.store :as store]))
+            [narcis.text :as text]))
 
 ;; ---------------------------------------------------------------------------
 ;; the per-buffer state type
@@ -109,21 +108,17 @@
     (throw (ex-info (str "narcis.buffer requires the Eve atom store; "
                          "this store is on the file arm (host cannot run Eve — W2)")
                     {:impl (:impl store)})))
-  (store/swap-in! store [:editor]
-                  (fn [v] (or v {:tabs [] :active nil :rev 0 :theme nil})))
+  (swap! (:atom store) update :editor
+             (fn [v] (or v {:tabs [] :active nil :rev 0 :theme nil})))
   {:store store})
 
-(defn- editor-value [ed] (store/read-in (:store ed) [:editor] identity))
+(defn- app-atom
+  "The store's one atom: the whole app state lives in it, and
+   every change below is a swap! on it in the normal way."
+  [ed]
+  (:atom (:store ed)))
 
-(defn- swap-buffer!
-  "One swap on the app atom at path's buffer slot."
-  [ed path f]
-  (store/swap-in! (:store ed) [:buffers path] f))
-
-(defn- swap-editor!
-  "One swap on the app atom at the editor slot."
-  [ed f]
-  (store/swap-in! (:store ed) [:editor] f))
+(defn- editor-value [ed] (eve/$ (get @(:atom (:store ed)) :editor)))
 
 (defn- bump-editor [s] (update s :rev (fnil inc 0)))
 
@@ -139,8 +134,8 @@
 ;; ---------------------------------------------------------------------------
 ;; reads
 ;;
-;; A buffer is read IN PLACE, inside a read region (narcis.store/
-;; read-in, Eve's $): a plain deref of the app atom would have to
+;; A buffer is read IN PLACE, inside a read region (Eve's $): a
+;; plain deref of the app atom would have to
 ;; pack the whole app state for delivery — every buffer's whole
 ;; document — for every question asked of it (and refuses, where a
 ;; value is held by reference). read is the one door: its f sees
@@ -172,8 +167,8 @@
    path is not open."
   [ed path f]
   (when path
-    (store/read-in (:store ed) [:buffers path]
-                   (fn [b] (when (some? b) (f (view-of path b)))))))
+    (eve/$ (let [b (get-in @(:atom (:store ed)) [:buffers path])]
+             (when (some? b) (f (view-of path b)))))))
 
 (defn open?
   "True when path is an open buffer."
@@ -243,7 +238,7 @@
    slot, so the choice is durable in the store and every client reads
    the same one from state."
   [ed choice]
-  (swap-editor! ed (fn [s] (bump-editor (assoc s :theme choice)))))
+  (swap! (app-atom ed) update :editor (fn [s] (bump-editor (assoc s :theme choice)))))
 
 ;; ---------------------------------------------------------------------------
 ;; mutations — each is one swap! on the app atom
@@ -270,7 +265,7 @@
                    (assoc :active path))))
 
 (defn activate! [ed path]
-  (swap-editor! ed (fn [s] (bump-editor (assoc s :active path)))))
+  (swap! (app-atom ed) update :editor (fn [s] (bump-editor (assoc s :active path)))))
 
 (defn open-buffer!
   "Open path holding content — a string, or a document (copied into
@@ -282,12 +277,11 @@
    (if (open? ed path)
      (activate! ed path)
      (let [gen (rev ed)]
-       (swap-buffer! ed path
-                     (fn [_] (->BufferState (if (string? content)
+       (swap! (app-atom ed) update-in [:buffers path] (fn [_] (->BufferState (if (string? content)
                                               (text/from-string content)
                                               (text/copy-here content))
                                             0 nil nil nil eol 0 0 gen 0 0)))
-       (swap-editor! ed (fn [s] (add-tab s path)))))))
+       (swap! (app-atom ed) update :editor (fn [s] (add-tab s path)))))))
 
 (defn open-file!
   "Open a file from disk: its text is read a chunk at a time into a
@@ -298,15 +292,13 @@
   (if (open? ed path)
     (activate! ed path)
     (let [gen (rev ed)]
-      (swap-buffer! ed path
-                    (fn [_] (let [{:keys [doc eol]} (text/ingest-file path)]
+      (swap! (app-atom ed) update-in [:buffers path] (fn [_] (let [{:keys [doc eol]} (text/ingest-file path)]
                               (->BufferState doc 0 nil nil nil eol 0 0 gen 0 0))))
-      (swap-editor! ed (fn [s] (add-tab s path))))))
+      (swap! (app-atom ed) update :editor (fn [s] (add-tab s path))))))
 
 (defn close-buffer! [ed path]
-  (store/swap-in! (:store ed) [:buffers] (fn [bs] (dissoc bs path)))
-  (swap-editor! ed
-                (fn [s] (let [tabs (vec (remove #(= % path) (:tabs s)))]
+  (swap! (app-atom ed) update :buffers (fn [bs] (dissoc bs path)))
+  (swap! (app-atom ed) update :editor (fn [s] (let [tabs (vec (remove #(= % path) (:tabs s)))]
                           (bump-editor
                            (-> s
                                (assoc :tabs tabs)
@@ -318,16 +310,13 @@
   "Move path's caret to offset with selection sel ([a b] or nil): one
    swap, no undo step."
   [ed path offset sel]
-  (swap-buffer! ed path
-                (fn [b] (with-state b {:cursor offset :sel sel}))))
+  (swap! (app-atom ed) update-in [:buffers path] (fn [b] (with-state b {:cursor offset :sel sel}))))
 
 (defn set-cursor! [ed path offset]
-  (swap-buffer! ed path
-                (fn [b] (with-state b {:cursor offset}))))
+  (swap! (app-atom ed) update-in [:buffers path] (fn [b] (with-state b {:cursor offset}))))
 
 (defn set-selection! [ed path sel]
-  (swap-buffer! ed path
-                (fn [b] (with-state b {:sel sel}))))
+  (swap! (app-atom ed) update-in [:buffers path] (fn [b] (with-state b {:sel sel}))))
 
 (defn edit!
   "One undoable edit as ONE swap!: (f doc cursor sel text-key) runs
@@ -342,9 +331,7 @@
    an undo step (none of the editor's own ops do)."
   [ed path f]
   (let [out (volatile! nil)]
-    (swap-buffer!
-     ed path
-     (fn [b]
+    (swap! (app-atom ed) update-in [:buffers path] (fn [b]
        (let [r (f (-root b) (-cursor b) (-sel b) [path (-gen b) (-trev b)])]
          (vreset! out (when r (assoc (dissoc r :doc) :caret (get r :caret (-cursor b)))))
          (cond
@@ -381,9 +368,7 @@
    :undo and gives the current one to :redo; else the other way."
   [ed path undo?]
   (let [took (volatile! false)]
-    (swap-buffer!
-     ed path
-     (fn [b]
+    (swap! (app-atom ed) update-in [:buffers path] (fn [b]
        (let [from (if undo? (-undo b) (-redo b))
              nfrom (if undo? (-nundo b) (-nredo b))
              to (if undo? (-redo b) (-undo b))

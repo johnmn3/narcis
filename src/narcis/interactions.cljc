@@ -26,13 +26,13 @@
    This is Jolt's evaluator: narcis.eval drives jolt.host's interrupt
    token, which is what lets Stop end a loop that never blocks."
   (:require [clojure.string :as str]
+            [eve.alpha :as eve]
             [narcis.breakpoints :as bp]
             [narcis.commands :as commands]
             [narcis.console :as console]
             [narcis.debugger :as debugger]
             [narcis.docs :as docs]
-            [narcis.eval :as eval]
-            [narcis.store :as store])
+            [narcis.eval :as eval])
   #?(:clj (:import [java.util.concurrent LinkedBlockingQueue])))
 
 (declare breakpoint-hook)
@@ -59,8 +59,8 @@
   "The console of store st: its evaluator context, its transcript
    (the app atom's :console slot), and the queue between them."
   [st]
-  (store/swap-in! st [:console]
-                  (fn [v] (or v {:entries [] :dropped 0 :ns "user"})))
+  (swap! (:atom st) update :console
+             (fn [v] (or v {:entries [] :dropped 0 :ns "user"})))
   (let [con {:ctx (eval/make-eval-context)
              :store st
              :pending (pending-queue)
@@ -109,7 +109,7 @@
   [con]
   (debugger/arm-breakpoints! (:hook con)))
 
-(defn- value [con] (store/read-in (:store con) [:console] identity))
+(defn- value [con] (eve/$ (get @(:atom (:store con)) :console)))
 
 (defn console-styles
   "The console's style table under theme t, for the page: each kind's
@@ -176,8 +176,7 @@
   (let [new (joined (drain (:pending con)))
         ns-now (some-> @(:ns con) str)]
     (when (or (seq new) (and ns-now (not= ns-now (:ns (value con)))))
-      (store/swap-in! (:store con) [:console]
-                      (fn [s]
+      (swap! (:atom (:store con)) update :console (fn [s]
                           (let [es (:entries s)
                                 ;; a chunk continuing the last entry's kind joins it
                                 merged (joined (into (if (seq es) [(peek es)] []) new))
@@ -208,8 +207,7 @@
   "Forget the transcript (positions go on from where they were)."
   [con]
   (flush! con)
-  (store/swap-in! (:store con) [:console]
-                  (fn [s] (assoc s :dropped (+ (:dropped s) (count (:entries s))) :entries [])))
+  (swap! (:atom (:store con)) update :console (fn [s] (assoc s :dropped (+ (:dropped s) (count (:entries s))) :entries [])))
   nil)
 
 ;; ---------------------------------------------------------------------------

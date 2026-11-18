@@ -20,7 +20,7 @@
   (let [dom (eve/atom-domain nil big-opts)
         out (volatile! nil)]
     (println "PROBE A swap:"
-             (try (eve/swap! dom (fn [_] (vreset! out (text/from-string "a\nb\nc\n")) nil))
+             (try (swap! dom (fn [_] (vreset! out (text/from-string "a\nb\nc\n")) nil))
                   "ok"
                   (catch :default t (str "THREW " (ex-message t)))))
     (println "PROBE A read:" (try {:chars (text/chars @out) :lines (text/lines @out)}
@@ -33,6 +33,6 @@
   (println "PROBE C: swap! on a named in-process atom")
   (let [a (eve/atom {:id :narcis.probe-domain/scratch} nil)
         out (volatile! nil)]
-    (eve/swap! a (fn [_] (vreset! out (text/from-string "p\nq\n")) nil))
+    (swap! a (fn [_] (vreset! out (text/from-string "p\nq\n")) nil))
     (println "PROBE C read:" {:chars (text/chars @out) :lines (text/lines @out)}))
   (println "PROBE-DOMAIN DONE"))
