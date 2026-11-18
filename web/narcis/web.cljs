@@ -153,13 +153,12 @@
 
 (defonce op-chain (atom (js/Promise.resolve nil)))
 
-(defonce batch-close-requested
-  ;; Set by op!/chain-step! when work queues behind a pending typing
-  ;; batch (the batch lives further down, by typed!): the batch's
-  ;; flush step then closes the burst at once instead of waiting out
-  ;; its pause, so queued work never jumps ahead of the text — nor
-  ;; the text of the brackets it belongs inside.
-  (atom false))
+;; The typing batch lives further down, by on-keydown; its seal is
+;; declared here so op!/chain-step! can call it: work queueing
+;; behind a pending batch seals the batch first, freezing its
+;; characters into their own send step, so queued work never jumps
+;; the text and later characters never sweep into it.
+(declare seal-batch!)
 
 (defn chained
   "Run thunk (a fn answering a promise) after every request queued
@@ -205,7 +204,7 @@
 (defn op!
   "Send one narcis.ops message, queued behind everything before it."
   [msg]
-  (reset! batch-close-requested true)
+  (seal-batch!)
   (chained (fn [] (op-send! msg))))
 
 (defn chain-step!
@@ -217,7 +216,7 @@
    typing abcdef at a line end and pressing Left twice mid-queue
    landed the last four letters before the line's last character)."
   [f]
-  (reset! batch-close-requested true)
+  (seal-batch!)
   (chained f))
 
 ;; ---------------------------------------------------------------------------
@@ -1716,65 +1715,61 @@
 
 ;; ---------------------------------------------------------------------------
 ;; typing, batched: plain characters collect and go as ONE :insert-text
-;; op — one swap on the server, one undo step — once the burst pauses
-;; (batch-quiet-ms) or has run batch-max-ms. The structural characters
-;; :type-char treats specially (the pairs and the quote) and typing
-;; while the completion menu is open keep the per-character path. The
-;; flush is a step on the op chain, so it stays in press order with
-;; caret moves and every other op: characters typed before a move are
-;; sent before it, at the caret they were typed at. Anything queueing
-;; behind a pending burst — a bracket, a move, any op — closes the
-;; burst at once (batch-close-requested): the wait is only ever for
-;; more plain characters, never a wall other work piles up behind
-;; (measured without it: (defn twice [x] (* 2 x)) landed as
-;; (defn twice x * 2 x[]()) — every bracket queued behind the burst's
-;; pause while the text collected, then ran after it).
+;; op — one swap on the server, one undo step — per burst. A burst
+;; ends when it pauses (batch-quiet-ms), has run batch-max-ms, or
+;; anything queues behind it: op!/chain-step! seal the burst first,
+;; freezing its characters into their own send step on the chain, and
+;; characters typed afterwards start a fresh burst behind the queued
+;; work. The structural characters :type-char treats specially (the
+;; pairs and the quote) and typing while the completion menu is open
+;; keep the per-character path.
+;;
+;; Sealing at queue time is the whole design. The first cut waited
+;; inside the chain and sent whatever text stood when the wait
+;; ended: brackets queued behind the pause ran after the text
+;; ((defn twice [x] (* 2 x)) landed as (defn twice x * 2 x[]())),
+;; and freezing the text only when the step ran still swept
+;; characters typed after a bracket into the insert before it
+;; (…[x *]( 2 x)). A burst's text is fixed the moment anything
+;; queues behind it — never read later.
 
 (def ^:private batch-quiet-ms 120)
 (def ^:private batch-max-ms 600)
-(defonce ^:private type-batch (atom {:text "" :first 0 :last 0 :queued? false}))
+(defonce ^:private type-batch (atom {:text "" :first 0 :timer nil}))
 
-(defn- flush-step!
-  "The batch's step on the op chain: wait out the burst, then send
-   what collected as one :insert-text op."
+(defn- seal-batch!
+  "End the current burst, if any: queue its characters as one
+   :insert-text op and clear the accumulator."
   []
-  (chained
-   (fn []
-     (js/Promise.
-      (fn [resolve]
-        (letfn [(check []
-                  (let [b @type-batch
-                        now (js/Date.now)]
-                    (if (or @batch-close-requested
-                            (>= (- now (:last b)) batch-quiet-ms)
-                            (>= (- now (:first b)) batch-max-ms))
-                      (let [t (:text b)]
-                        (reset! batch-close-requested false)
-                        (swap! type-batch assoc :text "" :queued? false)
-                        (if (seq t)
-                          (-> (op-send! {:op :insert-text :text t})
-                              (.then (fn [res]
-                                       (after-op! res)
-                                       (refresh-complete!)
-                                       (resolve res))))
-                          (resolve nil)))
-                      (js/setTimeout check 25))))]
-          (check)))))))
+  (let [t (:text @type-batch)]
+    (when (seq t)
+      (when-let [tm (:timer @type-batch)] (js/clearTimeout tm))
+      (swap! type-batch assoc :text "" :first 0 :timer nil)
+      (chained (fn [] (-> (op-send! {:op :insert-text :text t})
+                          (.then (fn [res]
+                                   (after-op! res)
+                                   (refresh-complete!)
+                                   res))))))))
+
+(defn- arm-batch-timer!
+  "The burst's own end: batch-quiet-ms after the last character,
+   and no later than batch-max-ms after the first."
+  []
+  (when-let [tm (:timer @type-batch)] (js/clearTimeout tm))
+  (let [wait (max 0 (min batch-quiet-ms
+                         (- (+ (:first @type-batch) batch-max-ms)
+                            (js/Date.now))))]
+    (swap! type-batch assoc :timer (js/setTimeout seal-batch! wait))))
 
 (defn type-batched!
-  "One plain typed character into the batch, queueing the flush step
-   when a burst starts."
+  "One plain typed character into the batch."
   [ch]
   (let [now (js/Date.now)]
-    (when (empty? (:text @type-batch))
-      (reset! batch-close-requested false))
     (swap! type-batch (fn [b]
                         (if (seq (:text b))
-                          (assoc b :text (str (:text b) ch) :last now)
-                          (assoc b :text (str ch) :first now :last now))))
-    (when-not (:queued? @type-batch)
-      (swap! type-batch assoc :queued? true)
-      (flush-step!))))
+                          (assoc b :text (str (:text b) ch))
+                          (assoc b :text (str ch) :first now))))
+    (arm-batch-timer!)))
 
 (defn complete-key!
   "Keys the completion popup takes while it is open. True when taken."

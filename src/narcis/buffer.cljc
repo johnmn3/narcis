@@ -199,7 +199,13 @@
   "The whole editor state as plain data (see snapshot for each entry)."
   [ed]
   (let [ev (editor-value ed)]
-    {:buffers (into {} (keep (fn [path] (when-let [b (snapshot ed path)] [path b]))) (:tabs ev))
+    {:buffers (loop [ps (:tabs ev) acc {}]
+                (if-let [path (first ps)]
+                  (recur (rest ps)
+                         (if-let [b (snapshot ed path)]
+                           (assoc acc path b)
+                           acc))
+                  acc))
      :tabs (:tabs ev)
      :active (:active ev)
      :theme (:theme ev)}))
