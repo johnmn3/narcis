@@ -87,6 +87,23 @@
 (defn font [] (str (font-px) "px " mono))
 (def overscan 45)
 
+;; Wheel scrolling is capped in LINES, not pixels. The browser
+;; scrolls the element by the wheel's pixel delta, and a line's
+;; slot in the scroll space shrinks as the file grows (px-per-line),
+;; so the same notch carries more and more lines the bigger the
+;; buffer gets — on a 1 GB file one notch replaced most of the
+;; visible page and a flick was unreadable. The wheel handler
+;; below owns the delta instead: it converts the delta to lines
+;; and spends from a bucket that refills at wheel-rate lines per
+;; second up to a burst of wheel-burst lines, so one notch is
+;; always about the same travel whatever the file's size, fast
+;; spinning still moves fast, and nothing moves faster than the
+;; cap. On an unscaled file a notch is a few lines and never
+;; reaches the bucket at all.
+(def wheel-burst-lines 24)
+(def wheel-rate-lines 360)
+(def wheel-bucket (atom {:lines wheel-burst-lines :at 0}))
+
 (def theme-cycle-fallback
   ["light" "dark" "solarized" "navy" "gruvbox-dark" "gruvbox-light"
    "dracula" "nord" "zenburn" "monokai" "tokyo-night" "catppuccin-mocha"
@@ -270,9 +287,45 @@
   (let [sc (by-id "scroll")]
     (max 10 (js/Math.ceil (/ (.-clientHeight sc) (line-h))))))
 
+(defn page-lines
+  "How many lines one page of scrolling passes: the viewport's
+   height in scroll space. On an unscaled file this is the
+   visible row count; on a scaled one it is larger, because a
+   screenful of scrollbar travel passes more lines than it
+   shows rows."
+  []
+  (let [sc (by-id "scroll")]
+    (max 1 (dec (js/Math.ceil (/ (.-clientHeight sc) (px-per-line)))))))
+
 (defn first-visible []
   (let [sc (by-id "scroll")]
     (js/Math.floor (/ (.-scrollTop sc) (px-per-line)))))
+
+(defn on-wheel
+  "The wheel cap described at wheel-burst-lines: translate the
+   event's delta to lines, spend what the bucket holds, and set
+   the scroll offset directly (the scroll handler then fetches
+   as usual). Ctrl-wheel is the browser's zoom gesture and is
+   left alone."
+  [e]
+  (when (and (not (.-ctrlKey e)) (not (zero? (.-deltaY e))))
+    (.preventDefault e)
+    (let [sc (by-id "scroll")
+          ppl (px-per-line)
+          want (case (.-deltaMode e)
+                 1 (.-deltaY e)
+                 2 (* (.-deltaY e)
+                      (js/Math.ceil (/ (.-clientHeight sc) ppl)))
+                 (/ (.-deltaY e) ppl))
+          now (.now js/performance)
+          b @wheel-bucket
+          avail (min wheel-burst-lines
+                     (+ (:lines b)
+                        (* (- now (:at b)) (/ wheel-rate-lines 1000))))
+          spend (max (- avail) (min avail want))]
+      (reset! wheel-bucket {:lines (- avail (js/Math.abs spend)) :at now})
+      (when-not (zero? spend)
+        (set! (.-scrollTop sc) (+ (.-scrollTop sc) (* spend ppl)))))))
 
 (defn caret-pos
   "[line-idx col line-map] for caret in the current window, or nil."
@@ -2013,8 +2066,8 @@
         (= k "ArrowRight") (do (.preventDefault e) (close-complete!) (move-horizontal! 1 shift))
         (= k "ArrowUp") (do (.preventDefault e) (move-lines! -1 shift))
         (= k "ArrowDown") (do (.preventDefault e) (move-lines! 1 shift))
-        (= k "PageUp") (do (.preventDefault e) (move-lines! (- (dec (visible-count))) shift))
-        (= k "PageDown") (do (.preventDefault e) (move-lines! (dec (visible-count)) shift))
+        (= k "PageUp") (do (.preventDefault e) (move-lines! (- (page-lines)) shift))
+        (= k "PageDown") (do (.preventDefault e) (move-lines! (page-lines) shift))
         (= k "Home") (do (.preventDefault e) (line-edge! false shift))
         (= k "End") (do (.preventDefault e) (line-edge! true shift))
 
@@ -2297,6 +2350,7 @@
       (append! main tree work)
       (.appendChild app main)
       ;; editor events
+      (on! sc "wheel" on-wheel)
       (on! sc "scroll"
            (fn [_]
              (close-complete!)
