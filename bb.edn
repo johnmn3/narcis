@@ -13,28 +13,58 @@
 
   :init
   (do
-    (defn eve-dir
-      "The Eve checkout this app runs on: $EVE_RELEASE, else a sibling
-       ../eve, else ~/cohost-media-app/eve (the cohost-media example's
-       checkout). A checkout is known by its hosts.edn."
+    (defn eve-pin
+      "The Eve git dep declared in deps.edn: {:git/url ... :git/sha ...}.
+       The pin of record."
       []
-      (or (System/getenv "EVE_RELEASE")
+      (get-in (edn/read-string (slurp "deps.edn")) [:deps (quote eve/eve)]))
+
+    (defn gitlibs-dir
+      "Jolt's own checkout of the pinned Eve dep, at
+       ~/.jolt/gitlibs/<munged-url>/<sha> (the munging is Jolt's:
+       :// becomes ___ and / becomes _). If it is not there yet, a
+       `jolt path` run makes Jolt resolve the dep, which clones it;
+       the checkout is then looked for by sha, in case the munging
+       differs."
+      []
+      (let [pin (eve-pin)
+            sha (:git/sha pin)
+            munged (str/replace (str/replace (:git/url pin) "://" "___") "/" "_")
+            home (System/getProperty "user.home")
+            direct (fs/file home ".jolt" "gitlibs" munged sha)]
+        (when-not (fs/exists? (fs/file direct "hosts.edn"))
+          (shell {:continue true} "jolt" "path"))
+        (if (fs/exists? (fs/file direct "hosts.edn"))
+          (str direct)
           (first (filter (fn [d] (fs/exists? (fs/file d "hosts.edn")))
-                         ["../eve"
-                          (str (System/getProperty "user.home")
-                               "/cohost-media-app/eve")]))))
+                         (fs/glob (fs/file home ".jolt" "gitlibs")
+                                  (str "*/" sha)))))))
+
+    (defn eve-dir
+      "The Eve tree this app runs on, first match wins: $EVE_RELEASE,
+       a sibling ../eve, Jolt's checkout of the Eve git dep pinned in
+       deps.edn (the normal case -- nobody checks Eve out by hand),
+       ~/cohost-media-app/eve. A tree is known by its hosts.edn."
+      []
+      (let [valid (fn [d] (when (and d (fs/exists? (fs/file d "hosts.edn"))) d))]
+        (or (valid (System/getenv "EVE_RELEASE"))
+            (valid "../eve")
+            (valid (gitlibs-dir))
+            (valid (str (System/getProperty "user.home")
+                        "/cohost-media-app/eve")))))
 
     (defn eve-jolt-cp
-      "Eve's Jolt classpath, from the Eve checkout's own hosts.edn
+      "Eve's Jolt classpath, from the Eve tree's own hosts.edn
        (its :jolt roots after its src) -- the host shape Eve declares,
-       read as data. deps.edn's Eve coordinate is the pin of record;
-       its root :paths are the JVM's adapters, which Jolt cannot load,
-       so until Eve offers a Jolt-selectable coordinate the classpath
-       is composed here from hosts.edn, as Eve's own tasks compose it."
+       read as data. The classpath is composed here rather than taken
+       from `jolt -M` because Eve's deps.edn root :paths are its JVM
+       adapters, which Jolt cannot load, and Jolt's resolver offers
+       no way to select a library's other path set; hosts.edn is
+       Eve's own per-host manifest, as Eve's own tasks read it."
       []
       (let [eve (eve-dir)]
         (when-not eve
-          (throw (ex-info "No Eve checkout found: set EVE_RELEASE to a checkout of Eve (one with hosts.edn in it)." {})))
+          (throw (ex-info "No Eve found: the git dep in deps.edn could not be resolved, and no checkout is at EVE_RELEASE or ../eve." {})))
         (let [hosts (edn/read-string (slurp (fs/file eve "hosts.edn")))]
           (str/join ":" (map (fn [r] (str (fs/file eve r)))
                              (cons "src" (:jolt hosts)))))))

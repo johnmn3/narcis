@@ -31,16 +31,12 @@ the window drawn in a browser page the launcher serves.
 ## Running it
 
 Narcis runs on [Jolt](https://github.com/jolt-lang/jolt) (v0.8.23 or later),
-which hosts Eve; the app's state lives in Eve. You need a checkout of
-Eve 0.9.3.2 beside this one — clone both into the same folder:
+which hosts Eve; the app's state lives in Eve. Eve itself is a git
+dependency — `deps.edn` pins Eve v0.9.3.2, and Jolt fetches it on
+first run — so there is nothing else to install or check out:
 
 ```bash
 git clone https://github.com/johnmn3/narcis.git
-git clone https://github.com/SeniorCareMarket/eve.git
-git -C eve checkout v0.9.3.2
-```
-
-```bash
 cd narcis && jolt narcis
 ```
 
@@ -58,10 +54,12 @@ jolt app:run --dir ~/narcis-app/data --port 8377 --file <path-to-a-clj-file>
 ```
 
 Both spellings are this repo's workflow tasks (in `bb.edn`, the way
-Jonquil's are): the launch composes Eve's Jolt classpath from the Eve
-checkout's own `hosts.edn` and starts `narcis.launcher` on it. The
-launcher task finds the Eve checkout at `$EVE_RELEASE`, or at `../eve`
-beside this repo. `--dir` is where the Eve disk atoms live;
+Jonquil's are): the launch composes Eve's Jolt classpath from the
+`hosts.edn` of the Eve tree it resolves — normally the pinned git
+dep's own checkout under `~/.jolt/gitlibs`; a checkout at
+`$EVE_RELEASE`, or at `../eve` beside this repo, takes precedence,
+which is how you run Narcis against an Eve you are working on — and
+starts `narcis.launcher` on it. `--dir` is where the Eve disk atoms live;
 `--project <dir>` names the folder the file tree shows — it defaults
 to the opened file's folder, or to the current directory when no file
 is given. `--theme <name>` sets the theme on first start. The test
@@ -145,7 +143,8 @@ JVM.
 
 ## Tests
 
-Each needs `EVE_RELEASE` as above; all run on Jolt.
+The gates want a real Eve checkout — `EVE_RELEASE`, or `../eve`
+beside this repo; all run on Jolt.
 
 ```bash
 jolt app:test
