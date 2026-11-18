@@ -9,7 +9,7 @@
   here."
   (:require [clojure.string :as str]
             [narcis.instrument-lock :as instrument-lock])
-  (:import (java.util.concurrent LinkedBlockingQueue)))
+  #?(:clj (:import (java.util.concurrent LinkedBlockingQueue))))
 
 (def ^:private TEXT-MAX
   ;; a choice: one readable panel row
@@ -21,7 +21,7 @@
   nil)
 
 (defn- real-frames-fn []
-  (try (requiring-resolve 'jolt.debug/frames) (catch Throwable _ nil)))
+  (try (requiring-resolve 'jolt.debug/frames) (catch :default _ nil)))
 
 (defn frames-fn
   "*frames-fn* when bound, else jolt.debug/frames, or nil on a Jolt
@@ -57,6 +57,9 @@
       (set? v) (into (empty v) (map mark) (take 9 v))
       :else v)))
 
+(defn- simple-class-name [v]
+  #?(:clj (.getSimpleName (class v)) :cljs (.-name (type v))))
+
 (defn value-text
   "v as one short line: pr-str with *print-length* 8 and *print-level* 3,
   cut to TEXT-MAX characters, or <unprintable: Class> when printing it
@@ -66,11 +69,11 @@
   (let [s (try (if (unrealized? v)
                  UNREALIZED
                  (binding [*print-length* 8 *print-level* 3] (pr-str (guard-lazy v))))
-               (catch Throwable _ (str "<unprintable: " (.getSimpleName (class v)) ">")))]
+               (catch :default _ (str "<unprintable: " (simple-class-name v) ">")))]
     (if (> (count s) TEXT-MAX) (str (subs s 0 TEXT-MAX) "…") s)))
 
 (defn- title [e]
-  (str (.getSimpleName (class e)) ": " (ex-message e)
+  (str (simple-class-name e) ": " (ex-message e)
        (when-let [d (ex-data e)] (str " " (value-text d)))))
 
 (def ^:private HARNESS
@@ -165,7 +168,7 @@
     (try (locking instrument-lock/lock
            ((requiring-resolve 'jolt.profile/instrument!) (if on? :debug false)))
          {:on? (boolean on?)}
-         (catch Throwable e (jolt-error e)))
+         (catch :default e (jolt-error e)))
     {:error NO-API}))
 
 (defn toggle-debug-mode!
@@ -179,7 +182,7 @@
   (if (available?)
     (try (locking instrument-lock/lock
            (set-debug-mode! (not= :debug ((requiring-resolve 'jolt.profile/instrument-mode)))))
-         (catch Throwable e (jolt-error e)))
+         (catch :default e (jolt-error e)))
     {:error NO-API}))
 
 (defn- file-name [f] (last (str/split f #"/")))
@@ -249,6 +252,8 @@
   [token]
   ((resolve 'jolt.host/interrupt!) token))
 
+(defn- cause-of [t] #?(:clj (.getCause ^Throwable t) :cljs (.-cause t)))
+
 (defn- interrupted?
   "True when t, or a cause of it, is a Stop: the token's interrupt, or the
   thread's (an InterruptedException from a blocking call)."
@@ -256,48 +261,56 @@
   (loop [c t]
     (cond (nil? c) false
           (:jolt/interrupted (ex-data c)) true
-          (instance? InterruptedException c) true
-          :else (recur (.getCause ^Throwable c)))))
+          #?(:clj (instance? InterruptedException c) :cljs false) true
+          :else (recur (cause-of c)))))
 
-(defn- capped-append!
-  "Appends s to sb while it fits within OUT-MAX characters. The first s that
+#?(:clj (defn- new-capture [] (StringBuilder.)))
+
+#?(:clj
+   (defn- capped-append!
+     "Appends s to sb while it fits within OUT-MAX characters. The first s that
   doesn't fit gets its fitting head and a note that the output was cut (cut?
   is the atom remembering that); later ones are dropped."
-  [^StringBuilder sb cut? ^String s]
+     [^StringBuilder sb cut? ^String s]
   (let [room (- OUT-MAX (.length sb))]
     (cond
       (<= (count s) room) (.append sb s)
       (not @cut?) (do (reset! cut? true)
                       (.append sb (subs s 0 (max 0 room)))
-                      (.append sb (str "\n; output cut at " OUT-MAX " characters\n"))))))
+                      (.append sb (str "\n; output cut at " OUT-MAX " characters\n")))))))
 
-(defn- capped-writer
-  "A Writer appending to sb up to OUT-MAX characters, then noting the cut
+;; The capture writer and the form reader are the clj hosts' shapes:
+;; *out* is a java.io.Writer there, and forms are read off a
+;; PushbackReader. A host without them has no eval-in-frame.
+#?(:clj
+   (defn- capped-writer
+     "A Writer appending to sb up to OUT-MAX characters, then noting the cut
   once and dropping the rest."
-  [^StringBuilder sb]
-  (let [cut? (atom false)
-        add! (fn [s] (capped-append! sb cut? s))]
-    (proxy [java.io.Writer] []
-      (close [] nil)
-      (flush [] nil)
-      (write
-        ([x]
-         (cond (string? x) (add! x)
-               (instance? (Class/forName "[C") x) (add! (String. ^chars x))
-               (integer? x) (add! (str (char x)))
-               :else (add! (str x))))
-        ([x off len]
-         (if (instance? (Class/forName "[C") x)
-           (add! (String. ^chars x (int off) (int len)))
-           (add! (subs (str x) (int off) (+ (int off) (int len))))))))))
+     [^StringBuilder sb]
+     (let [cut? (atom false)
+           add! (fn [s] (capped-append! sb cut? s))]
+       (proxy [java.io.Writer] []
+         (close [] nil)
+         (flush [] nil)
+         (write
+           ([x]
+            (cond (string? x) (add! x)
+                  (instance? (Class/forName "[C") x) (add! (String. ^chars x))
+                  (integer? x) (add! (str (char x)))
+                  :else (add! (str x))))
+           ([x off len]
+            (if (instance? (Class/forName "[C") x)
+              (add! (String. ^chars x (int off) (int len)))
+              (add! (subs (str x) (int off) (+ (int off) (int len)))))))))))
 
-(defn- read-all
-  "Every form in code, in order; a read error throws."
-  [code]
-  (let [r (java.io.PushbackReader. (java.io.StringReader. code))]
-    (loop [acc []]
-      (let [f (read {:eof ::eof} r)]
-        (if (= ::eof f) acc (recur (conj acc f)))))))
+#?(:clj
+   (defn- read-all
+     "Every form in code, in order; a read error throws."
+     [code]
+     (let [r (java.io.PushbackReader. (java.io.StringReader. code))]
+       (loop [acc []]
+         (let [f (read {:eof ::eof} r)]
+           (if (= ::eof f) acc (recur (conj acc f))))))))
 
 (defn eval-in-frame
   "Evaluates the forms in code, in order, with frame i's locals bound,
@@ -312,7 +325,7 @@
   (if-let [fr (when frames-fn (get (vec (frames-fn e)) i))]
     (let [syms (->> (keys (:locals fr)) (filter param?) sort vec)
           target (or (find-ns (label-ns (str (:fn fr)))) (the-ns 'user))
-          sb (StringBuilder.)
+          sb (new-capture)
           run (if token
                 (let [ri (resolve 'jolt.host/run-interruptible)] (fn [thunk] (ri token thunk)))
                 (fn [thunk] (thunk)))]
@@ -326,7 +339,7 @@
                               ;; inside the capture: printing a lazy value runs it
                               (binding [*print-length* 100 *print-level* 10] (pr-str v))))))]
           {:out (str sb) :text text})
-        (catch Throwable t (if (interrupted? t) {:error "Stopped."} {:error (title t)}))))
+        (catch :default t (if (interrupted? t) {:error "Stopped."} {:error (title t)}))))
     {:error "That frame is gone."}))
 
 (defn local-value
@@ -346,7 +359,7 @@
 
 (defn- break-fn []
   (or *break-fn*
-      (try (requiring-resolve 'jolt.debug/call-with-break-handler) (catch Throwable _ nil))))
+      (try (requiring-resolve 'jolt.debug/call-with-break-handler) (catch :default _ nil))))
 
 (defn break-available?
   "True when this Jolt can break on error (jolt.debug), or a test faked it."
@@ -355,25 +368,33 @@
 
 (def ^:private NOT-PAUSED "Not paused any more.")
 
+;; The pause channel: a blocking queue between the paused thread and
+;; the console's thread. It is the clj hosts' machinery today — a host
+;; without threads has no pause to serve.
+#?(:clj (defn- pause-queue [] (LinkedBlockingQueue.)))
+#?(:clj (defn- pause-put! [q m] (.put q m)))
+#?(:clj (defn- pause-take [q] (.take q)))
+#?(:clj (defn- pause-poll [q] (.poll q)))
+
 (defn make-break
   "A break's state: the queue the paused thread serves and the pause, nil
   when nothing is paused."
   []
-  {:queue (LinkedBlockingQueue.) :paused (atom nil)})
+  {:queue (pause-queue) :paused (atom nil)})
 
 (defn- reject-eval!
   "Answers m, if it is an {:eval [i code reply]} request, with NOT-PAUSED.
   A reply that throws is ignored."
   [m]
   (when-let [[_ _ reply] (:eval m)]
-    (try (reply {:error NOT-PAUSED}) (catch Throwable _ nil))))
+    (try (reply {:error NOT-PAUSED}) (catch :default _ nil))))
 
 (defn- drain!
   "Answers every request still queued with NOT-PAUSED: one that arrived as
   a pause ended, or before the next began."
-  [^LinkedBlockingQueue q]
+  [q]
   (loop []
-    (when-let [m (.poll q)]
+    (when-let [m (pause-poll q)]
       (reject-eval! m)
       (recur))))
 
@@ -383,21 +404,22 @@
   [m t frames]
   (when-let [[i code reply] (:eval m)]
     (let [r (try (eval-in-frame t i code {:frames-fn (fn [_] frames)})
-                 (catch Throwable e {:error (title e)}))]
-      (try (reply r) (catch Throwable _ nil)))))
+                 (catch :default e {:error (title e)}))]
+      (try (reply r) (catch :default _ nil)))))
 
-(defn- serve!
-  "The paused thread's loop: each {:eval [i code reply]} is evaluated here,
+#?(:clj
+   (defn- serve!
+     "The paused thread's loop: each {:eval [i code reply]} is evaluated here,
   on the throwing thread, with frame i's locals bound, until :continue.
-  Stop interrupts this thread, and .take then throws; it also queues ::stop
+  Stop interrupts this thread, and the take then throws; it also queues ::stop
   (break-stop!), since a form evaluated here can use up the interrupt."
-  [^LinkedBlockingQueue q t frames]
-  (loop []
-    (let [m (.take q)]
-      (when (= ::stop m) (throw (InterruptedException. "Stopped while paused.")))
-      (when-not (= :continue m)
-        (serve-eval! m t frames)
-        (recur)))))
+     [q t frames]
+     (loop []
+       (let [m (pause-take q)]
+         (when (= ::stop m) (throw (InterruptedException. "Stopped while paused.")))
+         (when-not (= :continue m)
+           (serve-eval! m t frames)
+           (recur))))))
 
 (defn- serve-pause
   "Runs a published pause: (on-pause d), then serves the paused thread until
@@ -413,14 +435,14 @@
         shown? (not (some-> @paused :continued deref))]
     (try
       (when shown?
-        (try (when on-pause (on-pause d)) (catch Throwable _ nil)))
+        (try (when on-pause (on-pause d)) (catch :default _ nil)))
       (serve! queue t frames)
       (vreset! continued? true)
       (finally
         (reset! paused nil)
         (drain! queue)
         (when shown?
-          (try (when on-resume (on-resume {:continued? @continued?})) (catch Throwable _ nil)))))))
+          (try (when on-resume (on-resume {:continued? @continued?})) (catch :default _ nil)))))))
 
 (defn- claim-pause!
   "Takes brk's pause: true when nothing was paused. One pause at a time, an
@@ -446,7 +468,7 @@
   ;; sleep, a deref or a .take throws InterruptedException
   (when (and (not (interrupted? t)) (claim-pause! brk))
     (let [d (try (frames-data t {:frames-fn (fn [_] frames) :resolve-file (:resolve-file callbacks)})
-                 (catch Throwable e (reset! (:paused brk) nil) (throw e)))]
+                 (catch :default e (reset! (:paused brk) nil) (throw e)))]
       (publish-pause! brk t frames d)
       (serve-pause {:brk brk :callbacks callbacks :t t :frames frames :d d}))))
 
@@ -470,33 +492,35 @@
 (defn break-eval!
   "Asks the paused thread to evaluate code in frame i; (reply r) gets
   eval-in-frame's map, or {:error \"Not paused any more.\"}."
-  [{:keys [^LinkedBlockingQueue queue paused]} i code reply]
+  [{:keys [queue paused]} i code reply]
   (if @paused
-    (.put queue {:eval [i code reply]})
+    (pause-put! queue {:eval [i code reply]})
     (reply {:error NOT-PAUSED})))
 
 (defn continue!
   "Lets the paused error unwind: true when a pause was waiting, false when
   there was none or it was already continued."
-  [{:keys [^LinkedBlockingQueue queue paused]}]
+  [{:keys [queue paused]}]
   (let [p @paused]
     (boolean (when (and p (compare-and-set! (:continued p) false true))
-               (.put queue :continue)
+               (pause-put! queue :continue)
                true))))
 
 (defn break-stop!
   "Stop's half for a pause: the paused thread takes ::stop and throws, ending
   the evaluation even when a form it ran used up the thread's interrupt."
-  [{:keys [^LinkedBlockingQueue queue paused]}]
-  (when @paused (.put queue ::stop))
+  [{:keys [queue paused]}]
+  (when @paused (pause-put! queue ::stop))
   nil)
 
 (defn- own-pause?
   "True when pause p was published by this thread, or by none that is
   still alive (an older pause, or a thread gone)."
   [p]
-  (let [^Thread t (:thread p)]
-    (or (nil? t) (identical? t (Thread/currentThread)) (not (.isAlive t)))))
+  (let [t (:thread p)]
+    (or (nil? t)
+        #?(:clj (identical? t (Thread/currentThread)) :cljs false)
+        #?(:clj (not (.isAlive ^Thread t)) :cljs true))))
 
 (defn end-stale-pause!
   "The evaluation has ended, on its own thread: a pause it published that is
@@ -514,7 +538,7 @@
        (own-pause? p)
        (do (reset! paused nil)
            (drain! queue)
-           (try (when on-resume (on-resume {:continued? false})) (catch Throwable _ nil)))
+           (try (when on-resume (on-resume {:continued? false})) (catch :default _ nil)))
        (= :wake other-thread) (continue! brk)))
    nil))
 
@@ -626,7 +650,7 @@
       ;; stepping lasts from a Step to the next pause
       (when stepping (stop-stepping! stepping))
       (let [d (try (breakpoint-data t frames (:resolve-file callbacks))
-                   (catch Throwable e (reset! paused nil) (throw e)))]
+                   (catch :default e (reset! paused nil) (throw e)))]
         (publish-pause! brk t frames d)
         (when (and can-pause? (not (can-pause?))) (continue! brk))
         (serve-pause {:brk brk :callbacks callbacks :t t :frames frames :d d})
@@ -673,7 +697,7 @@
   false, with nothing changed, for none, one already let go, or a pause
   that isn't a breakpoint's (Break on error's: Step works at a breakpoint)."
   ([brk stepping] (step! brk stepping :step))
-  ([{:keys [^LinkedBlockingQueue queue paused]} stepping mode]
+  ([{:keys [queue paused]} stepping mode]
    (let [p @paused]
      (boolean
       (when (and p (:breakpoint (:data p)) (compare-and-set! (:continued p) false true))
@@ -696,7 +720,7 @@
         (or (when (:error r) r)
             (do (reset! breakpoint-hook hook)
                 {:on? true :debug-turned-on? (not= :debug was)})))
-      (catch Throwable e (jolt-error e)))))
+      (catch :default e (jolt-error e)))))
 
 (defn disarm-breakpoints!
   "Empties breakpoint-hook when it still holds hook. {:on? false}."
@@ -719,6 +743,6 @@
                             [s (try (let [v (ns-resolve n (symbol s))]
                                       (when (var? v)
                                         (cond-> {:var (str (symbol v))} (:macro (meta v)) (assoc :macro true))))
-                                    (catch Throwable _ nil))]))
+                                    (catch :default _ nil))]))
                   syms)
      :ns-found? (some? found)}))

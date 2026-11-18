@@ -272,13 +272,19 @@
   [k]
   (get themes k (get themes default-theme)))
 
+(defn- index-of
+  "The index of x in xs by equality, or -1 (the portable form of the
+  java.util.List call this file used)."
+  [xs x]
+  (or (first (keep-indexed (fn [j v] (when (= v x) j)) xs)) -1))
+
 (defn next-theme
   "The choice name after k in choice-names, wrapping. An unknown k starts
   the cycle from the default theme."
   [k]
-  (let [i (.indexOf ^java.util.List choice-names k)]
+  (let [i (index-of choice-names k)]
     (if (neg? i)
-      (nth choice-names (mod (inc (.indexOf ^java.util.List choice-names default-theme))
+      (nth choice-names (mod (inc (index-of choice-names default-theme))
                              (count choice-names)))
       (nth choice-names (mod (inc i) (count choice-names))))))
 

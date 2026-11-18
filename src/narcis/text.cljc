@@ -160,13 +160,14 @@
   "Characters read from a file at a time: about 1 MB."
   1048576)
 
-(defn ingest-reader
-  "The document of a reader's text, built a chunk at a time — the text
+#?(:clj
+   (defn ingest-reader
+     "The document of a reader's text, built a chunk at a time — the text
    and its lines are never held whole (eve.text's builder writes each
    leaf as its lines complete). Answers {:doc document :eol ending}:
    the ending is the file's first one (\"\\n\" when it has none), which
    save writes back for every line. The reader is not closed."
-  [^java.io.Reader rdr]
+     [^java.io.Reader rdr]
   (let [buf (char-array chunk-chars)]
     (loop [b (t/text-builder) eol nil pending-cr? false]
       (let [n (.read rdr buf)]
@@ -179,29 +180,34 @@
                           (if (and (pos? n) (= (.charAt s 0) \newline)) "\r\n" "\r"))
                         (first-eol s))
                 ends-cr? (and (pos? n) (= (.charAt s (dec n)) \return))]
-            (recur (t/text-builder-add b s) eol (and (nil? eol) ends-cr?))))))))
+            (recur (t/text-builder-add b s) eol (and (nil? eol) ends-cr?)))))))))
 
-(defn ingest-file
-  "{:doc :eol} of the file at path (see ingest-reader)."
-  [path]
-  (with-open [rdr (java.io.FileReader. ^String path)]
-    (ingest-reader rdr)))
+;; The file door itself — a host's files and streams — is the :clj arm
+;; today; the document work above and below is shared by every host.
 
-(defn spit-file!
-  "Write doc to path a leaf's worth of lines at a time, each line ended
+#?(:clj
+   (defn ingest-file
+     "{:doc :eol} of the file at path (see ingest-reader)."
+     [path]
+     (with-open [rdr (java.io.FileReader. ^String path)]
+       (ingest-reader rdr))))
+
+#?(:clj
+   (defn spit-file!
+     "Write doc to path a leaf's worth of lines at a time, each line ended
    as eol says — the text is never held whole."
-  [path doc eol]
-  (with-open [w (java.io.FileWriter. ^String path)]
-    (let [total (t/text-lines doc)
-          step 4096]
-      (loop [i 0]
-        (when (< i total)
-          (let [ls (t/text-window doc (inc i) step)
-                k (count ls)]
-            (dotimes [j k]
-              (.write w ^String (:text (nth ls j)))
-              (when (< (+ i j 1) total) (.write w ^String eol)))
-            (recur (+ i k))))))))
+     [path doc eol]
+     (with-open [w (java.io.FileWriter. ^String path)]
+       (let [total (t/text-lines doc)
+             step 4096]
+         (loop [i 0]
+           (when (< i total)
+             (let [ls (t/text-window doc (inc i) step)
+                   k (count ls)]
+               (dotimes [j k]
+                 (.write w ^String (:text (nth ls j)))
+                 (when (< (+ i j 1) total) (.write w ^String eol)))
+               (recur (+ i k)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; a domain for tests, benches and tools

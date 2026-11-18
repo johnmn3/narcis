@@ -1,0 +1,50 @@
+;; Task runner for Narcis -- an Eve-based editor, hosted by Jolt.
+;;
+;; Run these with `jolt <task>`: jolt reads this file as well as
+;; deps.edn, so the name bb.edn stays though babashka isn't needed.
+;; `jolt tasks` lists everything.
+;;
+;; NOTE: task bodies are EDN-parsed. No #"regex", no @deref, no #(...)
+;; -- use (re-pattern "..."), (deref ...) and (fn [x] ...) instead.
+{:tasks
+ {:requires ([babashka.fs :as fs]
+             [clojure.edn :as edn]
+             [clojure.string :as str])
+
+  :init
+  (do
+    (defn eve-dir
+      "The Eve checkout this app runs on: $EVE_RELEASE, else a sibling
+       ../eve, else ~/cohost-media-app/eve (the cohost-media example's
+       checkout). A checkout is known by its hosts.edn."
+      []
+      (or (System/getenv "EVE_RELEASE")
+          (first (filter (fn [d] (fs/exists? (fs/file d "hosts.edn")))
+                         ["../eve"
+                          (str (System/getProperty "user.home")
+                               "/cohost-media-app/eve")]))))
+
+    (defn eve-jolt-cp
+      "Eve's Jolt classpath, from the Eve checkout's own hosts.edn
+       (its :jolt roots after its src) -- the host shape Eve declares,
+       read as data. deps.edn's Eve coordinate is the pin of record;
+       its root :paths are the JVM's adapters, which Jolt cannot load,
+       so until Eve offers a Jolt-selectable coordinate the classpath
+       is composed here from hosts.edn, as Eve's own tasks compose it."
+      []
+      (let [eve (eve-dir)]
+        (when-not eve
+          (throw (ex-info "No Eve checkout found: set EVE_RELEASE to a checkout of Eve (one with hosts.edn in it)." {})))
+        (let [hosts (edn/read-string (slurp (fs/file eve "hosts.edn")))]
+          (str/join ":" (map (fn [r] (str (fs/file eve r)))
+                             (cons "src" (:jolt hosts))))))))
+
+  app:run
+  {:doc "Launch Narcis, optionally opening a file: jolt app:run [--dir data] [--port 8377] [--file file.clj]"
+   :task (apply shell "jolt" "-Scp" (str (eve-jolt-cp) ":src")
+                "-m" "narcis.launcher" *command-line-args*)}
+
+  app:test
+  {:doc "Run the test corpus: jolt app:test"
+   :task (shell "jolt" "-Scp" (str (eve-jolt-cp) ":src:test")
+                "-m" "narcis.run-all-tests")}}}

@@ -7,4 +7,4 @@
 
 ;; Held around each read-then-set of the mode; locking is reentrant, so a
 ;; toggle may call its set fn while holding it.
-(defonce lock (Object.))
+(defonce lock #?(:clj (Object.) :cljs (js-obj)))

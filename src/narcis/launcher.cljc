@@ -23,10 +23,37 @@
             [narcis.theme :as theme]
             [narcis.view :as view]
             [clojure.edn :as edn]
-            [clojure.java.io :as io]
+            #?(:clj [clojure.java.io :as io])
             [clojure.string :as str])
-  (:import [java.net ServerSocket InetAddress URLDecoder]
-           [java.io BufferedReader InputStreamReader OutputStream File]))
+  #?(:clj (:import [java.net ServerSocket InetAddress URLDecoder]
+                   [java.io BufferedReader InputStreamReader OutputStream File])))
+
+;; The server's host seams: files, sockets, processes and the clock
+;; are the clj hosts' shapes today; the request handling and the API
+;; above them are every host's.
+(defn- now-ms [] #?(:clj (System/currentTimeMillis) :cljs (js/Date.now)))
+(defn- parse-int [s] #?(:clj (Integer/parseInt s) :cljs (js/parseInt s 10)))
+(defn- class-name [v] #?(:clj (.getName (class v)) :cljs (.-name (type v))))
+(defn- url-decode [s]
+  #?(:clj (URLDecoder/decode s "UTF-8")
+     :cljs (js/decodeURIComponent (str/replace s "+" " "))))
+#?(:clj (defn- existing-path [path] (when (.exists (File. ^String path)) path)))
+#?(:clj (defn- canonical-path [path] (.getCanonicalPath (File. ^String path))))
+#?(:clj (defn- file-parent [path] (some-> (File. ^String path) (.getAbsoluteFile) (.getParent))))
+#?(:clj
+   (defn- list-dir
+     "The /api/list payload for the directory at path, or nil when it
+     is not one."
+     [path]
+     (let [dir (.getCanonicalFile (File. path))]
+       (when (.isDirectory dir)
+         {:dir (.getPath dir)
+          :parent (some-> (.getParentFile dir) (.getPath))
+          :entries (mapv (fn [^File f] {:name (.getName f) :dir? (.isDirectory f)})
+                         (sort-by (fn [^File f]
+                                    [(if (.isDirectory f) 0 1)
+                                     (str/lower-case (.getName f))])
+                                  (.listFiles dir)))}))))
 
 (def hello-text
   "hello narcis\nthe buffer you are reading lives in a store opened by name.\nedit me in S2.\n")
@@ -41,8 +68,9 @@
 <script>narcis.web.init();</script>
 </body></html>")
 
-(defn- attempt-auto-open! [url]
-  (let [os (str/lower-case (System/getProperty "os.name"))
+#?(:clj
+   (defn- attempt-auto-open! [url]
+     (let [os (str/lower-case (System/getProperty "os.name"))
         cmd (cond (str/includes? os "mac") ["open" url]
                   (str/includes? os "win") ["cmd" "/c" "start" url]
                   :else ["xdg-open" url])]
@@ -52,7 +80,7 @@
       true
       (catch Throwable t
         (println "NARCIS-S0 auto-open failed (attempted):" (ex-message t))
-        false))))
+        false)))))
 
 ;; ---------------------------------------------------------------------------
 ;; HTTP plumbing (S0's, with request bodies + a thread per connection)
@@ -63,11 +91,11 @@
     (into {}
           (map (fn [pair]
                  (let [[k v] (str/split pair #"=" 2)]
-                   [(keyword (URLDecoder/decode k "UTF-8"))
-                    (URLDecoder/decode (or v "") "UTF-8")])))
+                   [(keyword (url-decode k))
+                    (url-decode (or v ""))])))
           (str/split qs #"&"))))
 
-(defn- read-request [^BufferedReader in]
+#?(:clj (defn- read-request [^BufferedReader in]
   (let [request-line (.readLine in)]
     (when request-line
       (let [headers (loop [m {}]
@@ -87,9 +115,9 @@
                      (String. buf)))]
         {:method (first (str/split request-line #" +"))
          :target (second (str/split request-line #" +"))
-         :body body}))))
+         :body body})))))
 
-(defn- respond! [^OutputStream out status body content-type]
+#?(:clj (defn- respond! [^OutputStream out status body content-type]
   (let [bytes (.getBytes ^String body "UTF-8")
         head (str "HTTP/1.1 " status " OK\r\n"
                   "Content-Type: " content-type "\r\n"
@@ -97,7 +125,7 @@
                   "Connection: close\r\n\r\n")]
     (.write out (.getBytes head "UTF-8"))
     (.write out bytes)
-    (.flush out)))
+    (.flush out))))
 
 ;; ---------------------------------------------------------------------------
 ;; API
@@ -132,10 +160,11 @@
                                 :redo (:redo s)})))
          :rev (buffer/rev ed path)))
 
-(def ^:private menus-payload
-  ;; jonquil's menus (narcis/menus.edn on the classpath), narrowed to what
-  ;; Narcis runs
-  (delay (pr-str (menus/menus (slurp (io/resource "narcis/menus.edn"))))))
+#?(:clj
+   (def ^:private menus-payload
+     ;; jonquil's menus (narcis/menus.edn on the classpath), narrowed to
+     ;; what Narcis runs
+     (delay (pr-str (menus/menus (slurp (io/resource "narcis/menus.edn")))))))
 
 (defn- display-name [path]
   (if (or (nil? path) (str/starts-with? path "untitled"))
@@ -161,7 +190,7 @@
         answer (case (:op msg)
                  :run (if-let [code (buffer/buffer-text ed path)]
                         (do (interactions/run! con code (display-name path)
-                                               (when (.exists (File. ^String path)) path)
+                                               (existing-path path)
                                                (set (:breakpoints msg)))
                             {:ok true})
                         {:ok false :error (str "no such buffer: " path)})
@@ -203,7 +232,7 @@
         "/api/console" (if (= "POST" (:method req))
                          [200 (pr-str (console-op ed con (edn/read-string (:body req))))
                           "text/plain; charset=utf-8"]
-                         [200 (pr-str (assoc (interactions/read-from con (some-> (:since query) Integer/parseInt))
+                         [200 (pr-str (assoc (interactions/read-from con (some-> (:since query) parse-int))
                                              :ok true
                                              :debug (interactions/debug-state con)))
                           "text/plain; charset=utf-8"])
@@ -215,26 +244,17 @@
                                                               (:dark? (theme/theme k)))})
                                                   theme/choice-names)})
                         "text/plain; charset=utf-8"]
-        "/api/list" (let [dir (File. (or (:dir query)
-                                         (:project ctx)
-                                         (some-> (buffer/active ed) (File.) (.getParent))
-                                         "."))
-                          dir (.getCanonicalFile dir)]
-                      (if (.isDirectory dir)
-                        [200 (pr-str {:dir (.getPath dir)
-                                      :parent (some-> (.getParentFile dir) (.getPath))
-                                      :entries (mapv (fn [^File f]
-                                                       {:name (.getName f) :dir? (.isDirectory f)})
-                                                     (sort-by (fn [^File f]
-                                                                [(if (.isDirectory f) 0 1)
-                                                                 (str/lower-case (.getName f))])
-                                                              (.listFiles dir)))})
-                         "text/plain; charset=utf-8"]
-                        [404 (pr-str {:ok false :error (str "not a directory: " (.getPath dir))})
+        "/api/list" (let [path (or (:dir query)
+                                   (:project ctx)
+                                   (some-> (buffer/active ed) file-parent)
+                                   ".")]
+                      (if-let [payload (list-dir path)]
+                        [200 (pr-str payload) "text/plain; charset=utf-8"]
+                        [404 (pr-str {:ok false :error (str "not a directory: " path)})
                          "text/plain; charset=utf-8"]))
         "/api/window" (let [p (or (:path query) (buffer/active ed))
-                            start (Integer/parseInt (or (:start query) "0"))
-                            count (Integer/parseInt (or (:count query) "100"))]
+                            start (parse-int (or (:start query) "0"))
+                            count (parse-int (or (:count query) "100"))]
                         (if (and p (buffer/open? ed p))
                           [200 (pr-str (window-payload ed p start count)) "text/plain; charset=utf-8"]
                           [404 "no buffer" "text/plain"]))
@@ -248,11 +268,11 @@
                               res)]
                     [200 (pr-str res) "text/plain; charset=utf-8"])
         [404 "not found" "text/plain"])
-      (catch Throwable t
-        [500 (pr-str {:ok false :error (str (.getName (class t)) ": " (ex-message t))})
+      (catch :default t
+        [500 (pr-str {:ok false :error (str (class-name t) ": " (ex-message t))})
          "text/plain; charset=utf-8"]))))
 
-(defn- handle-client [ctx ^java.net.Socket sock]
+#?(:clj (defn- handle-client [ctx ^java.net.Socket sock]
   (with-open [in (BufferedReader. (InputStreamReader. (.getInputStream sock)))
               out (.getOutputStream sock)]
     (when-let [req (read-request in)]
@@ -274,9 +294,9 @@
         ;; what changes something, or fails, is worth a line
         (when (or (not= 200 status)
                   (not (or (= path "/api/console") (= path "/api/window") (= path "/api/state"))))
-          (println "NARCIS-S0 served" path "->" status))))))
+          (println "NARCIS-S0 served" path "->" status)))))))
 
-(defn serve! [ctx port serve-secs]
+#?(:clj (defn serve! [ctx port serve-secs]
   (with-open [server (ServerSocket. port 50 (InetAddress/getByName "127.0.0.1"))]
     (.setSoTimeout server 500)
     (let [deadline (when (pos? serve-secs)
@@ -291,9 +311,9 @@
               (do (.start (Thread. (fn [] (try (handle-client ctx sock)
                                                (catch Throwable t
                                                  (println "NARCIS-S3 client error:" (ex-message t)))))))
-                  (recur (inc served))))))))))
+                  (recur (inc served)))))))))))
 
-(defn -main [& args]
+#?(:clj (defn -main [& args]
   (let [m (loop [as (seq args) m {}]
             (if as
               (let [[k v & more] as]
@@ -334,4 +354,4 @@
             n (serve! ctx port serve-secs)]
         (println "NARCIS-S0 requests-served:" n)))
     (store/close-store st)
-    (println "NARCIS-S0 done")))
+    (println "NARCIS-S0 done"))))

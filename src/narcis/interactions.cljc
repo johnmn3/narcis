@@ -33,9 +33,22 @@
             [narcis.docs :as docs]
             [narcis.eval :as eval]
             [narcis.store :as store])
-  (:import [java.util.concurrent LinkedBlockingQueue]))
+  #?(:clj (:import [java.util.concurrent LinkedBlockingQueue])))
 
 (declare breakpoint-hook)
+
+;; The transcript's pending queue and the worker thread's identity are
+;; the clj hosts' machinery: a host without threads runs no worker, so
+;; it has no queue to drain and no pause to serve.
+#?(:clj (defn- pending-queue [] (LinkedBlockingQueue.)))
+#?(:clj (defn- queue-offer! [q x] (.offer q x)))
+#?(:clj (defn- queue-poll [q] (.poll q)))
+(defn- current-thread [] #?(:clj (Thread/currentThread) :cljs nil))
+(defn- await-reply
+  "A paused program's answer to a break-eval!, waited for up to 5 s."
+  [p]
+  #?(:clj (deref p 5000 {:error "The paused program did not answer."})
+     :cljs {:error "The paused program did not answer."}))
 
 (def atom-name "console")
 
@@ -49,7 +62,7 @@
   [st]
   (let [con {:ctx (eval/make-eval-context)
              :atom (store/open-atom st atom-name {:entries [] :dropped 0 :ns "user"})
-             :pending (LinkedBlockingQueue.)
+             :pending (pending-queue)
              :ns (atom nil)
              ;; what was here before the user's program: never reset
              :base-ns (set (map ns-name (all-ns)))
@@ -84,7 +97,7 @@
   (debugger/breakpoint-handler
    (:break con)
    (fn [] (break-handlers con))
-   (fn [] (identical? (Thread/currentThread) @(:eval-thread con)))
+   (fn [] (identical? (current-thread) @(:eval-thread con)))
    (:stepping con)))
 
 (defn- arm!
@@ -125,11 +138,11 @@
   "Queue one transcript entry; flush! writes it."
   [{:keys [pending]} kind text]
   (when (and text (pos? (count text)))
-    (.offer ^LinkedBlockingQueue pending [(name kind) text])))
+    (queue-offer! pending [(name kind) text])))
 
-(defn- drain [^LinkedBlockingQueue q]
+(defn- drain [q]
   (loop [acc []]
-    (if-let [x (.poll q)]
+    (if-let [x (queue-poll q)]
       (recur (conj acc x))
       acc)))
 
@@ -226,7 +239,7 @@
                  (:ctx con) code
                  (merge {:ns-name (symbol (current-ns con))
                          :on-output (fn [kind chunk] (say! con kind chunk))
-                         :before-eval (fn [] (reset! (:eval-thread con) (Thread/currentThread)))
+                         :before-eval (fn [] (reset! (:eval-thread con) (current-thread)))
                          ;; Break on error: the throw pauses before it
                          ;; unwinds, through this console's break
                          :wrap-eval (when (and @(:break-on? con) (not (:quiet opts)))
@@ -239,7 +252,7 @@
                                         (debugger/end-stale-pause! (:break con) (break-handlers con))
                                         (when (and (= :error (:status result)) (not (:quiet opts)))
                                           (reset! (:last-error con) (:error result)))
-                                        (let [me (Thread/currentThread)]
+                                        (let [me (current-thread)]
                                           (when (identical? me @(:eval-thread con))
                                             (debugger/stop-stepping! (:stepping con))
                                             (reset! (:eval-thread con) nil)))
@@ -429,7 +442,7 @@
   (if @(:pause con)
     (let [p (promise)]
       (debugger/break-eval! (:break con) frame code (fn [r] (deliver p r)))
-      (deref p 5000 {:error "The paused program did not answer."}))
+      (await-reply p))
     (if-let [e @(:last-error con)]
       (if (and error-id (debugger/stale? e error-id))
         {:error debugger/STALE}

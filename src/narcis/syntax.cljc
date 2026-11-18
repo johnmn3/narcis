@@ -11,7 +11,7 @@
    verbatim. This layer stays pure text analysis; narcis.edit runs it
    over rope slices."
   (:require [clojure.string :as str])
-  (:import (java.util.regex Pattern)))
+  #?(:clj (:import (java.util.regex Pattern))))
 
 ;; --- Token Definitions ---
 
@@ -54,9 +54,12 @@
 (def constants
   #{"true" "false" "nil"})
 
-(def token-pattern
-  (Pattern/compile
-   (str
+(def token-pattern-source
+  ;; The tokenizer's one regex, as data. The engines differ per host
+  ;; family — Java's Pattern on the clj hosts, a RegExp on cljs (where
+  ;; the atomic groups become plain ones; see tokenize*) — the pattern
+  ;; itself is shared.
+  (str
     "(;[^\n]*)"                                                  ;; Group 1: comment
     "|(#[?@]?\"(?>\\\\.|[^\"\\\\])*\"?)"                         ;; Group 2: regex literal
     "|(\"(?>\\\\.|[^\"\\\\])*\"?)"                               ;; Group 3: string literal
@@ -65,36 +68,65 @@
     "|([+-]?(?:0x[0-9a-fA-F]+|\\d+(?:/\\d+|\\.\\d+)?(?:[eE][+-]?\\d+)?[MN]?)(?=[\\s()\\[\\]{}\",]|$))" ;; Group 6: number
     "|([()\\[\\]{}])"                                            ;; Group 7: bracket / delimiter
     "|(\\^[-_a-zA-Z0-9\\p{L}\\p{N}.!$%&*+/<=>?#:]+)"            ;; Group 8: metadata tag
-    "|([-_a-zA-Z\\p{L}.!$%&*+/<=>?][-_a-zA-Z0-9\\p{L}\\p{N}.!$%&*+/<=>?#]*)"))) ;; Group 9: symbol
+    "|([-_a-zA-Z\\p{L}.!$%&*+/<=>?][-_a-zA-Z0-9\\p{L}\\p{N}.!$%&*+/<=>?#]*)")) ;; Group 9: symbol
+
+#?(:clj (def token-pattern (Pattern/compile token-pattern-source)))
+
+(defn- token-type
+  "The token kind of one regex match, from its nine groups."
+  [[g1 g2 g3 g4 g5 g6 g7 g8 g9]]
+  (cond
+    g1 :comment
+    g3 :string
+    g2 :regex
+    g4 :char
+    g5 :keyword
+    g6 :number
+    g7 :bracket
+    g8 :metatag
+    g9 (cond
+         (constants g9) :constant
+         (special-forms g9) :special-form
+         (core-builtins g9) :builtin
+         :else :symbol)
+    :else :symbol))
 
 (defn- tokenize*
   [^String text]
-  (if (or (nil? text) (zero? (.length text)))
+  (if (or (nil? text) (zero? (count text)))
     []
-    (let [matcher (.matcher token-pattern text)
-          results (transient [])]
-      (while (.find matcher)
-        (let [start (.start matcher)
-              end (.end matcher)
-              tok-type (cond
-                         (.group matcher 1) :comment
-                         (.group matcher 3) :string
-                         (.group matcher 2) :regex
-                         (.group matcher 4) :char
-                         (.group matcher 5) :keyword
-                         (.group matcher 6) :number
-                         (.group matcher 7) :bracket
-                         (.group matcher 8) :metatag
-                         (.group matcher 9)
-                         (let [sym (.group matcher 9)]
-                           (cond
-                             (constants sym) :constant
-                             (special-forms sym) :special-form
-                             (core-builtins sym) :builtin
-                             :else :symbol))
-                         :else :symbol)]
-          (conj! results [tok-type start end])))
-      (persistent! results))))
+    #?(:clj
+       (let [matcher (.matcher token-pattern text)
+             results (transient [])]
+         (while (.find matcher)
+           (conj! results [(token-type [(.group matcher 1) (.group matcher 2) (.group matcher 3)
+                                        (.group matcher 4) (.group matcher 5) (.group matcher 6)
+                                        (.group matcher 7) (.group matcher 8) (.group matcher 9)])
+                           (.start matcher) (.end matcher)]))
+         (persistent! results))
+       :cljs
+       ;; the same walk over a RegExp: sticky exec from the last
+       ;; position, skipping the gap characters the Java matcher's
+       ;; find would skip; the pattern's atomic groups are plain
+       ;; groups here, which can cost backtracking on pathological
+       ;; input but tokenizes the same forms
+       (let [re (js/RegExp. (str/replace token-pattern-source "(?>" "(?:") "uy")
+             results (transient [])
+             n (count text)]
+         (loop [pos 0]
+           (if (>= pos n)
+             (persistent! results)
+             (do (set! (.-lastIndex re) pos)
+                 (if-let [m (.exec re text)]
+                   (let [start (.-index m)
+                         whole (aget m 0)
+                         end (+ start (count whole))]
+                     (conj! results [(token-type (mapv (fn [i] (let [v (aget m i)]
+                                                                 (if (undefined? v) nil v)))
+                                                       (range 1 10)))
+                                     start end])
+                     (recur (if (pos? (count whole)) end (inc end))))
+                   (recur (inc pos))))))))))
 
 ;; One entry, [text result], for the last string tokenized. Matched by identity.
 (def ^:private tokenize-last (atom nil))
@@ -125,36 +157,41 @@
   (if (or (nil? text) (empty? text))
     {:bracket-tokens [] :matches {} :unmatched #{}}
     (let [tokens (tokenize text)
-          stack (java.util.ArrayDeque.)
-          bracket-tokens (java.util.ArrayList.)
-          matches (java.util.HashMap.)
-          unmatched (java.util.HashSet.)]
+          ;; the scratch collections are transients: the stack is a
+          ;; vector (its top is its last element), the rest collect
+          ;; exactly what the Java collections collected
+          stack (transient [])
+          bracket-tokens (transient [])
+          matches (transient {})
+          unmatched (transient #{})]
       (doseq [[tok-type start end] tokens]
         (when (= tok-type :bracket)
           (let [ch (.charAt text start)]
             (cond
               (open->close ch)
-              (let [depth (.size stack)]
-                (.push stack [ch start depth])
-                (.add bracket-tokens [(long start) (long end) depth :open]))
+              (let [depth (count stack)]
+                (conj! stack [ch start depth])
+                (conj! bracket-tokens [(long start) (long end) depth :open]))
 
               (close->open ch)
               (let [expected-open (close->open ch)]
-                (if (and (not (.isEmpty stack))
-                         (= (first (.peek stack)) expected-open))
-                  (let [[_ open-pos open-depth] (.pop stack)]
-                    (.add bracket-tokens [(long start) (long end) open-depth :close])
-                    (.put matches (long open-pos) (long start))
-                    (.put matches (long start) (long open-pos)))
+                (if (and (pos? (count stack))
+                         (= (first (nth stack (dec (count stack)))) expected-open))
+                  (let [[_ open-pos open-depth] (nth stack (dec (count stack)))]
+                    (pop! stack)
+                    (conj! bracket-tokens [(long start) (long end) open-depth :close])
+                    (assoc! matches (long open-pos) (long start))
+                    (assoc! matches (long start) (long open-pos)))
                   (do
-                    (.add unmatched (long start))
-                    (.add bracket-tokens [(long start) (long end) 0 :unmatched]))))))))
-      (while (not (.isEmpty stack))
-        (let [[_ open-pos _] (.pop stack)]
-          (.add unmatched (long open-pos))))
-      {:bracket-tokens (vec bracket-tokens)
-       :matches (into {} matches)
-       :unmatched (into #{} unmatched)})))
+                    (conj! unmatched (long start))
+                    (conj! bracket-tokens [(long start) (long end) 0 :unmatched]))))))))
+      (while (pos? (count stack))
+        (let [[_ open-pos _] (nth stack (dec (count stack)))]
+          (pop! stack)
+          (conj! unmatched (long open-pos))))
+      {:bracket-tokens (persistent! bracket-tokens)
+       :matches (persistent! matches)
+       :unmatched (persistent! unmatched)})))
 
 ;; One entry, [text result], for the last text analysed. Matched by identity.
 (def ^:private compute-brackets-last (atom nil))
@@ -210,7 +247,7 @@
   [^String text offset]
   (if (or (nil? text) (not (pos? offset)))
     1
-    (inc (count (re-seq #"\n" (.substring text 0 (min (.length text) (int offset))))))))
+    (inc (count (re-seq #"\n" (.substring text 0 (min (count text) (int offset))))))))
 
 (defn symbol-at-pos
   "Returns a map `{:symbol str, :start int, :end int, :type keyword}` for the symbol
@@ -221,8 +258,8 @@
    which would otherwise push out the editor's whole-buffer entry."
   ([text pos] (symbol-at-pos text pos false))
   ([^String text pos uncached?]
-   (when (and (string? text) (pos? (.length text)))
-     (let [len (.length text)
+   (when (and (string? text) (pos? (count text)))
+     (let [len (count text)
            pos (min len (max 0 (int (or pos 0))))
            tokens (if uncached? (tokenize* text) (tokenize text))
            in-literal? (some (fn [[tok-type s e]]
@@ -393,17 +430,17 @@
      if the document prefix has no unclosed outer forms.
    - Preserves indentation when brackets on the line are balanced."
   [^String text pos]
-  (if (or (nil? text) (not (pos? (.length text))) (not (pos? pos)))
+  (if (or (nil? text) (not (pos? (count text))) (not (pos? pos)))
     ""
-    (let [pos (min (.length text) (max 0 (int pos)))
+    (let [pos (min (count text) (max 0 (int pos)))
           line-start (let [idx (.lastIndexOf text "\n" (dec pos))]
                        (if (neg? idx) 0 (inc idx)))
           line-end (let [idx (.indexOf text "\n" pos)]
-                     (if (neg? idx) (.length text) idx))
+                     (if (neg? idx) (count text) idx))
           line-prefix (.substring text line-start pos)
           line-suffix (.substring text pos line-end)
           base-indent (or (re-find #"^[ ]+" line-prefix) "")
-          base-len (.length ^String base-indent)
+          base-len (count base-indent)
           tokens (tokenize line-prefix)
           open-brackets (count (filter (fn [[tok-type s _]]
                                          (and (= tok-type :bracket)
@@ -449,13 +486,21 @@
   [^String text ^String query & [{:keys [case-sensitive?]}]]
   (if (or (str/blank? text) (str/blank? query))
     []
-    (let [flags (if case-sensitive? Pattern/LITERAL (bit-or Pattern/LITERAL Pattern/CASE_INSENSITIVE))
-          pat (Pattern/compile query flags)
-          matcher (.matcher pat text)
+    ;; a literal scan, not a regex: the query is text, not a pattern.
+    ;; The case-insensitive arm lower-cases both sides, which keeps
+    ;; offsets except for the handful of characters whose lower-case
+    ;; form has a different length (the Java original compared per
+    ;; character; the difference is confined to those characters).
+    (let [hay (if case-sensitive? text (str/lower-case text))
+          needle (if case-sensitive? query (str/lower-case query))
+          qlen (count needle)
           results (transient [])]
-      (while (.find matcher)
-        (conj! results [(.start matcher) (.end matcher)]))
-      (persistent! results))))
+      (loop [from 0]
+        (let [idx (.indexOf hay needle (int from))]
+          (if (neg? idx)
+            (persistent! results)
+            (do (conj! results [idx (+ idx qlen)])
+                (recur (+ idx qlen)))))))))
 
 (defn extract-buffer-def-meta
   "Inspects `text` around `def-target` (from `find-definition`) to extract
@@ -502,8 +547,8 @@
                                                  (let [raw (.substring text fs fe)
                                                        cleaned (if (and (.startsWith raw "\"")
                                                                         (.endsWith raw "\"")
-                                                                        (>= (.length raw) 2))
-                                                                 (subs raw 1 (dec (.length raw)))
+                                                                        (>= (count raw) 2))
+                                                                 (subs raw 1 (dec (count raw)))
                                                                  raw)]
                                                    [cleaned (rest meaningful-tokens)])
                                                  [nil meaningful-tokens])
@@ -771,7 +816,7 @@
   (if (or (nil? text) (str/blank? text))
     {:defs #{} :spans [] :all-tokens #{} :token-counts {}}
     (let [h (hash text)
-          now (System/currentTimeMillis)]
+          now #?(:clj (System/currentTimeMillis) :cljs (js/Date.now))]
       (if-let [entry (get @buffer-symbols-cache h)]
         entry
         (let [computed (assoc (extract-text-symbols text) :timestamp now)]
@@ -800,9 +845,9 @@
    - `:end` is `pos` (where the prefix ends).
    - `:word-end` is the end offset of the symbol word following `pos` (if any)."
   [^String text pos]
-  (if (or (nil? text) (zero? (.length text)))
+  (if (or (nil? text) (zero? (count text)))
     {:prefix "" :start 0 :end 0 :word-end 0}
-    (let [len (.length text)
+    (let [len (count text)
           pos (min len (max 0 (int (or pos 0))))
           start (loop [i (dec pos)]
                   (if (and (>= i 0) (symbol-char? (.charAt text i)))
@@ -951,7 +996,7 @@
   "Calculates the target indentation (in spaces) for each line of `text`.
    Returns a vector of integers or `:verbatim` (for lines within multiline strings)."
   [^String text]
-  (if (or (nil? text) (zero? (.length text)))
+  (if (or (nil? text) (zero? (count text)))
     []
     (let [lines (str/split text #"\n" -1)
           n (count lines)
@@ -976,7 +1021,7 @@
           indents
           (let [line (nth lines line-idx)
                 ls (nth line-starts line-idx)
-                first-non-ws (let [len (.length line)]
+                first-non-ws (let [len (count line)]
                                (loop [col 0]
                                  (cond
                                    (>= col len) nil

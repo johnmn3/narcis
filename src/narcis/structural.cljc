@@ -38,11 +38,17 @@
   (or (first (filter (fn [{:keys [start end]}] (and (<= start caret) (< caret end))) forms))
       (first (filter (fn [{:keys [start]}] (>= start caret)) forms))))
 
+(defn- index-of
+  "The index of x in xs by equality, or -1 (the portable form of the
+  java.util.List call this file used)."
+  [xs x]
+  (or (first (keep-indexed (fn [j v] (when (= v x) j)) xs)) -1))
+
 (defn- siblings-of
   "The forms beside list l: its parent's, the list before it in lists or
   the top level's."
   [text lists l]
-  (let [i (.indexOf ^java.util.List lists l)]
+  (let [i (index-of lists l)]
     (if (pos? i)
       (:kids (nth lists (dec i)))
       (commands/form-tree text))))

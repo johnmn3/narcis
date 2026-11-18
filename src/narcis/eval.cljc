@@ -3,17 +3,38 @@
    Output writers bound directly, eval-string under run-interruptible, *ns*
    always bound, and Stop that lets the worker's own exit path go idle."
   (:require [clojure.string :as str])
-  (:import (clojure.lang LineNumberingPushbackReader)
-           (java.io Reader StringReader Writer)
-           (java.util.concurrent LinkedBlockingQueue)))
+  #?(:clj (:import (clojure.lang LineNumberingPushbackReader)
+                   (java.io Reader StringReader Writer)
+                   (java.util.concurrent LinkedBlockingQueue))))
 
-(defn create-writer
-  "Creates a java.io.Writer that forwards character chunks to (on-chunk str).
+;; The evaluator's host seams. The worker is a thread, its stdin and
+;; stdout are java.io readers and writers, its queue blocks, and Stop
+;; spends the host's interrupt (jolt.host's token, and the thread's own
+;; interrupt flag): that machinery is the clj hosts' today, written once
+;; here. The state, the history and the result shaping around it are
+;; every host's.
+(defn- cause-of [t] #?(:clj (.getCause ^Throwable t) :cljs (.-cause t)))
+(defn- class-name [v] #?(:clj (.getName (class v)) :cljs (.-name (type v))))
+(defn- current-thread [] #?(:clj (Thread/currentThread) :cljs nil))
+(defn- interrupt-thread! [t]
+  #?(:clj (try (.interrupt ^Thread t) (catch :default _ nil)) :cljs nil))
+(defn- clear-interrupt! [] #?(:clj (Thread/interrupted) :cljs nil))
+(defn- new-lock [] #?(:clj (Object.) :cljs (js-obj)))
+#?(:clj (defn- string-reader [s] (StringReader. s)))
+#?(:clj (defn- new-queue [] (LinkedBlockingQueue.)))
+#?(:clj (defn- queue-offer! [q x] (.offer q x)))
+#?(:clj (defn- queue-take [q] (.take q)))
+#?(:clj (defn- queue-clear! [q] (.clear q)))
+#?(:clj (defn- form-reader [rdr] (LineNumberingPushbackReader. rdr)))
+
+#?(:clj
+   (defn create-writer
+     "Creates a java.io.Writer that forwards character chunks to (on-chunk str).
    Matches upstream's char[] handling (41c56b8): a char array must go
    through a String constructor, not (str ...), which stringifies the
    array's identity instead of its contents."
-  [on-chunk]
-  (proxy [Writer] []
+     [on-chunk]
+     (proxy [Writer] []
     (close [] nil)
     (flush [] nil)
     (write
@@ -26,59 +47,65 @@
       ([x off len]
        (if (instance? (Class/forName "[C") x)
          (on-chunk (String. ^chars x (int off) (int len)))
-         (on-chunk (subs (str x) (int off) (+ (int off) (int len)))))))))
+         (on-chunk (subs (str x) (int off) (+ (int off) (int len))))))))))
 
-(defn- await-stdin-item
-  "Blocks for the next queued stdin item, telling on-wait-input around the
+;; The stdin machinery: a queue-fed java.io.Reader the program reads
+;; its input from. The clj hosts' shape, like create-writer above.
+#?(:clj
+   (defn- await-stdin-item
+     "Blocks for the next queued stdin item, telling on-wait-input around the
    wait. An interrupt reads as EOF."
-  [queue on-wait-input]
-  (when on-wait-input (on-wait-input true))
-  (let [item (try (.take queue) (catch InterruptedException _ ::eof))]
-    (when on-wait-input (on-wait-input false))
-    item))
+     [queue on-wait-input]
+     (when on-wait-input (on-wait-input true))
+     (let [item (try (queue-take queue) (catch InterruptedException _ ::eof))]
+       (when on-wait-input (on-wait-input false))
+       item)))
 
-(defn- refill-stdin!
-  "Takes the next stdin item into :current-rdr. True when there is more to
+#?(:clj
+   (defn- refill-stdin!
+     "Takes the next stdin item into :current-rdr. True when there is more to
    read; false at EOF, after marking :closed. stdin is {:queue :current-rdr
    :closed :on-wait-input}."
-  [{:keys [queue current-rdr closed on-wait-input]}]
-  (let [item (await-stdin-item queue on-wait-input)]
-    (if (or (identical? item ::eof) (nil? item) @closed)
-      (do (reset! closed true) false)
-      (do (reset! current-rdr (StringReader. (str item))) true))))
+     [{:keys [queue current-rdr closed on-wait-input]}]
+     (let [item (await-stdin-item queue on-wait-input)]
+       (if (or (identical? item ::eof) (nil? item) @closed)
+         (do (reset! closed true) false)
+         (do (reset! current-rdr (string-reader (str item))) true)))))
 
-(defn- read-stdin-chars
-  "Reads up to len chars into cbuf at off, refilling from the queue as the
+#?(:clj
+   (defn- read-stdin-chars
+     "Reads up to len chars into cbuf at off, refilling from the queue as the
    current reader runs dry. -1 once closed or at EOF."
-  [{:keys [current-rdr closed] :as stdin} cbuf off len]
-  (if @closed
-    -1
-    (loop []
-      (let [n (.read ^StringReader @current-rdr cbuf off len)]
-        (cond (not (neg? n)) n
-              (refill-stdin! stdin) (recur)
-              :else -1)))))
+     [{:keys [current-rdr closed] :as stdin} cbuf off len]
+     (if @closed
+       -1
+       (loop []
+         (let [n (.read ^StringReader @current-rdr cbuf off len)]
+           (cond (not (neg? n)) n
+                 (refill-stdin! stdin) (recur)
+                 :else -1))))))
 
-(defn create-stdin-reader
-  "Upstream's queue-fed Reader, unchanged."
-  [queue current-rdr-atom closed-atom on-wait-input]
-  (proxy [Reader] []
-    (close []
-      (reset! closed-atom true)
-      (.offer queue ::eof))
-    (read
-      ([]
-       (let [buf (make-array Character/TYPE 1)
-             n (.read ^Reader this buf 0 1)]
-         (if (neg? n) -1 (int (aget ^chars buf 0)))))
-      ([cbuf off len]
-       (read-stdin-chars {:queue queue :current-rdr current-rdr-atom :closed closed-atom
-                          :on-wait-input on-wait-input}
-                         cbuf off len)))))
+#?(:clj
+   (defn create-stdin-reader
+     "Upstream's queue-fed Reader, unchanged."
+     [queue current-rdr-atom closed-atom on-wait-input]
+     (proxy [Reader] []
+       (close []
+         (reset! closed-atom true)
+         (queue-offer! queue ::eof))
+       (read
+         ([]
+          (let [buf (make-array Character/TYPE 1)
+                n (.read ^Reader this buf 0 1)]
+            (if (neg? n) -1 (int (aget ^chars buf 0)))))
+         ([cbuf off len]
+          (read-stdin-chars {:queue queue :current-rdr current-rdr-atom :closed closed-atom
+                             :on-wait-input on-wait-input}
+                            cbuf off len))))))
 
-(defn find-root-cause [^Throwable t]
+(defn find-root-cause [t]
   (loop [cause t]
-    (if-let [next (.getCause cause)] (recur next) cause)))
+    (if-let [next (cause-of cause)] (recur next) cause)))
 
 (defn interrupted?
   "True when e, or anything in its cause chain, is Jolt's interrupt signal."
@@ -86,13 +113,13 @@
   (loop [c e]
     (cond (nil? c) false
           (:jolt/interrupted (ex-data c)) true
-          :else (recur (.getCause ^Throwable c)))))
+          :else (recur (cause-of c)))))
 
 (def ^:private source-path-probe
   ;; whether jolt.host/eval-string takes a source path (jolt-lang/jolt#1476),
   ;; asked once with an evaluation of nil
   (delay (if-let [f (resolve 'jolt.host/eval-string)]
-           (try (f "nil" "probe.clj") true (catch Throwable _ false))
+           (try (f "nil" "probe.clj") true (catch :default _ false))
            false)))
 
 (defn source-path?
@@ -114,13 +141,14 @@
   ([s path]
    (if-let [f (resolve 'jolt.host/eval-string)]
      (if (and path (source-path?)) (f s path) (f s))
-     (load-string s))))
+     #?(:clj (load-string s)
+        :cljs (throw (ex-info "eval-string: no evaluator on this host" {}))))))
 
 (defn format-error [t]
   (let [root (find-root-cause t)
         data (or (ex-data t) (ex-data root))
         msg (or (ex-message root) (ex-message t) (str root))
-        type-name (.getName (class root))
+        type-name (class-name root)
         line (:clojure.error/line data)
         column (or (:clojure.error/column data) (:column data))]
     (str "Error [" type-name "]: " msg
@@ -165,8 +193,8 @@
 (def idle-state {:status :idle})
 
 (defn make-eval-context []
-  {:queue (LinkedBlockingQueue.)
-   :current-rdr (atom (StringReader. ""))
+  {:queue (new-queue)
+   :current-rdr (atom (string-reader ""))
    :closed? (atom false)
    :waiting-input? (atom false)
    :history (atom (create-history))
@@ -184,10 +212,10 @@
    ;; finishing worker's :idle notification can never be overtaken by the
    ;; next run's :running notification. See eval-async and stop-eval!
    ;; below.
-   :lock (Object.)})
+   :lock (new-lock)})
 
-(defn push-stdin! [{:keys [queue]} text] (.offer queue (str text "\n")))
-(defn push-stdin-eof! [{:keys [queue]}] (.offer queue ::eof))
+(defn push-stdin! [{:keys [queue]} text] (queue-offer! queue (str text "\n")))
+(defn push-stdin-eof! [{:keys [queue]}] (queue-offer! queue ::eof))
 (defn waiting-for-input? [{:keys [waiting-input?]}] @waiting-input?)
 (defn evaluating? [{:keys [running-state]}] (= :running (:status @running-state)))
 
@@ -228,8 +256,8 @@
       (when (and (= :running status) (not finishing))
         (reset! stop-requested true)
         (jolt.host/interrupt! token)
-        (when thread (try (.interrupt ^Thread thread) (catch :default _ nil)))
-        (.offer queue ::eof)
+        (when thread (interrupt-thread! thread))
+        (queue-offer! queue ::eof)
         done))))
 
 (defn- report-callback-exception!
@@ -262,8 +290,8 @@
   ;; Clearing the queue under the same lock as stop-eval!'s EOF offer
   ;; means the two can never interleave, so a Stop meant for the
   ;; previous run can't land in this run's freshly cleared queue.
-  (.clear queue)
-  (reset! current-rdr (StringReader. ""))
+  (queue-clear! queue)
+  (reset! current-rdr (string-reader ""))
   (reset! closed? false)
   (reset! waiting-input? false))
 
@@ -285,10 +313,10 @@
   (locking lock
     (swap! running-state
            (fn [s] (if (identical? (:token s) token)
-                     (assoc s :thread (Thread/currentThread))
+                     (assoc s :thread (current-thread))
                      s)))
     (when @stop-requested
-      (try (.interrupt (Thread/currentThread)) (catch :default _ nil)))
+      (interrupt-thread! (current-thread)))
     (when (:on-status-change opts) ((:on-status-change opts) :running))))
 
 (defn- run-before-eval!
@@ -393,7 +421,7 @@
   (try
     (register-worker! ctx run)
     (let [target (or (find-ns ns-sym) (create-ns ns-sym))
-          in-rdr (LineNumberingPushbackReader.
+          in-rdr (form-reader
                   (create-stdin-reader queue current-rdr closed? (stdin-wait-callback ctx opts)))]
       (binding [*out* (:out-w run) *err* (:err-w run) *in* in-rdr *ns* target
                 *1 (:1 @repl-vars) *2 (:2 @repl-vars) *3 (:3 @repl-vars) *e (:e @repl-vars)]
@@ -442,7 +470,7 @@
   ;; on-status-change/on-complete -- a GUI's .put onto a queue,
   ;; say -- would otherwise throw InterruptedException
   ;; immediately, silently losing the completion.
-  (Thread/interrupted)
+  (clear-interrupt!)
   ;; Still this evaluation's turn: a new eval-async can't start
   ;; until the reset to idle below.
   (try
@@ -457,10 +485,11 @@
     (catch :default e (report-callback-exception! "on-complete" e)))
   result)
 
-(defn- start-run!
-  "Registers a new run on ctx and starts its worker future. Answers nil.
+#?(:clj
+   (defn- start-run!
+     "Registers a new run on ctx and starts its worker future. Answers nil.
    Called with ctx's lock held, and no run in progress."
-  [{:keys [running-state] :as ctx} code opts]
+     [{:keys [running-state] :as ctx} code opts]
   (let [{:keys [on-output]} opts
         ns-sym (or (:ns-name opts) 'user)
         token (jolt.host/make-interrupt)
@@ -479,7 +508,7 @@
     (future
       (try (finish-run! ctx run (run-evaluation ctx run code))
            (finally (swap! (:completing ctx) dec))))
-    nil))
+    nil)))
 
 (defn eval-async
   "Evaluates code on a worker. Options:
