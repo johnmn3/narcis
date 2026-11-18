@@ -24,8 +24,7 @@
    in place. A plain deref of the atom refuses — a value held by
    reference cannot be packed for delivery — so no path derefs
    it: writes go through swap-in!, reads through read-in."
-  (:require [eve.alpha :as eve]
-            [eve.deftype.array :as arr]))
+  (:require [eve.alpha :as eve]))
 
 (defprotocol IVersioned
   (-cur [v] "The current version's value.")
@@ -36,17 +35,17 @@
   (-cur [_] cur)
   (-hist [_] hist))
 
-(defn- arr-len [a] (if (nil? a) 0 (arr/alength a)))
+(defn- arr-len [a] (if (nil? a) 0 (eve/alength a)))
 
 (defn- arr-push [a v]
   (let [n (arr-len a)
-        b (arr/make-array (inc n))]
-    (dotimes [i n] (arr/aset b i (arr/aget a i)))
-    (arr/aset b n v)
+        b (eve/make-array (inc n))]
+    (dotimes [i n] (eve/aset b i (eve/aget a i)))
+    (eve/aset b n v)
     b))
 
 (defn- arr-vec [a]
-  (if (nil? a) [] (vec (arr/array-seq a))))
+  (if (nil? a) [] (vec (eve/array-seq a))))
 
 (def empty-state
   "The app atom's first value: every slot empty."

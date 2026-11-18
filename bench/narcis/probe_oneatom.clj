@@ -11,7 +11,6 @@
    the one-atom shape before any caller is rewritten on it.
    Run: scripts/jolt-run.sh narcis.probe-oneatom <dir>"
   (:require [eve.alpha :as eve]
-            [eve.deftype.array :as arr]
             [narcis.text :as text] [narcis.buffer :as buffer]
             [narcis.store-eve :as se]))
 
@@ -34,7 +33,7 @@
           :hist-chars (text/chars (buffer/-doc (buffer/-undo b)))
           :theme (get-in app [:editor :theme])
           :cur (se/-cur v)
-          :hist0 (arr/aget (se/-hist v) 0)})))
+          :hist0 (eve/aget (se/-hist v) 0)})))
 
 (defn- timed [label f]
   (let [t0 (System/nanoTime)
@@ -69,8 +68,8 @@
       (eve/swap! a (fn [app] (assoc-in app [:versions "hello"]
                                       (se/->Versioned "v1" nil))))
       (eve/swap! a (fn [app]
-                    (let [h (arr/make-array 1)]
-                      (arr/aset h 0 "v1")
+                    (let [h (eve/make-array 1)]
+                      (eve/aset h 0 "v1")
                       (assoc-in app [:versions "hello"]
                                 (se/->Versioned "v2" h)))))
       (swap! results conj (check "nested reads" expected (read-back a)))
