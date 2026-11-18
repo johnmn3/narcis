@@ -10,7 +10,7 @@
    rope spike. This probe re-derives that at the current pin for
    the one-atom shape before any caller is rewritten on it.
    Run: scripts/jolt-run.sh narcis.probe-oneatom <dir>"
-  (:require [eve.alpha :as eve]
+  (:require [eve.alpha :as eve :refer [$]]
             [narcis.text :as text] [narcis.buffer :as buffer]
             [narcis.store-eve :as se]))
 
@@ -24,7 +24,7 @@
    :theme :dark :cur "v2" :hist0 "v1"})
 
 (defn- read-back [a]
-  (eve/$ (let [app @a
+  ($ (let [app @a
              b (get-in app [:buffers "x.clj"])
              v (get-in app [:versions "hello"])]
          {:chars (text/chars (buffer/-root b))

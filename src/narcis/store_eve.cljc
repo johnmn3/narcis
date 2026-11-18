@@ -20,12 +20,12 @@
    map. That is sound because they are only ever built and read
    inside the atom's own machinery: constructed in a swap fn,
    where the domain is bound and a deftype value is Eve pointers,
-   and read in a read region (eve.alpha/$), where they are read
+   and read in a read region ($), where they are read
    in place. A plain deref of the atom refuses — a value held by
    reference cannot be packed for delivery — so no path derefs
    it: writes are swap!s on the atom itself, reads are read in
-   place inside a read region (eve/$)."
-  (:require [eve.alpha :as eve]))
+   place inside a read region ($)."
+  (:require [eve.alpha :as eve :refer [$]]))
 
 (defprotocol IVersioned
   (-cur [v] "The current version's value.")
@@ -59,7 +59,7 @@
     ;; the domain is created at open, closed at close!.
     (eve/persistent-atom-domain base)
     (let [a (eve/atom {:id :narcis.store/app :persistent base} nil)]
-      (when (eve/$ (nil? @a))
+      (when ($ (nil? @a))
         (swap! a (fn [_] empty-state)))
       {:impl :eve :base base :atom a})))
 
@@ -72,19 +72,19 @@
                  (->Versioned value nil)
                  (->Versioned value
                               (arr-push (-hist v) (-cur v))))))
-  (eve/$ (arr-len (-hist (get-in @(:atom store) [:versions buffer-name])))))
+  ($ (arr-len (-hist (get-in @(:atom store) [:versions buffer-name])))))
 
 (defn current [store buffer-name]
-  (eve/$ (let [v (get-in @(:atom store) [:versions buffer-name])]
+  ($ (let [v (get-in @(:atom store) [:versions buffer-name])]
            (when (some? v) (-cur v)))))
 
 (defn version [store buffer-name i]
-  (eve/$ (let [v (get-in @(:atom store) [:versions buffer-name])]
+  ($ (let [v (get-in @(:atom store) [:versions buffer-name])]
            (when (some? v)
              (nth (conj (arr-vec (-hist v)) (-cur v)) i nil)))))
 
 (defn version-count [store buffer-name]
-  (eve/$ (let [v (get-in @(:atom store) [:versions buffer-name])]
+  ($ (let [v (get-in @(:atom store) [:versions buffer-name])]
            (if (nil? v) 0 (inc (arr-len (-hist v)))))))
 
 (defn close! [{:keys [base]}]

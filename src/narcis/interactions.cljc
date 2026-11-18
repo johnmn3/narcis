@@ -26,7 +26,7 @@
    This is Jolt's evaluator: narcis.eval drives jolt.host's interrupt
    token, which is what lets Stop end a loop that never blocks."
   (:require [clojure.string :as str]
-            [eve.alpha :as eve]
+            [eve.alpha :as eve :refer [$]]
             [narcis.breakpoints :as bp]
             [narcis.commands :as commands]
             [narcis.console :as console]
@@ -109,7 +109,7 @@
   [con]
   (debugger/arm-breakpoints! (:hook con)))
 
-(defn- value [con] (eve/$ (get @(:atom (:store con)) :console)))
+(defn- value [con] ($ (get @(:atom (:store con)) :console)))
 
 (defn console-styles
   "The console's style table under theme t, for the page: each kind's

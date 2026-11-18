@@ -41,7 +41,7 @@
 
    The editor requires the store's Eve arm: open-editor says so when
    handed a file store."
-  (:require [eve.alpha :as eve]
+  (:require [eve.alpha :as eve :refer [$]]
             [narcis.text :as text]))
 
 ;; ---------------------------------------------------------------------------
@@ -118,7 +118,7 @@
   [ed]
   (:atom (:store ed)))
 
-(defn- editor-value [ed] (eve/$ (get @(:atom (:store ed)) :editor)))
+(defn- editor-value [ed] ($ (get @(:atom (:store ed)) :editor)))
 
 (defn- bump-editor [s] (update s :rev (fnil inc 0)))
 
@@ -167,7 +167,7 @@
    path is not open."
   [ed path f]
   (when path
-    (eve/$ (let [b (get-in @(:atom (:store ed)) [:buffers path])]
+    ($ (let [b (get-in @(:atom (:store ed)) [:buffers path])]
              (when (some? b) (f (view-of path b)))))))
 
 (defn open?
