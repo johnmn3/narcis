@@ -87,6 +87,18 @@ function perf(label, ms) { console.log(`PERF ${label} ${Math.round(ms)}ms`); }
   perf('page-first-render-after-server-up', Date.now() - tLoad);
 
   if (phase === 'edit') {
+    // --- the open is progressive: the head rendered while the tail
+    // is still arriving. Prove the load was in flight at first
+    // render, then wait for it to complete before exercising the
+    // whole document.
+    const stateText = async () => await (await fetch(url + '/api/state')).text();
+    ok(/:loading \{[^}]*:total/.test(await stateText()),
+       'file-still-loading-at-first-render');
+    const tComplete = Date.now();
+    ok(await waitFor(async () => /:loading \{\}/.test(await stateText()), 1800000),
+       'load-completes');
+    perf('load-complete-after-first-render', Date.now() - tComplete);
+
     // --- find to the end of the file: the jump and the search in one
     const ms = await findToken('zqxfinal', expectedLines);
     ok(await posLn(expectedLines), 'find-reaches-the-last-line',

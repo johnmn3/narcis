@@ -129,8 +129,11 @@ JVM.
 
 - `src/eve/text.cljc` — the buffer's document: Eve's `eve.text` library,
   carried unchanged (provenance and hashes in `UPSTREAM.md`).
-- `src/narcis/buffer.cljc` — a buffer is a `BufferState` at the root of its
-  own Eve atom; every mutation is one `swap!` with the text op inside it.
+- `src/narcis/buffer.cljc` — the buffers live in the app's one Eve atom,
+  each a `BufferState` in a plain map; every mutation is one `swap!` with
+  the text op inside it. Opening a file is progressive: the head becomes
+  the buffer at once and the rest arrives on a background load, the
+  document growing as it lands; edits wait for the load to finish.
 - `src/narcis/` (syntax, edit, structural, commands, ops, eval, console,
   docs, theme, paint, menus, nav, view, debugger, breakpoints, changed,
   instrument-lock) — Jonquil's language core, lifted; `UPSTREAM.md` has

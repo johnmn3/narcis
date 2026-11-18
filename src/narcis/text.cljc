@@ -189,6 +189,153 @@
      (with-open [rdr (java.io.FileReader. ^String path)]
        (ingest-reader rdr))))
 
+;; ---------------------------------------------------------------------------
+;; progressive ingest: the head now, the tail a chunk at a time
+;;
+;; ingest-file above builds the whole document before anything can be
+;; shown of it. The progressive door splits the same work in two:
+;; ingest-open reads a bounded head synchronously — enough for the
+;; first screens — and answers a tail state; ingest-tail-read then
+;; hands over one chunk at a time to append to the document the head
+;; built. A
+;; count called loaded runs through both: the raw stream characters
+;; the document already accounts for (a trailing \r held back
+;; between pieces is counted only when the piece that resolves it
+;; lands), which is what a resumed load skips and what progress is
+;; measured in. The document the two phases build is ingest-file's
+;; document: same builder, same break handling, same seams.
+
+(def ^:private head-chars
+  "How much text a progressive head aims to hold before the open
+   returns: enough for the first screens, small enough to be quick."
+  65536)
+
+#?(:clj
+   (defn file-length
+     "The length of the file at path in bytes, or nil when it is not there."
+     [path]
+     (let [f (java.io.File. ^String path)]
+       (when (.exists f) (.length f)))))
+
+(defn from-pieces
+  "A document of the pieces, built with eve.text's builder — the
+   pieces are one text, split where they split. Document
+   construction, so it runs where documents are built: inside a
+   swap (see narcis.buffer/open-file!)."
+  [pieces]
+  (t/text-builder-text
+   (reduce t/text-builder-add (t/text-builder) pieces)))
+
+#?(:clj
+   (defn ingest-open
+     "Open path and read its head's text, progressively: {:pieces
+      [s ...] :eol :loaded-chars n :total-bytes n :done? b :tail
+      tail-or-nil}. Pure IO and string work — the pieces become a
+      document with from-pieces, inside the caller's swap. The head
+      holds at least :head characters (head-chars unless said
+      otherwise) and the file's first line ending — the buffer's
+      :eol — unless a 1 MB cap is reached first (a first line longer
+      than the cap: :eol is then \"\\n\" on a guess; the tail's
+      endings still load as breaks, only the ending a save writes
+      back is the guess). When the whole file fits the head, :done?
+      is true, the reader is closed and :tail is nil. Otherwise
+      :tail is a host-side state for ingest-tail-read, holding the
+      open reader and a \r the head ended on, if any (held back: it
+      may be half of a \r\n the document must see whole)."
+     [path & [{:keys [head] :or {head head-chars}}]]
+     (let [file (java.io.File. ^String path)
+           total (.length file)
+           rdr (java.io.FileReader. file)
+           buf (char-array (min head chunk-chars))]
+       (loop [pieces [] eol nil pending-cr? false loaded 0]
+         (let [n (.read rdr buf)]
+           (if (neg? n)
+             (do (.close rdr)
+                 {:pieces pieces
+                  :eol (or eol (if pending-cr? "\r" "\n"))
+                  :loaded-chars loaded
+                  :total-bytes total
+                  :done? true
+                  :tail nil})
+             (let [s (String. buf 0 n)
+                   eol (or eol
+                           (when pending-cr?
+                             (if (and (pos? n) (= (.charAt s 0) \newline)) "\r\n" "\r"))
+                           (first-eol s))
+                   ends-cr? (and (pos? n) (= (.charAt s (dec n)) \return))
+                   loaded (+ loaded n)
+                   pieces (conj pieces s)]
+               (if (and (>= loaded head)
+                        (or (some? eol) (>= loaded chunk-chars)))
+                 (let [last-s (peek pieces)
+                       hold? (and ends-cr? (pos? (count last-s)))
+                       pieces (if hold?
+                                (assoc pieces (dec (count pieces))
+                                       (subs last-s 0 (dec (count last-s))))
+                                pieces)
+                       loaded (if hold? (dec loaded) loaded)]
+                   {:pieces pieces
+                    :eol (or eol "\n")
+                    :loaded-chars loaded
+                    :total-bytes total
+                    :done? false
+                    :tail {:rdr rdr :pending (if hold? "\r" "") :loaded loaded}})
+                 (recur pieces eol (and (nil? eol) ends-cr?) loaded)))))))))
+
+#?(:clj
+   (defn ingest-tail
+     "A tail state for the file at path, its reader skipped past the
+      first skip stream characters — how an interrupted load resumes:
+      the buffer already holds that much of the file."
+     [path skip]
+     (let [rdr (java.io.FileReader. ^String path)]
+       (loop [left skip]
+         (when (pos? left)
+           (let [n (.skip rdr left)]
+             (when (pos? n)
+               (recur (- left n))))))
+       {:rdr rdr :pending "" :loaded skip})))
+
+#?(:clj
+   (defn ingest-tail-close
+     "Close a tail's reader. The tail is spent either way."
+     [tail]
+     (when-let [rdr (:rdr tail)]
+       (.close ^java.io.Reader rdr))))
+
+#?(:clj
+   (defn ingest-tail-read
+     "Read the next chunk of tail's file: {:piece s-or-nil
+      :loaded-chars n :done? b :tail tail'}. Pure IO and string
+      work — the caller appends :piece to the document, inside its
+      swap. One read (about 1 MB), breaks normalized; a trailing
+      \r waits in the tail for the piece that resolves it. At EOF
+      a held \r is the last piece (it was a line ending, as
+      ingest-reader decides it); past that, :piece is nil and
+      :done? is true."
+     [tail]
+     (let [buf (char-array chunk-chars)
+           n (.read ^java.io.Reader (:rdr tail) buf)]
+       (if (neg? n)
+         (if (seq (:pending tail))
+           {:piece (normalize-breaks (:pending tail))
+            :loaded-chars (+ (:loaded tail) (count (:pending tail)))
+            :done? true
+            :tail (assoc tail :pending "" :loaded (+ (:loaded tail) (count (:pending tail))))}
+           {:piece nil
+            :loaded-chars (:loaded tail)
+            :done? true
+            :tail tail})
+         (let [s (str (:pending tail) (String. buf 0 n))
+               hold? (and (pos? (count s))
+                          (= \return (.charAt s (dec (count s)))))
+               piece (if hold? (subs s 0 (dec (count s))) s)
+               loaded (+ (:loaded tail) (count piece))]
+           {:piece (normalize-breaks piece)
+            :loaded-chars loaded
+            :done? false
+            :tail (assoc tail :pending (if hold? "\r" "") :loaded loaded)})))))
+
 #?(:clj
    (defn spit-file!
      "Write doc to path a leaf's worth of lines at a time, each line ended

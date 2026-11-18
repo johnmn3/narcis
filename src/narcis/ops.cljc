@@ -337,6 +337,14 @@
 ;; ---------------------------------------------------------------------------
 ;; the dispatch
 
+(def ^:private load-safe-ops
+  "The ops a buffer that is still loading answers: the ones that
+   neither change its document nor write it out. The rest wait for
+   the load — an edit would race the loader's appends, and a save
+   would write a partial document over the file."
+  #{:open :activate :close :new :theme/use :find-next :find-prev
+    :complete :doc :forward-sexp :backward-sexp :set-caret})
+
 (defn apply-op
   "Apply one op message to the editor. See the ns docstring for the
    result shape. Unknown ops and inapplicable structural ops answer
@@ -346,7 +354,13 @@
   (let [path (or path (buffer/active ed))]
     (if (and (not (#{:open :activate :new :theme/use} op)) (not (buffer/open? ed path)))
       {:ok false :error (str "no such buffer: " path)}
-      (case op
+      (if (and (not (load-safe-ops op)) (buffer/loading? ed path))
+        {:ok false :error (str path " is still loading — "
+                               (let [{:keys [loaded total]} (get (buffer/loading-map ed) path)]
+                                 (if (and loaded total (pos? total))
+                                   (str (quot (* 100 loaded) total) "% in")
+                                   "almost in")))}
+        (case op
         :open (do (buffer/open-file! ed (:path msg)) (result ed (:path msg)))
         :activate (do (buffer/activate! ed path) (result ed path))
         :close (do (buffer/close-buffer! ed path)
@@ -434,4 +448,4 @@
         ;; a structural command may be sent by its own name
         (if-let [f (and (keyword? op) (get structural-ops (name op)))]
           (snapshot-op ed path msg "does not apply here" f)
-          {:ok false :error (str "unknown op: " op)})))))
+          {:ok false :error (str "unknown op: " op)}))))))

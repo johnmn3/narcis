@@ -309,6 +309,18 @@
     (say! (:error res)))
   res)
 
+(defn watch-load!
+  "While any buffer is still loading, re-sync the state about once a
+   second: the window's total grows with the document (the scroll
+   bar grows with it) and the status bar counts the load up."
+  []
+  (when (and (seq (:loading @state)) (not (:load-watch @state)))
+    (swap! state assoc :load-watch true)
+    (js/setTimeout (fn []
+                     (swap! state assoc :load-watch false)
+                     (refresh-state!))
+                   900)))
+
 (defn refresh-state!
   "Re-read /api/state (tabs, the active buffer and its caret) and fetch
    its window: the one flow after an op that changes which buffers exist
@@ -320,10 +332,12 @@
                      b (get (:buffers st) active)]
                  (swap! state assoc :tabs (:tabs st) :path active
                         :project (:project st) :runtime (or (:runtime st) "Jolt")
+                        :loading (:loading st)
                         :caret (or (:cursor b) 0) :sel (:sel b)
                         :theme-choice (or (:theme st) (:theme-choice @state))))
                (render-title!)
                (render-tree!)
+               (watch-load!)
                ;; the window opens at the restored caret, wherever in
                ;; the file it sits — not at the top of the file
                (-> (fetch-window! :caret)
@@ -499,10 +513,13 @@
                   "Ready"))
         where (if (and win pos)
                 (str "Ln " (inc (:n (nth (:lines win) (first pos)))) ", Col " (inc (second pos)))
-                "")]
+                "")
+        loading (when-let [l (get (:loading s) (:path s))]
+                  (when (and (:total l) (pos? (:total l)))
+                    (str " · Loading " (quot (* 100 (:loaded l)) (:total l)) "%")))]
     (when-let [m (by-id "status-msg")] (set! (.-textContent m) msg))
     (when-let [p (by-id "status-pos")]
-      (set! (.-textContent p) (str (:runtime s) "  " where)))
+      (set! (.-textContent p) (str (:runtime s) "  " where (or loading ""))))
     (when-let [stop (by-id "btn-stop")]
       (set! (.-disabled stop) (= "idle" (:status con))))))
 
@@ -2265,9 +2282,11 @@
                      b (get (:buffers st) active)]
                  (swap! state assoc :tabs (:tabs st) :path active
                         :project (:project st) :runtime (or (:runtime st) "Jolt")
+                        :loading (:loading st)
                         :caret (or (:cursor b) 0) :sel (:sel b)
                         :theme-choice (or (:theme st) (:theme-choice @state))))
                (render-title!)
+               (watch-load!)
                (get-edn (str "/api/theme?name=" (resolved-name (:theme-choice @state))))))
       (.then (fn [payload]
                (apply-theme! payload)

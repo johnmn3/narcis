@@ -122,7 +122,7 @@
 
 (defn- bump-editor [s] (update s :rev (fnil inc 0)))
 
-(declare snapshot)
+(declare snapshot close-buffer!)
 
 (defn rev
   "The sync token clients see: the editor slot's revision, plus the
@@ -283,21 +283,145 @@
                                             0 nil nil nil eol 0 0 gen 0 0)))
        (swap! (app-atom ed) update :editor (fn [s] (add-tab s path)))))))
 
-(defn open-file!
-  "Open a file from disk: its text is read a chunk at a time into a
-   document inside the app atom's swap (narcis.text/ingest-file —
-   the file and its lines are never held whole), so the tree is built
-   directly in the atom's domain."
+;; ---------------------------------------------------------------------------
+;; progressive file loading: the head is the buffer, the tail arrives
+;;
+;; A load in flight is plain data in the app atom at [:loading path]:
+;; {:id n :loaded-chars n :total-bytes n}. The id names the load: the
+;; background thread runs under the id it was spawned with and stops
+;; when the entry no longer carries it (the buffer was closed, or a
+;; newer load claimed the path). The tail state itself — an open
+;; reader — is host-side, in the loader thread's hands, never in the
+;; atom.
+
+(defonce ^:private load-ids (atom 0))
+
+(defn loading?
+  "True while path's file is still arriving (see open-file!)."
   [ed path]
-  (if (open? ed path)
-    (activate! ed path)
-    (let [gen (rev ed)]
-      (swap! (app-atom ed) update-in [:buffers path] (fn [_] (let [{:keys [doc eol]} (text/ingest-file path)]
-                              (->BufferState doc 0 nil nil nil eol 0 0 gen 0 0))))
-      (swap! (app-atom ed) update :editor (fn [s] (add-tab s path))))))
+  (true? ($ (some? (get-in @(:atom (:store ed)) [:loading path])))))
+
+(defn loading-map
+  "The loads in flight, as plain data: {path {:loaded n :total n}} —
+   stream characters in, of the file's bytes."
+  [ed]
+  (or ($ (into {}
+               (map (fn [[p l]] [p {:loaded (:loaded-chars l)
+                                    :total (:total-bytes l)}]))
+               (get @(:atom (:store ed)) :loading)))
+      {}))
+
+(defn- claim-load!
+  "Register path's load in the app atom and answer its id."
+  [ed path loaded-chars total-bytes]
+  (let [id (swap! load-ids inc)]
+    (swap! (app-atom ed) assoc-in [:loading path]
+           {:id id :loaded-chars loaded-chars :total-bytes total-bytes})
+    id))
+
+#?(:clj
+   (defn- run-load!
+     "The background half of a progressive open: append the tail's
+      chunks to path's document, one swap per chunk, until the file
+      is in or the load's entry leaves the app atom. The reading is
+      done out here (plain IO); the appending is done inside the
+      swap, on the document the buffer holds at that moment — while
+      a buffer loads its edits are refused (narcis.ops), so nothing
+      else moves its root, and a retried swap re-appends the same
+      piece to the same document. A stopped load (a read failure)
+      clears its entry and says so on the server's err: the buffer
+      stays, holding what arrived."
+     [ed path load-id tail]
+     (let [tail-box (atom tail)]
+       (try
+         (loop []
+           (let [entry ($ (get-in @(:atom (:store ed)) [:loading path]))]
+             (when (and entry (= load-id (:id entry)))
+               (let [{:keys [piece loaded-chars done? tail]}
+                     (text/ingest-tail-read @tail-box)]
+                 (reset! tail-box tail)
+                 (swap! (app-atom ed)
+                        (fn [app]
+                          (if (and (get-in app [:buffers path])
+                                   (= load-id (get-in app [:loading path :id])))
+                            (let [b (get-in app [:buffers path])
+                                  root (-root b)
+                                  root' (if piece
+                                          (text/insert root (text/chars root) piece)
+                                          root)]
+                              (cond-> (assoc-in app [:buffers path]
+                                                (with-state b {:root root'}))
+                                done? (update :loading dissoc path)
+                                (not done?) (assoc-in [:loading path :loaded-chars] loaded-chars)))
+                            app)))
+                 (when-not done?
+                   (recur))))))
+         (catch #?(:cljs :default :default Throwable) t
+           (binding [*out* *err*]
+             (println "narcis: load of" path "stopped:" (ex-message t)))
+           (swap! (app-atom ed)
+                  (fn [app]
+                    (if (= load-id (get-in app [:loading path :id]))
+                      (update app :loading dissoc path)
+                      app))))
+         (finally
+           (text/ingest-tail-close @tail-box))))))
+
+#?(:clj
+   (defn- start-load!
+     "Spawn path's background load on its own daemon thread."
+     [ed path load-id tail]
+     (doto (Thread. ^Runnable (fn [] (run-load! ed path load-id tail)))
+       (.setDaemon true)
+       (.start))))
+
+(defn open-file!
+  "Open a file from disk, progressively: the file's head (about
+   64 KB) is read synchronously and becomes the buffer, open and
+   viewable at once; the rest is appended by a background load, a
+   chunk at a time (loading? says whether it is still arriving).
+   While a buffer loads, its edits and saves are refused
+   (narcis.ops): an edit would race the load's appends, and a save
+   would write a partial document over the file.
+
+   Opening a path whose load was interrupted (the process died
+   mid-load) resumes the load where the buffer's contents stop —
+   unless the file's size changed meanwhile, in which case the
+   load restarts from the head."
+  ([ed path] (open-file! ed path {}))
+  ([ed path {:keys [head]}]
+   (cond
+     (and (open? ed path) (not (loading? ed path)))
+     (activate! ed path)
+
+     (open? ed path)
+     (let [entry ($ (get-in @(:atom (:store ed)) [:loading path]))
+           size (text/file-length path)]
+       (if (and entry (= size (:total-bytes entry)))
+         (let [tail (text/ingest-tail path (:loaded-chars entry))
+               id (claim-load! ed path (:loaded-chars entry) (:total-bytes entry))]
+           (start-load! ed path id tail)
+           (activate! ed path))
+         (do (close-buffer! ed path)
+             (open-file! ed path {:head head}))))
+
+     :else
+     (let [{:keys [pieces eol loaded-chars total-bytes done? tail]}
+           (text/ingest-open path (when head {:head head}))
+           gen (rev ed)]
+       ;; the head's document is built inside the swap, where
+       ;; documents are built; the reading was done above, in the open
+       (swap! (app-atom ed) update-in [:buffers path]
+              (fn [_] (->BufferState (text/from-pieces pieces) 0 nil nil nil eol 0 0 gen 0 0)))
+       (swap! (app-atom ed) update :editor (fn [s] (add-tab s path)))
+       (when-not done?
+         (let [id (claim-load! ed path loaded-chars total-bytes)]
+           (start-load! ed path id tail)))))))
 
 (defn close-buffer! [ed path]
-  (swap! (app-atom ed) update :buffers (fn [bs] (dissoc bs path)))
+  (swap! (app-atom ed) (fn [app] (cond-> (update app :buffers dissoc path)
+                                   (contains? app :loading)
+                                   (update :loading dissoc path))))
   (swap! (app-atom ed) update :editor (fn [s] (let [tabs (vec (remove #(= % path) (:tabs s)))]
                           (bump-editor
                            (-> s

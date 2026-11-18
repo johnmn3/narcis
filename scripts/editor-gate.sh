@@ -40,6 +40,18 @@ wait_up() {
   done
   return 1
 }
+wait_loaded() {
+  # opens are progressive: the head is the buffer at once and the
+  # tail arrives in the background — editing waits for the load,
+  # exactly as the page waits for its Loading note to clear
+  local deadline=$(( $(date +%s) + 180 ))
+  while [ "$(date +%s)" -lt $deadline ]; do
+    if curl -fsS "http://127.0.0.1:$PORT/api/state" -o "$DATA/state.out" 2>/dev/null \
+       && grep -q ':loading {}' "$DATA/state.out"; then return 0; fi
+    sleep 1
+  done
+  return 1
+}
 op() { curl -fsS -X POST "http://127.0.0.1:$PORT/api/op" -d "$1" 2>/dev/null; }
 window0() { curl -fsS "http://127.0.0.1:$PORT/api/window?path=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$FIXTURE")&start=0&count=5" 2>/dev/null; }
 line0() { window0 | python3 -c "import sys,re; m=re.search(r':text \"((?:[^\"\\\\]|\\\\.)*)\"', sys.stdin.read()); print(m.group(1) if m else '')"; }
@@ -50,6 +62,8 @@ SRV=$(start_server 1)
 wait_up; ok $? "server-up"
 STATE=$(cat "$DATA/state.out")
 contains "$STATE" "$FIXTURE"; ok $? "fixture-open"
+wait_loaded; ok $? "fixture-loaded"
+STATE=$(cat "$DATA/state.out")
 LINES=$(field "$STATE" lines)
 [ "${LINES:-0}" -ge 12000 ]; ok $? "fixture-lines-$LINES"
 [ "$(line0)" = "$ORIG_LINE0" ]; ok $? "line0-original"

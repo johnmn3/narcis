@@ -48,7 +48,7 @@ boot() { # $1 = log name; sets BOOT_MS and SRV in this shell
 }
 
 boot server1.log
-echo "PERF server-cold-up-includes-ingest ${BOOT_MS}ms"
+echo "PERF server-up-head-loaded ${BOOT_MS}ms"
 node "$ROOT/test/page/bigfile_e2e.cjs" "http://127.0.0.1:$PORT/" "$DATA/shots1" edit "$LINES" "$MID"
 RC1=$?
 echo "== store size after edits: $(du -sm "$DATA/db" | cut -f1) MB (file: $(du -sm "$DATA/proj/big.txt" | cut -f1) MB)"

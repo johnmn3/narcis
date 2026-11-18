@@ -22,6 +22,7 @@
             [narcis.docs-test]
             [narcis.view-test]
             [narcis.ops-test]
+            [narcis.progressive-test]
             [narcis.app-test]
             [narcis.features-test]))
 
@@ -34,7 +35,7 @@
                      'narcis.console-test 'narcis.eval-test 'narcis.docs-test
                      'narcis.debugger-test 'narcis.breakpoints-test
                      'narcis.debugger-wiring-test 'narcis.debugger-live-test
-                     'narcis.view-test 'narcis.ops-test 'narcis.app-test
+                     'narcis.view-test 'narcis.ops-test 'narcis.progressive-test 'narcis.app-test
                      'narcis.features-test)]
     (println "TEST-SUMMARY" m)
     (System/exit (if (zero? (+ fail error)) 0 1))))

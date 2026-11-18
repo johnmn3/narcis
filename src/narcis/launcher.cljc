@@ -134,6 +134,7 @@
 (defn- state-payload [ed theme-atom ctx]
   {:tabs (buffer/tabs ed)
    :active (buffer/active ed)
+   :loading (buffer/loading-map ed)
    :project (:project ctx)
    :runtime "Jolt"
    :theme (name (or (buffer/theme-choice ed) (:name @theme-atom)))
