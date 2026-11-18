@@ -52,8 +52,8 @@ LICENSE in this repo — Jonquil's own text, unchanged — and NOTICE).
 
 # Narcis upstream: eve.text
 
-**Repository:** https://github.com/johnmn3/atom.broker (`libs/eve-text`)
-**Pinned commit:** `03f5277a9` (branch `claude/trusting-planck-luz9w2`, 2026-11-17)
+**Repository:** Eve (https://github.com/SeniorCareMarket/eve), `libs/eve-text`
+**Carried:** 2026-11-17, at the sha256 hashes in the table below
 
 The buffer's text is an `eve.text` document: CodeMirror 6's `Text` as Eve
 data (a B-tree of lines, every edit a path copy). The library's two source

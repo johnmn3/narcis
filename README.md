@@ -32,16 +32,16 @@ the window drawn in a browser page the launcher serves.
 
 Narcis runs on [Jolt](https://github.com/jolt-lang/jolt) (v0.8.23 or later),
 which hosts Eve; the app's state lives in Eve. You need a checkout of
-Eve 0.9.3.2 (`SeniorCareMarket/eve`, tag `v0.9.3.2`): the launcher task
-finds it at `$EVE_RELEASE`, at `../eve` beside this repo, or at
-`~/cohost-media-app/eve`.
+Eve 0.9.3.2 beside this one — clone both into the same folder:
 
 ```bash
-git clone https://github.com/johnmn3/narcis.git ~/narcis-app
+git clone https://github.com/johnmn3/narcis.git
+git clone https://github.com/SeniorCareMarket/eve.git
+git -C eve checkout v0.9.3.2
 ```
 
 ```bash
-cd ~/narcis-app && jolt narcis
+cd narcis && jolt narcis
 ```
 
 That's the whole ceremony. The app opens in your browser on the
@@ -59,15 +59,16 @@ jolt app:run --dir ~/narcis-app/data --port 8377 --file <path-to-a-clj-file>
 
 Both spellings are this repo's workflow tasks (in `bb.edn`, the way
 Jonquil's are): the launch composes Eve's Jolt classpath from the Eve
-checkout's own `hosts.edn` and starts `narcis.launcher` on it;
-`--dir` is where the Eve disk atoms live, and `--project` picks the
-folder the file tree shows (default: the current directory). The
-test corpus is
-`jolt app:test`; `jolt tasks` lists what there is.
+checkout's own `hosts.edn` and starts `narcis.launcher` on it. The
+launcher task finds the Eve checkout at `$EVE_RELEASE`, or at `../eve`
+beside this repo. `--dir` is where the Eve disk atoms live;
+`--project <dir>` names the folder the file tree shows — it defaults
+to the opened file's folder, or to the current directory when no file
+is given. `--theme <name>` sets the theme on first start. The test
+corpus is `jolt app:test`; `jolt tasks` lists what there is.
 
-The launcher opens `http://127.0.0.1:8377/` in your browser (open it yourself
-if it does not). `--project <dir>` names the folder the file tree shows; it
-defaults to the file's folder. `--theme <name>` sets the theme on first start.
+The launcher opens `http://127.0.0.1:8377/` in your browser (open it
+yourself if it does not).
 The page's script (`web/app.js`) is committed prebuilt;
 `scripts/build-web.sh` rebuilds it from `web/narcis/web.cljs` (it needs the
 `clojure` CLI).
@@ -111,7 +112,7 @@ atom beside the editor's, so it survives a restart too.
 The debugger — gutter breakpoints, the Frames panel with each frame's
 locals, stepping, evaluating in a paused frame, Break on error — rides the
 host's `jolt.debug`, which the released Jolt (v0.8.23) does not carry yet;
-the nightly Jolt does. On a Jolt without it the panel says so, arming a
+the nightly Jolt (the `vnightly` release on Jolt's GitHub) does. On a Jolt without it the panel says so, arming a
 breakpoint fails clean, and a marked Run still runs uninstrumented.
 
 ## What is not in it
@@ -133,9 +134,10 @@ JVM.
   carried unchanged (provenance and hashes in `UPSTREAM.md`).
 - `src/narcis/buffer.cljc` — a buffer is a `BufferState` at the root of its
   own Eve atom; every mutation is one `swap!` with the text op inside it.
-- `src/narcis/` (syntax, edit, structural, commands, eval, console, docs,
-  theme, paint, menus, debugger, breakpoints) — Jonquil's language core,
-  lifted; `UPSTREAM.md` has the file-by-file table.
+- `src/narcis/` (syntax, edit, structural, commands, ops, eval, console,
+  docs, theme, paint, menus, nav, view, debugger, breakpoints, changed,
+  instrument-lock) — Jonquil's language core, lifted; `UPSTREAM.md` has
+  the file-by-file table.
 - `src/narcis/launcher.cljc` — the server: it holds the store, answers the
   page's window/edit/run messages, and serves the page.
 - `web/narcis/web.cljs` — the page: a viewport over the server's windows,
@@ -183,8 +185,9 @@ nightly); on a Jolt without it, it prints SKIP and exits 0, and the corpus'
 live debugger tests take the same skipped path there.
 
 Latest results at the current tip (2026-11-17, Jolt v0.8.23, Eve
-`84bfc7c8`; the sources are `.cljc` now, and the run above is the
-`jolt app:run` workflow): 248 tests, 1,677 assertions, 0 failures across the corpus
+v0.9.3.2 — the corpus below was run against a fresh clone of that
+public tag; the sources are `.cljc` now, and the launch above is the
+`jolt narcis` workflow): 248 tests, 1,677 assertions, 0 failures across the corpus
 (the debugger suites included; their live sections take the skipped path
 on this Jolt and run on the nightly); buffer and store gates pass; the
 editor gate passes 27/27; the page gate passes 44/44; the editor e2e

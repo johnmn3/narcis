@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Shared host/classpath setup for the gate scripts.
-# Local checkouts stand in for the git deps in deps.edn (proxy git
-# resolution of atom.broker is slow); the pins in deps.edn are the record.
-# Every path is overridable from the environment:
-#   EVE_RELEASE  an Eve release-line checkout (release/eve-0.9.3.2)
+# A local Eve checkout stands in for the git dep in deps.edn; the pin
+# in deps.edn is the record. Every path is overridable from the
+# environment:
+#   EVE_RELEASE  an Eve checkout (default: ../eve beside this repo)
 #   BIN          a directory holding bb/jolt, prepended to PATH
 #   BB_NEW       the bb binary the bb gate legs run
-EVE_RELEASE=${EVE_RELEASE:-$HOME/src/atom.broker}
+EVE_RELEASE=${EVE_RELEASE:-$PWD/../eve}
 BIN=${BIN:-$HOME/.local/bin}
 BB_NEW=${BB_NEW:-bb}
 export CLJ_CONFIG=${CLJ_CONFIG:-$HOME/.clojure}

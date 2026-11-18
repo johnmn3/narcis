@@ -18,8 +18,8 @@ License 2.0, as section 7 of EPL-1.0 allows once a new version of the
 licence is published.
 
 The buffer's text structure is eve.text, part of Eve
-(https://github.com/johnmn3/atom.broker, libs/eve-text, pinned at commit
-03f5277a9), whose two source files are carried in this repo under src/eve/
+(https://github.com/SeniorCareMarket/eve, libs/eve-text), whose two
+source files are carried in this repo under src/eve/
 unchanged (UPSTREAM.md gives their hashes). eve.text is a port of
 CodeMirror 6's Text data structure (@codemirror/state, Marijn Haverbeke
 and contributors, MIT License).
