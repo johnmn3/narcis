@@ -39,21 +39,19 @@
   (str dir "/" (sanitize name) ".edn"))
 
 #?(:clj
-   (defn- file-open [{:keys [dir] :as opts}]
-     (let [path (file-path opts)
-           f (java.io.File. path)]
-       (.mkdirs (java.io.File. dir))
-       {:impl :file
-        :path path
-        :state (atom (if (.exists f)
-                       (edn/read-string (slurp f))
-                       {:buffers {}}))})))
-
-#?(:clj
-   (defn- file-persist! [{:keys [path state]}]
-     (let [tmp (str path ".tmp")]
-       (spit tmp (pr-str @state))
-       (.renameTo (java.io.File. tmp) (java.io.File. path)))))
+   (do (defn- file-open [{:keys [dir] :as opts}]
+         (let [path (file-path opts)
+               f (java.io.File. path)]
+           (.mkdirs (java.io.File. dir))
+           {:impl :file
+            :path path
+            :state (atom (if (.exists f)
+                           (edn/read-string (slurp f))
+                           {:buffers {}}))}))
+       (defn- file-persist! [{:keys [path state]}]
+         (let [tmp (str path ".tmp")]
+           (spit tmp (pr-str @state))
+           (.renameTo (java.io.File. tmp) (java.io.File. path))))))
 
 (defn- try-eve-open [opts]
   (try

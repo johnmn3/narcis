@@ -267,7 +267,7 @@
 #?(:clj (defn- new-capture [] (StringBuilder.)))
 
 #?(:clj
-   (defn- capped-append!
+   (do (defn- capped-append!
      "Appends s to sb while it fits within OUT-MAX characters. The first s that
   doesn't fit gets its fitting head and a note that the output was cut (cut?
   is the atom remembering that); later ones are dropped."
@@ -277,12 +277,11 @@
       (<= (count s) room) (.append sb s)
       (not @cut?) (do (reset! cut? true)
                       (.append sb (subs s 0 (max 0 room)))
-                      (.append sb (str "\n; output cut at " OUT-MAX " characters\n")))))))
+                      (.append sb (str "\n; output cut at " OUT-MAX " characters\n"))))))
 
 ;; The capture writer and the form reader are the clj hosts' shapes:
 ;; *out* is a java.io.Writer there, and forms are read off a
 ;; PushbackReader. A host without them has no eval-in-frame.
-#?(:clj
    (defn- capped-writer
      "A Writer appending to sb up to OUT-MAX characters, then noting the cut
   once and dropping the rest."
@@ -301,16 +300,15 @@
            ([x off len]
             (if (instance? (Class/forName "[C") x)
               (add! (String. ^chars x (int off) (int len)))
-              (add! (subs (str x) (int off) (+ (int off) (int len)))))))))))
+              (add! (subs (str x) (int off) (+ (int off) (int len))))))))))
 
-#?(:clj
    (defn- read-all
      "Every form in code, in order; a read error throws."
      [code]
      (let [r (java.io.PushbackReader. (java.io.StringReader. code))]
        (loop [acc []]
          (let [f (read {:eof ::eof} r)]
-           (if (= ::eof f) acc (recur (conj acc f))))))))
+           (if (= ::eof f) acc (recur (conj acc f)))))))))
 
 (defn eval-in-frame
   "Evaluates the forms in code, in order, with frame i's locals bound,
@@ -371,10 +369,11 @@
 ;; The pause channel: a blocking queue between the paused thread and
 ;; the console's thread. It is the clj hosts' machinery today — a host
 ;; without threads has no pause to serve.
-#?(:clj (defn- pause-queue [] (LinkedBlockingQueue.)))
-#?(:clj (defn- pause-put! [q m] (.put q m)))
-#?(:clj (defn- pause-take [q] (.take q)))
-#?(:clj (defn- pause-poll [q] (.poll q)))
+#?(:clj
+   (do (defn- pause-queue [] (LinkedBlockingQueue.))
+       (defn- pause-put! [q m] (.put q m))
+       (defn- pause-take [q] (.take q))
+       (defn- pause-poll [q] (.poll q))))
 
 (defn make-break
   "A break's state: the queue the paused thread serves and the pause, nil

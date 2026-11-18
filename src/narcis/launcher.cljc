@@ -37,23 +37,23 @@
 (defn- url-decode [s]
   #?(:clj (URLDecoder/decode s "UTF-8")
      :cljs (js/decodeURIComponent (str/replace s "+" " "))))
-#?(:clj (defn- existing-path [path] (when (.exists (File. ^String path)) path)))
-#?(:clj (defn- canonical-path [path] (.getCanonicalPath (File. ^String path))))
-#?(:clj (defn- file-parent [path] (some-> (File. ^String path) (.getAbsoluteFile) (.getParent))))
 #?(:clj
-   (defn- list-dir
-     "The /api/list payload for the directory at path, or nil when it
-     is not one."
-     [path]
-     (let [dir (.getCanonicalFile (File. path))]
-       (when (.isDirectory dir)
-         {:dir (.getPath dir)
-          :parent (some-> (.getParentFile dir) (.getPath))
-          :entries (mapv (fn [^File f] {:name (.getName f) :dir? (.isDirectory f)})
-                         (sort-by (fn [^File f]
-                                    [(if (.isDirectory f) 0 1)
-                                     (str/lower-case (.getName f))])
-                                  (.listFiles dir)))}))))
+   (do (defn- existing-path [path] (when (.exists (File. ^String path)) path))
+       (defn- canonical-path [path] (.getCanonicalPath (File. ^String path)))
+       (defn- file-parent [path] (some-> (File. ^String path) (.getAbsoluteFile) (.getParent)))
+       (defn- list-dir
+         "The /api/list payload for the directory at path, or nil when it
+         is not one."
+         [path]
+         (let [dir (.getCanonicalFile (File. path))]
+           (when (.isDirectory dir)
+             {:dir (.getPath dir)
+              :parent (some-> (.getParentFile dir) (.getPath))
+              :entries (mapv (fn [^File f] {:name (.getName f) :dir? (.isDirectory f)})
+                             (sort-by (fn [^File f]
+                                        [(if (.isDirectory f) 0 1)
+                                         (str/lower-case (.getName f))])
+                                      (.listFiles dir)))})))))
 
 (def hello-text
   "hello narcis\nthe buffer you are reading lives in a store opened by name.\nedit me in S2.\n")

@@ -40,9 +40,10 @@
 ;; The transcript's pending queue and the worker thread's identity are
 ;; the clj hosts' machinery: a host without threads runs no worker, so
 ;; it has no queue to drain and no pause to serve.
-#?(:clj (defn- pending-queue [] (LinkedBlockingQueue.)))
-#?(:clj (defn- queue-offer! [q x] (.offer q x)))
-#?(:clj (defn- queue-poll [q] (.poll q)))
+#?(:clj
+   (do (defn- pending-queue [] (LinkedBlockingQueue.))
+       (defn- queue-offer! [q x] (.offer q x))
+       (defn- queue-poll [q] (.poll q))))
 (defn- current-thread [] #?(:clj (Thread/currentThread) :cljs nil))
 (defn- await-reply
   "A paused program's answer to a break-eval!, waited for up to 5 s."

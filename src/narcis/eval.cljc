@@ -20,12 +20,13 @@
   #?(:clj (try (.interrupt ^Thread t) (catch :default _ nil)) :cljs nil))
 (defn- clear-interrupt! [] #?(:clj (Thread/interrupted) :cljs nil))
 (defn- new-lock [] #?(:clj (Object.) :cljs (js-obj)))
-#?(:clj (defn- string-reader [s] (StringReader. s)))
-#?(:clj (defn- new-queue [] (LinkedBlockingQueue.)))
-#?(:clj (defn- queue-offer! [q x] (.offer q x)))
-#?(:clj (defn- queue-take [q] (.take q)))
-#?(:clj (defn- queue-clear! [q] (.clear q)))
-#?(:clj (defn- form-reader [rdr] (LineNumberingPushbackReader. rdr)))
+#?(:clj
+   (do (defn- string-reader [s] (StringReader. s))
+       (defn- new-queue [] (LinkedBlockingQueue.))
+       (defn- queue-offer! [q x] (.offer q x))
+       (defn- queue-take [q] (.take q))
+       (defn- queue-clear! [q] (.clear q))
+       (defn- form-reader [rdr] (LineNumberingPushbackReader. rdr))))
 
 #?(:clj
    (defn create-writer
@@ -52,16 +53,15 @@
 ;; The stdin machinery: a queue-fed java.io.Reader the program reads
 ;; its input from. The clj hosts' shape, like create-writer above.
 #?(:clj
-   (defn- await-stdin-item
+   (do (defn- await-stdin-item
      "Blocks for the next queued stdin item, telling on-wait-input around the
    wait. An interrupt reads as EOF."
      [queue on-wait-input]
      (when on-wait-input (on-wait-input true))
      (let [item (try (queue-take queue) (catch InterruptedException _ ::eof))]
        (when on-wait-input (on-wait-input false))
-       item)))
+       item))
 
-#?(:clj
    (defn- refill-stdin!
      "Takes the next stdin item into :current-rdr. True when there is more to
    read; false at EOF, after marking :closed. stdin is {:queue :current-rdr
@@ -70,9 +70,8 @@
      (let [item (await-stdin-item queue on-wait-input)]
        (if (or (identical? item ::eof) (nil? item) @closed)
          (do (reset! closed true) false)
-         (do (reset! current-rdr (string-reader (str item))) true)))))
+         (do (reset! current-rdr (string-reader (str item))) true))))
 
-#?(:clj
    (defn- read-stdin-chars
      "Reads up to len chars into cbuf at off, refilling from the queue as the
    current reader runs dry. -1 once closed or at EOF."
@@ -83,9 +82,8 @@
          (let [n (.read ^StringReader @current-rdr cbuf off len)]
            (cond (not (neg? n)) n
                  (refill-stdin! stdin) (recur)
-                 :else -1))))))
+                 :else -1)))))
 
-#?(:clj
    (defn create-stdin-reader
      "Upstream's queue-fed Reader, unchanged."
      [queue current-rdr-atom closed-atom on-wait-input]
@@ -101,7 +99,7 @@
          ([cbuf off len]
           (read-stdin-chars {:queue queue :current-rdr current-rdr-atom :closed closed-atom
                              :on-wait-input on-wait-input}
-                            cbuf off len))))))
+                            cbuf off len)))))))
 
 (defn find-root-cause [t]
   (loop [cause t]
