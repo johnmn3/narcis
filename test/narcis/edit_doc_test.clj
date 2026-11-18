@@ -5,6 +5,7 @@
    produces on the same snapshot. Plus :form scoping and a
    narcis.buffer integration walk (op -> one undo step -> undo/redo)."
   (:require [clojure.test :refer [deftest is testing]]
+            [narcis.test-util :as test-util]
             [narcis.text :as text]
             [narcis.edit :as edit]
             [narcis.buffer :as buf]
@@ -21,7 +22,7 @@
 
 (defn- via-doc
   [s caret sel op-fn scope]
-  (text/with-heap-domain
+  (test-util/with-heap-domain
     (fn []
       (let [r (edit/run-op (text/from-string s) caret sel op-fn scope)]
         (when r {:text (text/to-string (:doc r)) :caret (:caret r)})))))
@@ -63,7 +64,7 @@
               cuts (sort (repeatedly (* 2 k) #(rnd (inc (count text)))))
               edits (mapv (fn [[a b]] [a (max a b) (str "X" i)]) (partition 2 cuts))
               expected (edit/apply-edits text edits)
-              actual (text/with-heap-domain
+              actual (test-util/with-heap-domain
                        (fn [] (text/to-string (edit/apply-edits-to-doc (text/from-string text) edits))))]
           (is (= expected actual)))))))
 
@@ -71,7 +72,7 @@
   (testing "smart-enter inside the second top-level form leaves the first form byte-identical"
     (let [text "(defn a [] 1)\n(defn b [x]\n  (+ x 1))"
           caret (dec (count text))
-          out (text/with-heap-domain
+          out (test-util/with-heap-domain
                 (fn [] (let [doc (text/from-string text)
                              r (edit/smart-enter-doc doc (edit/region-of doc) caret nil)]
                          (when r (text/to-string (:doc r))))))

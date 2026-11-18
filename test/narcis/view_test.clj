@@ -5,6 +5,7 @@
    composes them), and a window of a 1e6-line document must stay bounded."
   (:require [clojure.test :as t]
             [narcis.paint :as paint]
+            [narcis.test-util :as test-util]
             [narcis.text :as text]
             [eve.text]
             [clojure.string]
@@ -62,7 +63,7 @@
 (defn- window-of
   "[window-payload total-lines] of a document of s, built in a heap domain."
   [s opts]
-  (text/with-heap-domain
+  (test-util/with-heap-domain
     (fn [] (let [doc (text/from-string s)]
              [(view/window doc opts) (text/lines doc)]))))
 
@@ -105,7 +106,7 @@
 (t/deftest viewport-payload-bounded
   (let [n (if (System/getenv "NARCIS_VIEW_LINES") (Integer/parseInt (System/getenv "NARCIS_VIEW_LINES")) 1000000)
         [win total]
-        (text/with-heap-domain
+        (test-util/with-heap-domain
           (fn []
             ;; built as a file is: a chunk of text at a time
             (let [doc (loop [i 0 b (eve.text/text-builder)]

@@ -4,7 +4,8 @@
      -m narcis.bench open <lines> <dir>   ; a file opened into a disk-domain
                                           ; buffer atom, then typed into
    Times are wall-clock ms for the named phase, printed as BENCH lines."
-  (:require [narcis.text :as text]
+  (:require [narcis.test-util :as test-util]
+            [narcis.text :as text]
             [narcis.buffer :as buffer]
             [narcis.ops :as ops]
             [narcis.store :as store]
@@ -50,7 +51,7 @@
                  3 (do (text/slice-string doc 0 (min 100 (text/chars doc))) doc)))))))
 
 (defn scale [n]
-  (text/with-heap-domain
+  (test-util/with-heap-domain
     (fn []
       (let [doc (timed (str "build-" n "-lines") (fn [] (build n)))]
         (println "BENCH built:" "lines=" (text/lines doc) "chars=" (text/chars doc) "depth=" (et/text-depth doc))

@@ -9,6 +9,7 @@
    the builder — run in its library, at this Eve pin; this is the layer
    Narcis reads it through.)"
   (:require [clojure.string :as str]
+            [narcis.test-util :as test-util]
             [narcis.text :as text]))
 
 (defn- lcg [seed] (atom seed))
@@ -110,7 +111,7 @@
         (check "copy text" true (= (text/to-string doc) (text/to-string copy)))))))
 
 (defn run-all! []
-  (text/with-heap-domain
+  (test-util/with-heap-domain
     (fn []
       (doseq [[seed steps start]
               [[1 120 ""]

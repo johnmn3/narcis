@@ -13,14 +13,11 @@
 
    Where a document is built. Building allocates Eve memory, so it
    runs in an Eve domain: inside a swap! on an Eve atom the nodes are
-   the atom's own (narcis.buffer runs every edit there), and
-   with-heap-domain gives tests, benches and tools a heap domain of
-   their own. Reads allocate nothing and run anywhere."
+   the atom's own (narcis.buffer runs every edit there). Reads
+   allocate nothing and run anywhere."
   (:refer-clojure :exclude [chars replace])
   (:require [clojure.string]
-            [eve.text :as t]
-            [eve.deftype-proto.alloc :as alloc]
-            [eve.deftype-proto.data :as d]))
+            [eve.text :as t]))
 
 ;; ---------------------------------------------------------------------------
 ;; reads
@@ -209,25 +206,3 @@
                  (when (< (+ i j 1) total) (.write w ^String eol)))
                (recur (+ i k)))))))))
 
-;; ---------------------------------------------------------------------------
-;; a domain for tests, benches and tools
-
-(def ^:private heap-sio
-  ;; One heap domain for standalone documents, sized for editor-scale
-  ;; trees (a line is a block of its own: a million lines is a million
-  ;; small blocks and their leaves).
-  (delay (alloc/heap-domain-sio!
-          {:capacities {0 (* 64 1024 1024) 1 (* 64 1024 1024)
-                        2 (* 32 1024 1024) 3 (* 32 1024 1024)
-                        4 (* 64 1024 1024) 5 (* 32 1024 1024)}
-           :coalesc-descriptors 262144})))
-
-(defn with-heap-domain
-  "(f) with a heap domain to build documents in, unless a domain is
-   already current (inside a swap! it is the atom's). For tests, benches
-   and tools; the editor's documents are built in their buffer atoms."
-  [f]
-  (if (some? d/*domain-sio*)
-    (f)
-    (binding [d/*domain-sio* @heap-sio]
-      (f))))

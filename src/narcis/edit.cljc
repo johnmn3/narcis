@@ -305,7 +305,7 @@
 ;;
 ;; These build a document, so they run where building may: inside the
 ;; buffer atom's swap! (narcis.buffer/edit!), or under
-;; narcis.text/with-heap-domain in tests.
+;; narcis.test-util/with-heap-domain in the tests.
 
 (defn apply-edits-to-doc
   "Apply jonquil-style :edits ([start end replacement] ascending,
