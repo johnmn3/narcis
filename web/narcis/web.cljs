@@ -301,6 +301,25 @@
   (let [sc (by-id "scroll")]
     (js/Math.floor (/ (.-scrollTop sc) (px-per-line)))))
 
+(defn rendered-top-line
+  "The line at the viewport's top as RENDERED: the held window's
+   start plus the rows the offset reaches into its block. On an
+   unscaled file this equals first-visible; on a scaled one the
+   two part company — first-visible counts the offset in
+   compressed scroll lines while the block's rows stack at the
+   full line height, so first-visible runs ahead of the line on
+   screen the further into the window the offset reaches, and a
+   window fetched for it can start past the line the user is
+   reading, whose text then jumps away when the fetch lands.
+   nil when the viewport's top is not on a held row at all."
+  []
+  (let [win (:win @state)
+        sc (by-id "scroll")]
+    (when (and win sc (seq (:lines win)))
+      (let [rel (- (.-scrollTop sc) (* (:start-line win) (px-per-line)))]
+        (when (and (<= 0 rel) (< rel (* (count (:lines win)) (line-h))))
+          (+ (:start-line win) (js/Math.floor (/ rel (line-h)))))))))
+
 (defn on-wheel
   "The wheel cap described at wheel-burst-lines: translate the
    event's delta to lines, spend what the bucket holds, and set
@@ -366,20 +385,25 @@
 
 (defn- restore-view!
   "Put the anchor line back where it was in the viewport, under
-   the current window and geometry. Two no-op cases: the anchor
-   line is not in the held window (the view moved on purpose — a
-   find, a jump — and something else owns the scroll now), and
-   the scroll offset has moved since the anchor was taken (the
-   user scrolled while the fetch was in flight — their offset is
-   the intent, and a stale anchor must not zero it: measured,
-   a load tick's restore landing after a jump to the middle of a
-   loading file put the offset back to the top and the scroll
-   handler then fetched the head window over the jumped-to one)."
-  [{:keys [line off top]}]
+   the current window and geometry. No-op when the anchor line
+   is not in the held window (the view moved on purpose — a
+   find, a jump — and something else owns the scroll now).
+   Unless force?, it is also a no-op when the scroll offset has
+   moved since the anchor was taken (the user scrolled while
+   the fetch was in flight — their offset is the intent, and a
+   stale anchor must not zero it: measured, a load tick's
+   restore landing after a jump to the middle of a loading file
+   put the offset back to the top and the scroll handler then
+   fetched the head window over the jumped-to one). A forced
+   restore is the scroll fetch's own landing translation: its
+   anchor is taken at landing time, from the offset as it then
+   stands, so there is nothing stale to protect against."
+  [{:keys [line off top]} force?]
   (let [win (:win @state)
         sc (by-id "scroll")]
     (when (and win sc (seq (:lines win))
-               (<= (js/Math.abs (- (.-scrollTop sc) top)) 1)
+               (or force?
+                   (<= (js/Math.abs (- (.-scrollTop sc) top)) 1))
                (<= (:start-line win) line)
                (< line (+ (:start-line win) (count (:lines win)))))
       (let [row-top (+ (* (:start-line win) (px-per-line))
@@ -399,9 +423,20 @@
    across the fetch: a re-sync the user did not cause (the load
    watch ticking while a file hydrates) must not move the text
    they are reading, even when the scroll geometry changed under
-   it. A fetch answering the user's own scroll passes false —
-   their scroll offset is the intent the window was fetched to
-   match.
+   it.
+
+   Without it (the user's own scrolling, caret travel), the
+   offset is translated at landing instead: on a scaled file a
+   line's rendered position depends on the window's start — the
+   window's block sits at its start times px-per-line while its
+   rows stack at the full line height — so a window that lands
+   with a different start shifts every line by the start change
+   times the scale gap, and inching across a fetch boundary
+   jumped the text twenty to forty lines. The landing therefore
+   re-anchors the line at the viewport's top, taken from the
+   offset as it stands when the window arrives, so the window
+   change itself moves nothing the user can see; their scroll
+   travel before and after the fetch is untouched.
 
    A deferrable? caller (the load watch's re-sync) whose fetch
    finds another already in flight simply waits for the next
@@ -431,10 +466,23 @@
                                   (str "&start=" (max 0 (- around overscan))))
                                 "&count=" cnt))
                   (.then (fn [win]
-                           (swap! state assoc :win win :fetching false)
-                           (render!)
-                           (when (and anchor (= path (:path @state)))
-                             (restore-view! anchor))
+                           (let [anchor (or anchor (view-anchor))
+                                 held-start (when (:win @state)
+                                              (:start-line (:win @state)))]
+                             (swap! state assoc :win win :fetching false)
+                             (render!)
+                             (when (and anchor (= path (:path @state)))
+                               ;; translate the offset whenever the
+                               ;; window actually moved, even for a
+                               ;; keep-view fetch: one that lands a
+                               ;; different start than the window on
+                               ;; screen (a stale re-sync racing a
+                               ;; scroll fetch) must not shift the
+                               ;; text either
+                               (restore-view! anchor
+                                              (or (not keep-view?)
+                                                  (not= held-start
+                                                        (:start-line win))))))
                            (when-let [w (:want-start @state)]
                              (let [k (:want-keep @state)]
                                (swap! state assoc :want-start nil :want-keep nil)
@@ -518,7 +566,15 @@
                  (render-title!)
                  (render-tree!)
                  (watch-load!)
-                 (if (and (= active prev-path) (seq (:lines prev-win)))
+                 ;; the window to re-fetch is the one held NOW, not
+                 ;; the one held when this sync began: the state
+                 ;; read above is asynchronous, and a scroll fetch
+                 ;; can land a newer window while it is in flight —
+                 ;; re-fetching the stale one regressed the view to
+                 ;; the older window, unanchored, and the text
+                 ;; jumped backwards under a reader who was inching
+                 ;; forwards (traced in the fetch log, Nov 18)
+                 (if (and (= active prev-path) (seq (:lines (:win @state))))
                    ;; re-fetch the window the page already holds, at
                    ;; its own start: fetch-window! covers `around`
                    ;; by overscan lines above it, so the around for
@@ -528,7 +584,7 @@
                    ;; the text slid up the page for as long as the
                    ;; file loaded, and the viewport ended up below
                    ;; the window altogether, looking at blank space
-                   (-> (fetch-window! (+ (:start-line prev-win) overscan) true true)
+                   (-> (fetch-window! (+ (:start-line (:win @state)) overscan) true true)
                        (.then (fn [_] (render!))))
                    ;; a new buffer on screen: the window opens at its
                    ;; caret, wherever in the file it sits — not at the
@@ -2356,11 +2412,18 @@
              (close-complete!)
              (close-doc!)
              (let [win (:win @state)
-                   fv (first-visible)]
-               (when (and win (or (< fv (+ (:start-line win) 15))
-                                  (> (+ fv (visible-count))
-                                     (+ (:start-line win) (count (:lines win)) -15))))
-                 (fetch-window! fv false false)))))
+                   top (rendered-top-line)]
+               (when win
+                 (if top
+                   ;; keep the window around the line on screen,
+                   ;; fetching for the middle of the visible rows
+                   (when (or (< top (+ (:start-line win) 15))
+                             (> (+ top (visible-count))
+                                (+ (:start-line win) (count (:lines win)) -15)))
+                     (fetch-window! (+ top (quot (visible-count) 2)) false false))
+                   ;; the viewport is off the held window entirely
+                   ;; (a teleport): fetch for the scroll position
+                   (fetch-window! (first-visible) false false))))))
       (on! sizer "mousedown" on-mousedown)
       (on! js/document "mousemove" on-mousemove)
       (on! js/document "mouseup" on-mouseup)
