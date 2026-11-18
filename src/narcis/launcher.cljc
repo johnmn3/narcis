@@ -158,13 +158,12 @@
   "Lines [start, start+count) of path's file, read by its scan's
    index, in view/window's shape (no spans — the stretch is not a
    document yet). The stretch is noted as a just-in-time extent
-   when it stops short of the file's last line, so the hydration
-   absorbs it instead of reading it again."
+   when it is a full stretch that stops short of the file's end,
+   so the hydration absorbs it instead of reading it again."
   [ed path start count total-lines total-chars]
   (let [w (text/file-window path (buffer/scan-of path) start count)
         lines (:lines w)]
-    (when (and (seq lines) total-lines
-               (< (inc (:n (peek lines))) total-lines))
+    (when (and (= (clojure.core/count lines) count) (not (:eof? w)))
       (buffer/note-extent! ed path lines (:stream-start w) (:stream-end w)))
     {:start-line start
      :total-lines (or total-lines (:total-lines w) start)

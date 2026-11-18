@@ -341,102 +341,154 @@
 ;;
 ;; A big file is not materialized whole to be looked at. One scan of
 ;; the file — bytes only, no document built — counts its lines and
-;; its document characters and records a sparse index: the [line
-;; byte char] position of the first line of every stride of lines.
-;; With the count, the file has its full height from the start (the
-;; page's scroll bar is the document's real size while almost none
-;; of it exists as a document); with the index, any stretch of lines
-;; can be read out of the file on demand — the part of the skeleton
-;; the user scrolls to materializes, the rest stays a count.
+;; its document characters a megabyte at a time and keeps the
+;; per-chunk counts as a table. With the count, the file has its
+;; full height from the start (the page's scroll bar is the
+;; document's real size while almost none of it exists as a
+;; document); with the table, any stretch of lines can be read out
+;; of the file on demand — the part of the skeleton the user
+;; scrolls to materializes, the rest stays a count.
 ;;
 ;; Counts are the document's own: a break is \n, or \r not followed
 ;; by \n (\r\n is one break and one document character); characters
 ;; are document characters (UTF-8 continuation bytes are not
 ;; characters). Lines are breaks + 1, as eve.text counts them.
+;;
+;; Counting is bulk, never a character walk: a chunk is decoded
+;; once and its breaks, \r\n pairs and characters are counted by
+;; the host's string machinery; the one short walk (byte-boundary)
+;; runs only over the single chunk that holds the line a read
+;; starts at. (Two ways that were tried and measured on this host:
+;; a per-byte loop counts ~3 MB/s, and an indexOf walk over the
+;; decoded string is far slower still — the host's replace-based
+;; counting is the fast one, ~10 MB/s and one pass.)
 
-(def scan-stride
-  "Lines between index entries in a file scan."
-  1024)
+#?(:clj
+   (defn- utf8-carry-len
+     "How many of buf's first n bytes form an incomplete UTF-8
+      sequence at the end (0–3): those bytes are carried into the
+      next chunk, so a character is never split by a chunk
+      boundary."
+     [^bytes buf n]
+     (loop [k 1]
+       (if (or (> k 3) (> k n))
+         0
+         (let [b (bit-and (aget buf (- n k)) 0xFF)]
+           (if (= (bit-and b 0xC0) 0x80)
+             (recur (inc k))
+             (let [need (cond (= (bit-and b 0xF8) 0xF0) 4
+                              (= (bit-and b 0xF0) 0xE0) 3
+                              (= (bit-and b 0xE0) 0xC0) 2
+                              :else 1)]
+               (if (< k need) k 0))))))))
+
+#?(:clj
+   (defn- chunk-stats
+     "Bulk counts for one decoded chunk of file text: {:breaks n
+      :pairs n :units n} — breaks (a \\r\\n pair is one), pairs
+      among them, and characters in UTF-16 units, as the hosts
+      count them. Document characters are units − pairs (the \\n
+      of a pair is a stream character but not a document one);
+      stream characters are units. The string must not end with a
+      \\r (it may be half of a pair the next chunk resolves — the
+      callers hold it out and prepend it there)."
+     [^String s]
+     (let [l (.length s)
+           ncount (- l (.length (.replace s "\n" "")))
+           rcount (- l (.length (.replace s "\r" "")))
+           pairs (quot (- l (.length (.replace s "\r\n" ""))) 2)]
+       {:breaks (+ ncount rcount (- pairs)) :pairs pairs :units l})))
+
+#?(:clj
+   (defn- decode-chunk
+     "Decode buf's first m bytes as UTF-8, with carry (the previous
+      chunk's incomplete tail bytes) in front: a String."
+     [^bytes carry ^bytes buf m]
+     (if (zero? (alength carry))
+       (String. buf 0 m "UTF-8")
+       (let [all (byte-array (+ (alength carry) m))]
+         (System/arraycopy carry 0 all 0 (alength carry))
+         (System/arraycopy buf 0 all (alength carry) m)
+         (String. all "UTF-8")))))
+
+#?(:clj
+   (defn- read-chunk-text
+     "Read and decode one chunk of in: {:text s :bytes n :carry b
+      :pend? b :eof? b}. :text is the chunk's decoded text with a
+      \\r held from before prepended and a trailing \\r held out
+      (:pend? — it travels to the next chunk the same way); :bytes
+      is how many file bytes :text spans; :carry is the incomplete
+      UTF-8 tail, carried as bytes."
+     [^java.io.InputStream in ^bytes buf ^bytes carry pend?]
+     (let [n (.read in buf)]
+       (if (neg? n)
+         {:text nil :bytes 0 :n 0 :carry carry :pend? pend? :eof? true}
+         (let [cl (utf8-carry-len buf n)
+               m (- n cl)
+               s0 (decode-chunk carry buf m)
+               s (if pend? (str "\r" s0) s0)
+               hold? (and (pos? (.length s))
+                          (= \return (.charAt s (dec (.length s)))))]
+           {:text (if hold? (subs s 0 (dec (.length s))) s)
+            :bytes (+ (alength carry) m (if pend? 1 0) (if hold? -1 0))
+            :n n
+            :carry (byte-array (java.util.Arrays/copyOfRange buf m n))
+            :pend? hold?
+            :eof? false})))))
 
 #?(:clj
    (defn scan-file!
      "Scan the file at path on a background thread: answer a
       host-side state atom {:lines n :chars n :bytes n
-      :total-bytes n :index [[line byte char stream] ...] :done? b
-      :stopped b}, updated as the scan goes — :lines and :chars are
-      the document's counts for the part scanned so far, exact when
-      :done?. An index entry is a line's first position in three
-      units: bytes (to seek by), document characters, and stream
-      characters (what a reader counts — the two differ by the \\n
-      of a \\r\\n pair, which the document counts once and the
-      stream twice; characters are UTF-16 units, as the hosts count
-      them). Set :stopped to abandon the scan early."
+      :total-bytes n :chunks [[bytes breaks pairs units] ...]
+      :done? b :stopped b}, updated as the scan goes — :lines and
+      :chars are the document's counts for the part scanned so
+      far, exact when :done?. The chunk table is the scan's index:
+      summing it gives the [line byte char stream] position of any
+      chunk's first line, the anchor a read by line starts from.
+      Set :stopped to abandon the scan early."
      [path]
      (let [st (atom {:lines 1 :chars 0 :bytes 0
                      :total-bytes (file-length path)
-                     :index [[0 0 0 0]] :done? false :stopped false})
+                     :chunks [] :done? false :stopped false})
            run (fn []
                  (try
                    (with-open [in (java.io.FileInputStream. ^String path)]
                      (let [buf (byte-array 1048576)]
-                       (loop [line 0 chars 0 stream 0 bytes 0 idx [[0 0 0 0]] prev -1 pending-cr? false]
+                       (loop [line 0 chars 0 stream 0 bytes 0 chunks []
+                              carry (byte-array 0) pend? false]
                          (if (:stopped @st)
-                           (swap! st assoc :lines (inc line) :chars chars :bytes bytes :index idx)
-                           (let [n (.read in buf)]
-                             (if (neg? n)
-                               (let [line (if pending-cr? (inc line) line)
-                                     idx (if (and pending-cr?
-                                                  (zero? (mod line scan-stride))
-                                                  (not= line (first (peek idx))))
-                                           (conj idx [line bytes chars stream])
-                                           idx)]
+                           (swap! st assoc :lines (inc line) :chars chars :bytes bytes :chunks chunks)
+                           (let [rd (read-chunk-text in buf carry pend?)
+                                 text (:text rd) cb (:bytes rd)]
+                             (if (:eof? rd)
+                               ;; end of file: flush what is held
+                               ;; (a \r the file ends on is a
+                               ;; whole break of its own)
+                               (let [s (when (or pend? (pos? (alength carry)))
+                                         (str (when pend? "\r")
+                                              (when (pos? (alength carry))
+                                                (String. carry "UTF-8"))))
+                                     {:keys [breaks pairs units]}
+                                     (if s
+                                       (chunk-stats s)
+                                       {:breaks 0 :pairs 0 :units 0})
+                                     line (+ line breaks)
+                                     chars (+ chars units (- pairs))
+                                     stream (+ stream units)
+                                     bytes (+ bytes (alength carry) (if pend? 1 0))]
                                  (swap! st assoc :lines (inc line) :chars chars
-                                        :bytes bytes :index idx :done? true))
-                               (let [[line chars stream idx prev pending-cr?]
-                                     (loop [i 0 line line chars chars stream stream idx idx prev prev pending-cr? pending-cr?]
-                                       (if (< i n)
-                                         (let [b (aget buf i)
-                                               ub (bit-and b 0xFF)
-                                               ;; UTF-16 units this byte carries:
-                                               ;; 0 for a continuation byte, 2 for
-                                               ;; the head of a 4-byte sequence
-                                               ;; (a surrogate pair), else 1
-                                               u (cond (= (bit-and ub 0xC0) 0x80) 0
-                                                       (<= 0xF0 ub 0xF7) 2
-                                                       :else 1)
-                                               ;; a \r held from before resolves now:
-                                               ;; followed by \n it was half of one
-                                               ;; break (the \n counts it); alone it
-                                               ;; was a whole break, and the new line
-                                               ;; starts at this byte
-                                               [line idx pending-cr?]
-                                               (if pending-cr?
-                                                 (if (= b 10)
-                                                   [line idx false]
-                                                   (let [line (inc line)
-                                                         idx (if (zero? (mod line scan-stride))
-                                                               (conj idx [line (+ bytes i) chars stream])
-                                                               idx)]
-                                                     [line idx false]))
-                                                 [line idx false])
-                                               ;; the \n of a \r\n pair is no
-                                               ;; document character of its own
-                                               chars (if (and (= b 10) (= prev 13))
-                                                       chars
-                                                       (+ chars u))
-                                               stream (+ stream u)
-                                               line (if (= b 10) (inc line) line)
-                                               idx (if (and (= b 10)
-                                                            (zero? (mod line scan-stride))
-                                                            (not= line (first (peek idx))))
-                                                     (conj idx [line (+ bytes i 1) chars stream])
-                                                     idx)]
-                                           (recur (inc i) line chars stream idx b (= b 13)))
-                                         [line chars stream idx prev pending-cr?]))
-                                     bytes (+ bytes n)]
+                                        :bytes bytes :chunks chunks :done? true))
+                               (let [{:keys [breaks pairs units]} (chunk-stats text)
+                                     line (+ line breaks)
+                                     chars (+ chars units (- pairs))
+                                     stream (+ stream units)
+                                     bytes (+ bytes cb)
+                                     chunks (conj chunks [cb breaks pairs units])]
                                  (swap! st assoc :lines (inc line) :chars chars
-                                        :bytes bytes :index idx)
-                                 (recur line chars stream bytes idx prev pending-cr?))))))))
+                                        :bytes bytes :chunks chunks)
+                                 (recur line chars stream bytes chunks
+                                        (:carry rd) (:pend? rd)))))))))
                    (catch #?(:cljs :default :default Throwable) t
                      (binding [*out* *err*]
                        (println "narcis: scan of" path "stopped:" (ex-message t))))))]
@@ -446,40 +498,100 @@
        st)))
 
 #?(:clj
-   (defn- index-point
-     "The last index entry [line byte char] whose line is at most n."
-     [index n]
-     (loop [lo 0 hi (count index)]
-       (if (< lo hi)
-         (let [mid (quot (+ lo hi) 2)]
-           (if (<= (first (nth index mid)) n)
-             (recur (inc mid) hi)
-             (recur lo mid)))
-         (nth index (max 0 (dec lo)))))))
+   (defn- chunk-anchor
+     "The [line byte doc stream] at the start of the chunk holding
+      line n, summed from the scan's chunk table — the table's end
+      when the scan has not reached n yet."
+     [chunks n]
+     (loop [cs chunks line 0 byte 0 doc 0 stream 0]
+       (if-let [[cb cbr cp cu] (first cs)]
+         (if (< (+ line cbr) n)
+           (recur (rest cs) (+ line cbr) (+ byte cb)
+                  (+ doc cu (- cp)) (+ stream cu))
+           [line byte doc stream])
+         [line byte doc stream]))))
+
+#?(:clj
+   (defn- chunk-anchor-by-char
+     "The [line byte doc stream] at the start of the chunk holding
+      document character offset, summed from the chunk table."
+     [chunks offset]
+     (loop [cs chunks line 0 byte 0 doc 0 stream 0]
+       (if-let [[cb cbr cp cu] (first cs)]
+         (if (< (+ doc cu (- cp)) offset)
+           (recur (rest cs) (+ line cbr) (+ byte cb)
+                  (+ doc cu (- cp)) (+ stream cu))
+           [line byte doc stream])
+         [line byte doc stream]))))
+
+#?(:clj
+   (defn- skip-to
+     "Position in at byte offset ib."
+     [^java.io.FileInputStream in ib]
+     (loop [left ib]
+       (when (pos? left)
+         (let [n (.skip in left)]
+           (when (pos? n) (recur (- left n))))))))
+
+#?(:clj
+   (defn- byte-boundary
+     "Byte-account buf's first n bytes, with line the line in
+      progress at their start and prev-cr? a \\r held from before,
+      up to the start of line target: {:byte-idx i :pairs p
+      :units u} — the byte the line starts at and the counts of
+      the bytes before it — or nil when target starts later. The
+      start of a line is the byte just past the break that ends
+      the line before it; for a lone \\r the break completes at
+      the byte that resolves it, which starts the line and is not
+      consumed."
+     [^bytes buf n line target prev-cr?]
+     (loop [i 0 line line pairs 0 units 0 prev-cr? prev-cr?]
+       (if (== line target)
+         {:byte-idx i :pairs pairs :units units}
+         (if (< i n)
+           (let [b (aget buf i)]
+             (cond
+               prev-cr?
+               (if (== b 10)
+                 (recur (inc i) (inc line) (inc pairs) (+ units 2) false)
+                 (recur i (inc line) pairs (inc units) false))
+               (== b 10) (recur (inc i) (inc line) pairs (inc units) false)
+               (== b 13) (recur (inc i) line pairs units true)
+               (pos? b) (recur (inc i) line pairs (inc units) false)
+               :else (recur (inc i) line pairs
+                            (+ units (cond (== (bit-and b 0xC0) 0x80) 0
+                                           (<= 0xF0 (bit-and b 0xFF) 0xF7) 2
+                                           :else 1))
+                            false)))
+           nil)))))
 
 #?(:clj
    (defn file-window
      "Lines [start, start+count) of the file at path, read by the
-      scan's index: {:lines [{:n n :start char :text s}]
-      :stream-start n :stream-end n :total-lines n-or-nil
+      scan's chunk table: {:lines [{:n n :start char :text s}]
+      :stream-start n :stream-end n :eof? b :total-lines n-or-nil
       :total-chars n-or-nil}. The text is the document's (breaks
       stripped, as a document's lines read; :start is a line's
       document character offset; the last line is present even when
       it is the empty line a trailing break leaves). :stream-start
       and :stream-end are the window's span in stream characters —
       what a reader counts — for a caller resuming a reader where
-      the window ends. Totals are the scan's, present once it has
-      finished. Reading starts from the nearest indexed line at or
-      before start and walks forward, so a window far past the
-      scanned part costs one walk over the lines between — the scan
-      itself is never waited on."
+      the window ends. :eof? says the read reached the end of the
+      file, so a stretch that did not is provably short of the last
+      line. Totals are the scan's, present once it has finished.
+      Reading starts from the chunk table's anchor at or before
+      start; whole chunks between it and the window are counted in
+      bulk, and only the chunk holding line start is walked, byte
+      by byte, to the line — so a window deep in a file the scan
+      has not reached yet still costs one bulk pass over the bytes
+      before it. The scan is never waited on."
      [path scan start nlines]
-     (let [[il ib ic isc] (index-point (:index @scan) start)
+     (let [[il ib ic isc] (chunk-anchor (:chunks @scan) start)
            total-lines (when (:done? @scan) (:lines @scan))
            total-chars (when (:done? @scan) (:chars @scan))
            ln (atom il) doc (atom ic) stm (atom isc)
            sb (StringBuilder.) pend (atom false)
-           out (atom []) sstart (atom nil) send (atom nil)
+           out (atom []) sstart (atom nil) send (atom nil) eof (atom false)
            emit! (fn [break-units]
                    (let [t (str sb) n @ln]
                      (when (and (>= n start) (< n (+ start nlines)))
@@ -491,103 +603,165 @@
                      (swap! ln inc)
                      (.setLength sb 0)))]
        (with-open [in (java.io.FileInputStream. ^String path)]
-         (loop [left ib]
-           (when (pos? left)
-             (let [n (.skip in left)]
-               (when (pos? n) (recur (- left n))))))
-         (let [rdr (java.io.InputStreamReader. in "UTF-8")
-               buf (char-array 65536)
-               step (fn step [c]
-                      (cond
-                        (= c \return) (reset! pend true)
-                        (= c \newline) (emit! 1)
-                        :else (.append sb c)))]
-           (loop []
-             (let [n (.read rdr buf)]
-               (if (neg? n)
-                 (do (when @pend
-                       (reset! pend false)
-                       (emit! 1))
-                     (emit! 0))
-                 (do (loop [i 0]
-                       (when (and (< i n) (< @ln (+ start nlines)))
-                         (let [c (aget buf i)]
-                           (if @pend
-                             (do (reset! pend false)
-                                 (if (= c \newline)
-                                   (emit! 2)
-                                   (do (emit! 1) (step c))))
-                             (step c)))
-                         (recur (inc i))))
-                     (when (< @ln (+ start nlines))
-                       (recur))))))))
+         (skip-to in ib)
+         ;; bulk phase: count whole chunks until the one holding
+         ;; line start, land on the line inside it, then hand the
+         ;; walk the file from that byte on
+         (let [buf (byte-array 1048576)
+               head (loop [carry (byte-array 0) pend? false]
+                      (let [n (.read in buf)]
+                        (if (neg? n)
+                          (do (reset! eof true) nil)
+                          (let [cl (utf8-carry-len buf n)
+                                m (- n cl)
+                                s (let [s0 (decode-chunk carry buf m)]
+                                    (if pend? (str "\r" s0) s0))
+                                hold? (and (pos? (.length s))
+                                           (= \return (.charAt s (dec (.length s)))))
+                                {:keys [breaks pairs units]}
+                                (chunk-stats (if hold?
+                                               (subs s 0 (dec (.length s)))
+                                               s))]
+                            (if (< (+ @ln breaks) start)
+                              (do (swap! ln + breaks)
+                                  (swap! doc + (- units pairs))
+                                  (swap! stm + units)
+                                  (recur (byte-array (java.util.Arrays/copyOfRange buf m n))
+                                         hold?))
+                              (let [bb (byte-boundary buf n @ln start pend?)]
+                                (if (nil? bb)
+                                  ;; the boundary is the first
+                                  ;; byte of the next chunk (this
+                                  ;; one ends on the break): count
+                                  ;; the chunk and go on
+                                  (do (swap! ln + breaks)
+                                      (swap! doc + (- units pairs))
+                                      (swap! stm + units)
+                                      (recur (byte-array (java.util.Arrays/copyOfRange buf m n))
+                                             hold?))
+                                  (do (swap! doc + (- (:units bb) (:pairs bb)))
+                                      (swap! stm + (:units bb))
+                                      (reset! ln start)
+                                      (java.io.SequenceInputStream.
+                                        (java.io.ByteArrayInputStream. buf (:byte-idx bb) (- n (:byte-idx bb)))
+                                        in)))))))))]
+           (when head
+             (let [rdr (java.io.InputStreamReader. head "UTF-8")
+                   cbuf (char-array 65536)
+                   step (fn step [c]
+                          (cond
+                            (= c \return) (reset! pend true)
+                            (= c \newline) (emit! 1)
+                            :else (.append sb c)))]
+               (loop []
+                 (let [n (.read rdr cbuf)]
+                   (if (neg? n)
+                     (do (reset! eof true)
+                         (when @pend
+                           (reset! pend false)
+                           (emit! 1))
+                         (emit! 0))
+                     (do (loop [i 0]
+                           (when (and (< i n) (< @ln (+ start nlines)))
+                             (let [c (aget cbuf i)]
+                               (if @pend
+                                 (do (reset! pend false)
+                                     (if (= c \newline)
+                                       (emit! 2)
+                                       (do (emit! 1) (step c))))
+                                 (step c)))
+                             (recur (inc i))))
+                         (when (< @ln (+ start nlines))
+                           (recur))))))))))
        {:lines @out
         :stream-start (or @sstart @stm)
         :stream-end (or @send @stm)
+        :eof? @eof
         :total-lines total-lines
         :total-chars total-chars})))
 
 #?(:clj
-   (defn- index-point-by-char
-     "The last index entry [line byte char] whose char is at most n."
-     [index n]
-     (loop [lo 0 hi (count index)]
-       (if (< lo hi)
-         (let [mid (quot (+ lo hi) 2)]
-           (if (<= (nth (nth index mid) 2) n)
-             (recur (inc mid) hi)
-             (recur lo mid)))
-         (nth index (max 0 (dec lo)))))))
-
-#?(:clj
    (defn file-line-of
      "The line holding document character offset in the file at
-      path, counted from the scan's nearest indexed line at or
-      before it (from the file's start when the scan has not got
-      there). A break character belongs to the line it ends; the
-      offset one past the last character is the last line."
+      path, counted from the scan's chunk table (from the file's
+      start when the scan has not got there). A break character
+      belongs to the line it ends; the offset one past the last
+      character is the last line. Whole chunks before the offset
+      are counted in bulk, as in file-window; only the chunk
+      holding the offset is walked."
      [path scan offset]
-     (let [[il ib ic] (if scan
-                        (index-point-by-char (:index @scan) offset)
-                        [0 0 0])]
+     (let [[il ib ic isc] (if scan
+                            (chunk-anchor-by-char (:chunks @scan) offset)
+                            [0 0 0 0])]
        (with-open [in (java.io.FileInputStream. ^String path)]
-         (loop [left ib]
-           (when (pos? left)
-             (let [n (.skip in left)]
-               (when (pos? n) (recur (- left n))))))
-         (let [rdr (java.io.InputStreamReader. in "UTF-8")
-               buf (char-array 65536)]
-           (loop [pos ic line il pending-cr? false]
-             (let [n (.read rdr buf)]
-               (if (neg? n)
-                 ;; an offset at the very end is on the last line; a
-                 ;; trailing held \r was a break, so one line more
-                 (if pending-cr? (inc line) line)
-                 (let [r (loop [i 0 pos pos line line pending-cr? pending-cr?]
-                           (if (< i n)
-                             (let [c (aget buf i)
-                                   ;; a held \r resolves against this
-                                   ;; char: half of a pair when this is
-                                   ;; \n (counted by the \n), a whole
-                                   ;; break otherwise — and only then
-                                   ;; does the line turn, before this
-                                   ;; char is placed
-                                   line (if (and pending-cr? (not= c \newline))
-                                          (inc line)
-                                          line)
-                                   pair? (and pending-cr? (= c \newline))]
-                               (cond
-                                 ;; the \n of a \r\n pair holds no
-                                 ;; document position of its own
-                                 pair? (recur (inc i) pos line false)
-                                 (= pos offset) [:at line]
-                                 :else (recur (inc i) (inc pos)
-                                              (if (= c \newline) (inc line) line)
-                                              (= c \return))))
-                             [:more pos line pending-cr?]))]
-                   (if (= :at (first r))
-                     (second r)
-                     (recur (nth r 1) (nth r 2) (nth r 3))))))))))))
+         (skip-to in ib)
+         (let [buf (byte-array 1048576)
+               ;; bulk phase: count whole chunks the offset is
+               ;; strictly past, then hand the chunk holding it to
+               ;; the walk
+               head (loop [pos ic line il carry (byte-array 0) pend? false]
+                      (let [rd (read-chunk-text in buf carry pend?)]
+                        (if (:eof? rd)
+                          ;; the offset is at or past the end: the
+                          ;; last line (a held \r is one break more)
+                          [nil pos (if pend? (inc line) line)]
+                          (let [{:keys [breaks pairs units]} (chunk-stats (:text rd))
+                                cdoc (- units pairs)]
+                            (if (< (+ pos cdoc) offset)
+                              (recur (+ pos cdoc) (+ line breaks)
+                                     (:carry rd) (:pend? rd))
+                              ;; hand off: the held \r (if any) as
+                              ;; a byte, then this chunk's raw
+                              ;; bytes, then the rest of the file
+                              [(java.io.SequenceInputStream.
+                                 (if pend?
+                                   (java.io.SequenceInputStream.
+                                     (java.io.ByteArrayInputStream. (byte-array [13]))
+                                     (java.io.ByteArrayInputStream. buf 0 (:n rd)))
+                                   (java.io.ByteArrayInputStream. buf 0 (:n rd)))
+                                 in)
+                               pos line])))))]
+           (let [[in pos line] head]
+             (if (nil? in)
+               line
+               (let [rdr (java.io.InputStreamReader. in "UTF-8")
+                     cbuf (char-array 65536)]
+                 (loop [pos pos line line pending-cr? false]
+                   (let [n (.read rdr cbuf)]
+                     (if (neg? n)
+                       ;; an offset at the very end is on the last
+                       ;; line; a trailing held \r was a break, so
+                       ;; one line more
+                       (if pending-cr? (inc line) line)
+                       (let [r (loop [i 0 pos pos line line pending-cr? pending-cr?]
+                                 (if (< i n)
+                                   (let [c (aget cbuf i)
+                                         ;; a held \r resolves against
+                                         ;; this char: half of a pair
+                                         ;; when this is \n (counted by
+                                         ;; the \n), a whole break
+                                         ;; otherwise — and only then
+                                         ;; does the line turn, before
+                                         ;; this char is placed
+                                         line (if (and pending-cr? (not= c \newline))
+                                                (inc line)
+                                                line)
+                                         pair? (and pending-cr? (= c \newline))]
+                                     (cond
+                                       ;; the \n of a \r\n pair holds
+                                       ;; no document position of
+                                       ;; its own, but the pair is
+                                       ;; one break: the line turns
+                                       ;; here
+                                       pair? (recur (inc i) pos (inc line) false)
+                                       (= pos offset) [:at line]
+                                       :else (recur (inc i) (inc pos)
+                                                    (if (= c \newline) (inc line) line)
+                                                    (= c \return))))
+                                   [:more pos line pending-cr?]))]
+                         (if (= :at (first r))
+                           (second r)
+                           (recur (nth r 1) (nth r 2) (nth r 3)))))))))))))))
 
 ;; A find over the file reads it as normalized text a chunk at a
 ;; time, in one pass — the same slice walk narcis.ops runs over a

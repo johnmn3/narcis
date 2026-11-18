@@ -83,6 +83,16 @@
           (check "line-of-eof"
                  (dec (text/lines doc))
                  (text/file-line-of path scan (text/chars doc)))
+          ;; the same answers with no scan at all: the walk from
+          ;; the file's start must cross the \r\n stretch and still
+          ;; count every break (an indexed anchor past the stretch
+          ;; used to mask a walk that turned no line on a pair)
+          (check "line-of-mid-noscan"
+                 (text/offset->line doc (text/line-start-offset doc 1500))
+                 (text/file-line-of path nil (text/line-start-offset doc 1500)))
+          (check "line-of-eof-noscan"
+                 (dec (text/lines doc))
+                 (text/file-line-of path nil (text/chars doc)))
           (check "find-forward" tok (text/file-find-forward path "zqxmid" 0))
           (check "find-forward-from-past" nil
                  (text/file-find-forward path "zqxmid" (inc tok)))

@@ -285,6 +285,50 @@
           [i (- caret start) line]))
       (:lines win)))))
 
+(defn- view-anchor
+  "The reading position, in units that survive a new window or a
+   new scroll geometry: the line at the top of the viewport and
+   its top's offset from the viewport's top, in pixels (never
+   positive — the line's top is at or above the viewport's). The
+   scroll offset itself is in pixels of a scroll space whose
+   scale changes while a file loads (the total grows as the scan
+   counts, and past the browser's height cap a line's slot is a
+   scaled fraction of its height), so a pixel position left alone
+   lets the text slide under the reader; a line position does
+   not move."
+  []
+  (let [win (:win @state)
+        sc (by-id "scroll")]
+    (when (and win sc (seq (:lines win)))
+      (let [rel (- (.-scrollTop sc) (* (:start-line win) (px-per-line)))
+            idx (max 0 (min (dec (count (:lines win)))
+                            (js/Math.floor (/ rel (line-h)))))]
+        {:line (:n (nth (:lines win) idx))
+         :off (- (* idx (line-h)) rel)
+         :top (.-scrollTop sc)}))))
+
+(defn- restore-view!
+  "Put the anchor line back where it was in the viewport, under
+   the current window and geometry. Two no-op cases: the anchor
+   line is not in the held window (the view moved on purpose — a
+   find, a jump — and something else owns the scroll now), and
+   the scroll offset has moved since the anchor was taken (the
+   user scrolled while the fetch was in flight — their offset is
+   the intent, and a stale anchor must not zero it: measured,
+   a load tick's restore landing after a jump to the middle of a
+   loading file put the offset back to the top and the scroll
+   handler then fetched the head window over the jumped-to one)."
+  [{:keys [line off top]}]
+  (let [win (:win @state)
+        sc (by-id "scroll")]
+    (when (and win sc (seq (:lines win))
+               (<= (js/Math.abs (- (.-scrollTop sc) top)) 1)
+               (<= (:start-line win) line)
+               (< line (+ (:start-line win) (count (:lines win)))))
+      (let [row-top (+ (* (:start-line win) (px-per-line))
+                       (* (- line (:start-line win)) (line-h)))]
+        (set! (.-scrollTop sc) (- row-top off))))))
+
 (defn fetch-window!
   "Fetch a window covering line `around`, then re-render. `around` may
    be :caret, which asks the server to anchor the window at the line
@@ -292,15 +336,36 @@
    it sits outside the window the page holds, since the page cannot
    turn a char offset into a line number on its own. Never moves the
    caret. Serialized: a fetch in flight records the newest want and
-   follows up. Always returns a promise."
-  [around]
+   follows up. Always returns a promise.
+
+   With keep-view?, the reading position is anchored by line
+   across the fetch: a re-sync the user did not cause (the load
+   watch ticking while a file hydrates) must not move the text
+   they are reading, even when the scroll geometry changed under
+   it. A fetch answering the user's own scroll passes false —
+   their scroll offset is the intent the window was fetched to
+   match.
+
+   A deferrable? caller (the load watch's re-sync) whose fetch
+   finds another already in flight simply waits for the next
+   tick instead of recording a want: a want recorded against
+   the window on screen now would be stale the moment the
+   in-flight fetch lands a different one, and following it up
+   would fetch the old place over the new (measured: a tick's
+   want for the head, recorded while a jump's fetch was in
+   flight, replaced the jumped-to window with the head one)."
+  [around keep-view? deferrable?]
   (let [s @state]
     (if (:fetching s)
-      (do (swap! state assoc :want-start around)
-          (js/Promise. (fn [resolve _]
-                         (js/setTimeout (fn [] (resolve (:win @state))) 80))))
+      (if deferrable?
+        (js/Promise. (fn [resolve _]
+                       (js/setTimeout (fn [] (resolve (:win @state))) 80)))
+        (do (swap! state assoc :want-start around :want-keep keep-view?)
+            (js/Promise. (fn [resolve _]
+                           (js/setTimeout (fn [] (resolve (:win @state))) 80)))))
       (let [cnt (+ (visible-count) (* 2 overscan))
-            path (:path s)]
+            path (:path s)
+            anchor (when keep-view? (view-anchor))]
         (if path
           (do (swap! state assoc :fetching true)
               (-> (get-edn (str "/api/window?path=" (js/encodeURIComponent path)
@@ -311,9 +376,12 @@
                   (.then (fn [win]
                            (swap! state assoc :win win :fetching false)
                            (render!)
+                           (when (and anchor (= path (:path @state)))
+                             (restore-view! anchor))
                            (when-let [w (:want-start @state)]
-                             (swap! state assoc :want-start nil)
-                             (fetch-window! w))
+                             (let [k (:want-keep @state)]
+                               (swap! state assoc :want-start nil :want-keep nil)
+                               (fetch-window! w k false)))
                            win))
                   (.catch (fn [_] (swap! state assoc :fetching false) nil))))
           (do (swap! state assoc :win nil)
@@ -337,12 +405,12 @@
   (let [win (:win @state)
         pos (caret-pos win (:caret @state))]
     (if pos
-      (fetch-window! (:n (nth (:lines win) (first pos))))
+      (fetch-window! (:n (nth (:lines win) (first pos))) true false)
       ;; the caret is outside the window the page holds (a restored
       ;; session, a find or an undo that jumped across the file):
       ;; re-anchoring at the old window would leave it there, with no
       ;; caret and no position to show — fetch at the caret instead
-      (fetch-window! :caret))))
+      (fetch-window! :caret true false))))
 
 (defn after-op! [res]
   (if (:ok res)
@@ -394,12 +462,12 @@
                  (render-tree!)
                  (watch-load!)
                  (if (and (= active prev-path) (seq (:lines prev-win)))
-                   (-> (fetch-window! (:n (first (:lines prev-win))))
+                   (-> (fetch-window! (:n (first (:lines prev-win))) true true)
                        (.then (fn [_] (render!))))
                    ;; a new buffer on screen: the window opens at its
                    ;; caret, wherever in the file it sits — not at the
                    ;; top of the file
-                   (-> (fetch-window! :caret)
+                   (-> (fetch-window! :caret true false)
                        (.then (fn [_] (ensure-caret-visible!) (render!)))))))))))
 
 ;; ---------------------------------------------------------------------------
@@ -1722,7 +1790,7 @@
              (place! (nth (:lines win) (- target (:start-line win))))
              ;; the target line is not loaded: fetch around it, then place
              (do (swap! state assoc :goal-col goal)
-                 (-> (fetch-window! target)
+                 (-> (fetch-window! target true false)
                      (.then (fn []
                               (when-let [tl (first (filter (fn [l] (= (:n l) target))
                                                            (:lines (:win @state))))]
@@ -2225,7 +2293,7 @@
                (when (and win (or (< fv (+ (:start-line win) 15))
                                   (> (+ fv (visible-count))
                                      (+ (:start-line win) (count (:lines win)) -15))))
-                 (fetch-window! fv)))))
+                 (fetch-window! fv false false)))))
       (on! sizer "mousedown" on-mousedown)
       (on! js/document "mousemove" on-mousemove)
       (on! js/document "mouseup" on-mouseup)
@@ -2358,6 +2426,6 @@
                (poll-console!)
                ;; open at the restored caret, wherever in the file it
                ;; sits — the same anchoring refresh-state! does
-               (-> (fetch-window! :caret)
+               (-> (fetch-window! :caret true false)
                    (.then (fn [_] (ensure-caret-visible!) (render!))))
                (focus-editor!)))))
