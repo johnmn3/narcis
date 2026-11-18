@@ -32,7 +32,8 @@ the window drawn in a browser page the launcher serves.
 
 Narcis runs on [Jolt](https://github.com/jolt-lang/jolt) (v0.8.23 or later),
 which hosts Eve; the app's state lives in Eve. Eve itself is a git
-dependency — `deps.edn` pins Eve v0.9.3.2, and Jolt fetches it on
+dependency — `deps.edn` pins Eve to the public release line's
+current tip, and Jolt fetches it on
 first run — so there is nothing else to install or check out:
 
 ```bash
@@ -181,9 +182,9 @@ Jolt with `jolt.debug` (run it with `BIN` pointing at one, e.g. the
 nightly); on a Jolt without it, it prints SKIP and exits 0, and the corpus'
 live debugger tests take the same skipped path there.
 
-Latest results at the current tip (2026-11-17, Jolt v0.8.23, Eve
-v0.9.3.2 — the corpus below was run against a fresh clone of that
-public tag; the sources are `.cljc` now, and the launch above is the
+Latest results at the current tip (2026-11-18, Jolt v0.8.23, Eve
+at the pinned public tip — the corpus below was run against a fresh
+clone of that public tree; the sources are `.cljc` now, and the launch above is the
 `jolt narcis` workflow): 248 tests, 1,677 assertions, 0 failures across the corpus
 (the debugger suites included; their live sections take the skipped path
 on this Jolt and run on the nightly); buffer and store gates pass; the

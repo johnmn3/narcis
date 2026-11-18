@@ -1,10 +1,12 @@
 {:paths ["src"]
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
         ;; Eve — SeniorCareMarket/eve, the public Eve repo (the Eve repo
-        ;; lives at that repo's root; sha = tag v0.9.3.2, the 0.9.3.2
-        ;; release merge commit).
+        ;; lives at that repo's root; sha = the public release line's
+        ;; current tip, release/eve-0.9.3.3 collation 6: the journal
+        ;; opt-out removal and the eve.alpha API — eve/swap!,
+        ;; eve/persistent-atom-domain — Narcis consumes).
         eve/eve {:git/url "https://github.com/SeniorCareMarket/eve"
-                 :git/sha "e6cddc906da3620b912287f30046ffb67058ac4e"}}
+                 :git/sha "9483a5697744df9b089c8a19f1b30ddeed00f2b8"}}
  :aliases
  {:test {:extra-paths ["test"]}
   :bench {:extra-paths ["bench"]}
