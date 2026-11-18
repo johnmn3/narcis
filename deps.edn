@@ -2,11 +2,12 @@
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
         ;; Eve — SeniorCareMarket/eve, the public Eve repo (the Eve repo
         ;; lives at that repo's root; sha = the public release line's
-        ;; current tip, release/eve-0.9.3.3 collation 6: the journal
-        ;; opt-out removal and the eve.alpha API — eve/swap!,
-        ;; eve/persistent-atom-domain — Narcis consumes).
+        ;; current tip, release/eve-0.9.3.3 collation 7: the journal
+        ;; opt-out removal and the eve.alpha API Narcis consumes —
+        ;; eve/swap!, eve/persistent-atom-domain, and the value array
+        ;; eve/make-array, eve/aget, eve/aset, eve/alength).
         eve/eve {:git/url "https://github.com/SeniorCareMarket/eve"
-                 :git/sha "9483a5697744df9b089c8a19f1b30ddeed00f2b8"}}
+                 :git/sha "15699f85c65c18e4141d58542d77ed50321556c1"}}
  :aliases
  {:test {:extra-paths ["test"]}
   :bench {:extra-paths ["bench"]}
