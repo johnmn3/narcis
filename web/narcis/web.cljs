@@ -191,6 +191,17 @@
                       (swap! state assoc :caret (:caret res) :sel (:sel res)))
                     res)))))))
 
+(defn chain-step!
+  "Queue f behind every op already in the chain. The page's one
+   ordering rule: an op reads the caret when it runs, so anything
+   that moves the caret queues here too — a move applied the moment
+   its key is pressed, while keystrokes are still queued ahead of
+   it, redirects those keystrokes to the moved caret (measured:
+   typing abcdef at a line end and pressing Left twice mid-queue
+   landed the last four letters before the line's last character)."
+  [f]
+  (chained f))
+
 ;; ---------------------------------------------------------------------------
 ;; window management
 
@@ -1380,8 +1391,10 @@
     (when-let [c (nth candidates sel nil)]
       (close-complete!)
       ;; the word under the caret is replaced: sent as the selection the
-      ;; insert replaces
-      (swap! state assoc :caret end :sel (when (< start end) [start end]))
+      ;; insert replaces — queued like every caret move, so the insert
+      ;; op behind it reads this caret, not an older one
+      (chain-step!
+       (fn [] (swap! state assoc :caret end :sel (when (< start end) [start end]))))
       (do-op! {:op :insert-text :text (:symbol c)}))))
 
 (defn close-doc! [] (show! (by-id "quickdoc") false))
@@ -1409,9 +1422,11 @@
           250)))
 
 (defn set-caret-local! [offset sel]
-  (swap! state assoc :caret offset :sel sel :goal-col nil)
-  (render!)
-  (sync-caret!))
+  (chain-step!
+   (fn []
+     (swap! state assoc :caret offset :sel sel :goal-col nil)
+     (render!)
+     (sync-caret!))))
 
 (defn extend-sel
   "The selection after moving the caret from `from` to `to` with Shift:
@@ -1423,55 +1438,61 @@
     (when (not= anchor to) [(min anchor to) (max anchor to)])))
 
 (defn move-lines! [n extend?]
-  (let [s @state
-        win (:win s)
-        pos (caret-pos win (:caret s))]
-    (when pos
-      (let [[_ col line] pos
-            goal (or (:goal-col s) col)
-            target (max 0 (min (dec (:total-lines win)) (+ (:n line) n)))
-            place! (fn [tl]
-                     (let [off (+ (:start tl) (min goal (count (:text tl))))]
-                       (swap! state assoc :caret off :goal-col goal
-                              :sel (when extend? (extend-sel (:sel s) (:caret s) off)))
-                       (ensure-caret-visible!)
-                       (render!)
-                       (sync-caret!)))]
-        (if (and (<= (:start-line win) target)
-                 (< target (+ (:start-line win) (count (:lines win)))))
-          (place! (nth (:lines win) (- target (:start-line win))))
-          ;; the target line is not loaded: fetch around it, then place
-          (do (swap! state assoc :goal-col goal)
-              (-> (fetch-window! target)
-                  (.then (fn []
-                           (when-let [tl (first (filter (fn [l] (= (:n l) target))
-                                                        (:lines (:win @state))))]
-                             (place! tl)))))))))))
+  (chain-step!
+   (fn []
+     (let [s @state
+           win (:win s)
+           pos (caret-pos win (:caret s))]
+       (when pos
+         (let [[_ col line] pos
+               goal (or (:goal-col s) col)
+               target (max 0 (min (dec (:total-lines win)) (+ (:n line) n)))
+               place! (fn [tl]
+                        (let [off (+ (:start tl) (min goal (count (:text tl))))]
+                          (swap! state assoc :caret off :goal-col goal
+                                 :sel (when extend? (extend-sel (:sel s) (:caret s) off)))
+                          (ensure-caret-visible!)
+                          (render!)
+                          (sync-caret!)))]
+           (if (and (<= (:start-line win) target)
+                    (< target (+ (:start-line win) (count (:lines win)))))
+             (place! (nth (:lines win) (- target (:start-line win))))
+             ;; the target line is not loaded: fetch around it, then place
+             (do (swap! state assoc :goal-col goal)
+                 (-> (fetch-window! target)
+                     (.then (fn []
+                              (when-let [tl (first (filter (fn [l] (= (:n l) target))
+                                                           (:lines (:win @state))))]
+                                (place! tl)))))))))))))
 
 (defn move-horizontal! [d extend?]
-  (let [s @state
-        total (or (:total-chars (:win s)) 0)
-        ;; a selection collapses to the end the arrow points at
-        off (if (and (:sel s) (not extend?))
-              (if (neg? d) (first (:sel s)) (second (:sel s)))
-              (max 0 (min total (+ (:caret s) d))))]
-    (swap! state assoc :caret off :goal-col nil
-           :sel (when extend? (extend-sel (:sel s) (:caret s) off)))
-    (ensure-caret-visible!)
-    (render!)
-    (sync-caret!)))
+  (chain-step!
+   (fn []
+     (let [s @state
+           total (or (:total-chars (:win s)) 0)
+           ;; a selection collapses to the end the arrow points at
+           off (if (and (:sel s) (not extend?))
+                 (if (neg? d) (first (:sel s)) (second (:sel s)))
+                 (max 0 (min total (+ (:caret s) d))))]
+       (swap! state assoc :caret off :goal-col nil
+              :sel (when extend? (extend-sel (:sel s) (:caret s) off)))
+       (ensure-caret-visible!)
+       (render!)
+       (sync-caret!)))))
 
 (defn line-edge! [end? extend?]
-  (let [s @state
-        win (:win s)
-        pos (caret-pos win (:caret s))]
-    (when pos
-      (let [line (nth (:lines win) (first pos))
-            target (if end? (+ (:start line) (count (:text line))) (:start line))]
-        (swap! state assoc :caret target :goal-col nil
-               :sel (when extend? (extend-sel (:sel s) (:caret s) target)))
-        (render!)
-        (sync-caret!)))))
+  (chain-step!
+   (fn []
+     (let [s @state
+           win (:win s)
+           pos (caret-pos win (:caret s))]
+       (when pos
+         (let [line (nth (:lines win) (first pos))
+               target (if end? (+ (:start line) (count (:text line))) (:start line))]
+           (swap! state assoc :caret target :goal-col nil
+                  :sel (when extend? (extend-sel (:sel s) (:caret s) target)))
+           (render!)
+           (sync-caret!)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; keyboard — jonquil's keymap for the ported commands
@@ -1561,9 +1582,11 @@
         (and cmd (= lower "a"))
         (do (.preventDefault e)
             (let [n (or (:total-chars (:win s)) 0)]
-              (swap! state assoc :caret n :sel (when (pos? n) [0 n]))
-              (render!)
-              (sync-caret!)))
+              (chain-step!
+               (fn []
+                 (swap! state assoc :caret n :sel (when (pos? n) [0 n]))
+                 (render!)
+                 (sync-caret!)))))
         (or (= k "F2") (and (= k "F6") shift)) (do (.preventDefault e) (rename-ui!))
 
         ;; structural editing
@@ -1614,10 +1637,12 @@
   (focus-editor!)
   (when-let [off (event-pos e)]
     (if (.-shiftKey e)
-      (let [s @state]
-        (swap! state assoc :caret off :sel (extend-sel (:sel s) (:caret s) off))
-        (render!)
-        (sync-caret!))
+      (chain-step!
+       (fn []
+         (let [s @state]
+           (swap! state assoc :caret off :sel (extend-sel (:sel s) (:caret s) off))
+           (render!)
+           (sync-caret!))))
       (do (swap! state assoc :drag-anchor off)
           (set-caret-local! off nil)))))
 
@@ -1625,8 +1650,10 @@
   (when-let [a (:drag-anchor @state)]
     (.preventDefault e)
     (when-let [off (event-pos e)]
-      (swap! state assoc :caret off :sel (when (not= a off) [(min a off) (max a off)]))
-      (render!))))
+      (chain-step!
+       (fn []
+         (swap! state assoc :caret off :sel (when (not= a off) [(min a off) (max a off)]))
+         (render!))))))
 
 (defn on-mouseup [_]
   (when (:drag-anchor @state)

@@ -132,17 +132,25 @@ bash scripts/editor-gate.sh
 bash scripts/page-gate.sh
 ```
 
+```bash
+bash scripts/editor-e2e.sh
+```
+
 `run-all-tests` is the lifted Jonquil corpus and Narcis's own tests;
 `buffer-gate` walks undo and redo across a restart; `editor-gate` is an
 editing session over HTTP with a `kill -9` in the middle; `page-gate` drives
-the real page in headless Chromium (it needs `node` with `playwright`).
+the real page in headless Chromium (it needs `node` with `playwright`), and
+`editor-e2e` drives the same page through the editing behaviours themselves:
+caret geometry, clicks, arrow/Home/End/Page movement, selection, fast
+typing, auto-pair, smart enter, a paredit op and find.
 
 Latest results at the current tip (2026-11-17, Jolt v0.8.23, Eve
 `84bfc7c8`): 153 tests, 1,333 assertions, 0 failures across the corpus;
 buffer and store gates pass; the editor gate passes 27/27; the page gate
-passes 44/44; the viewport gate passes 3/3 with a 1,000,000-line file
-opening inside a 60 s run. Over HTTP at 4,000 lines, a keystroke with its
-repaint measures 33 ms and a 100-line window fetch 26 ms.
+passes 44/44; the editor e2e passes 38/38; the viewport gate passes 3/3
+with a 1,000,000-line file opening inside a 60 s run. Over HTTP at 4,000
+lines, a keystroke with its repaint measures 33 ms and a 100-line window
+fetch 26 ms.
 
 ## License and attribution
 
