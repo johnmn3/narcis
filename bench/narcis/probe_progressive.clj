@@ -21,18 +21,18 @@
         t0 (System/currentTimeMillis)
         _ (buffer/open-file! ed path {:head head})
         head-ms (- (System/currentTimeMillis) t0)
-        was-loading (buffer/loading? ed path)
+        was-partial (buffer/partial? ed path)
         head-chars (buffer/read ed path (fn [{doc :root}] (text/chars doc)))]
-    (println "open returned in" head-ms "ms; loading?" was-loading
+    (println "open returned in" head-ms "ms; loading?" was-partial
              "; head chars" head-chars "of file" (text/file-length path))
     (loop [n 0]
-      (when (and (buffer/loading? ed path) (< n 300))
+      (when (and (buffer/partial? ed path) (< n 300))
         (Thread/sleep 1000)
         (when (zero? (mod n 5))
           (println "  t+" n "s chars" (buffer/read ed path (fn [{doc :root}] (text/chars doc)))
                    "loading" (buffer/loading-map ed)))
         (recur (inc n))))
-    (let [loaded (not (buffer/loading? ed path))
+    (let [loaded (not (buffer/partial? ed path))
           mine (doc-text ed path)
           theirs (text/normalize-breaks (slurp path))
           undo (buffer/read ed path (fn [v] (:undo v)))]

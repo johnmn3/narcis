@@ -81,8 +81,12 @@ function perf(label, ms) { console.log(`PERF ${label} ${Math.round(ms)}ms`); }
 
   const tLoad = Date.now();
   await page.goto(url);
+  // the first rendered line is the file's head on a fresh open, and
+  // the restored caret's line on a reopen (phase 1 left the caret at
+  // the mid-file marker, and the page opens there)
+  const firstTok = phase === 'reopen' ? 'zqx' + midLine : 'zqxfirst';
   ok(await waitFor(async () => (await editorLines()).length > 0 &&
-       (await editorLines())[0].includes('zqxfirst'), 1200000),
+       (await editorLines())[0].includes(firstTok), 1200000),
      'page-renders-the-big-file', JSON.stringify((await editorLines())[0] || '').slice(0, 60));
   perf('page-first-render-after-server-up', Date.now() - tLoad);
 
@@ -91,9 +95,19 @@ function perf(label, ms) { console.log(`PERF ${label} ${Math.round(ms)}ms`); }
     // is still arriving. Prove the load was in flight at first
     // render, then wait for it to complete before exercising the
     // whole document.
-    const stateText = async () => await (await fetch(url + '/api/state')).text();
+    const stateText = async () => await (await fetch(url.replace(/\/?$/, '') + '/api/state')).text();
     ok(/:loading \{[^}]*:total/.test(await stateText()),
        'file-still-loading-at-first-render');
+    // the skeleton gives the file its full height while it is
+    // still hydrating: the state's line count reaches the file's
+    // (the generator's count plus the trailing empty line) long
+    // before the document does
+    ok(await waitFor(async () => {
+         const m = /:lines (\d+)/.exec(await stateText());
+         return m && Number(m[1]) === expectedLines + 1 &&
+                /:loading \{[^}]*:total/.test(await stateText());
+       }, 600000),
+       'skeleton-height-while-loading');
     const tComplete = Date.now();
     ok(await waitFor(async () => /:loading \{\}/.test(await stateText()), 1800000),
        'load-completes');

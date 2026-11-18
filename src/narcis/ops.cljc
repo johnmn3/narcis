@@ -299,12 +299,28 @@
   (let [query (some-> (:query msg) text/normalize-breaks)]
     (if (or (nil? query) (zero? (count query)))
       {:ok false :error "empty find query"}
-      (let [m (buffer/read ed path
-                           (fn [{doc :root cursor :cursor ssel :sel}]
-                             (let [[caret sel] (at doc msg cursor ssel)
-                                   from (or (:from msg)
-                                            (case dir :next caret :prev (if sel (first sel) caret)))]
-                               (find-in-doc doc query from dir (not (false? (:wrap msg)))))))]
+      (let [wrap? (not (false? (:wrap msg)))
+            m (if (buffer/partial? ed path)
+                ;; a partial buffer's document is its file's prefix,
+                ;; so the find runs over the file itself — the whole
+                ;; text is there even where no document is yet
+                (let [[cursor ssel] (buffer/read ed path (fn [{c :cursor s :sel}] [c s]))
+                      caret (if (contains? msg :caret) (:caret msg) cursor)
+                      sel (if (contains? msg :sel) (:sel msg) ssel)
+                      from (or (:from msg)
+                               (case dir :next caret :prev (if sel (first sel) caret)))
+                      i (case dir
+                          :next (or (text/file-find-forward path query from)
+                                    (when wrap? (text/file-find-forward path query 0)))
+                          :prev (or (text/file-find-backward path query from)
+                                    (when wrap? (text/file-find-backward path query nil))))]
+                  (when i [i (+ i (count query))]))
+                (buffer/read ed path
+                             (fn [{doc :root cursor :cursor ssel :sel}]
+                               (let [[caret sel] (at doc msg cursor ssel)
+                                     from (or (:from msg)
+                                              (case dir :next caret :prev (if sel (first sel) caret)))]
+                                 (find-in-doc doc query from dir wrap?)))))]
         (if m
           (assoc (move-caret! ed path (second m) m) :match m)
           {:ok false :error (str "not found: " query)})))))
@@ -338,10 +354,12 @@
 ;; the dispatch
 
 (def ^:private load-safe-ops
-  "The ops a buffer that is still loading answers: the ones that
-   neither change its document nor write it out. The rest wait for
-   the load — an edit would race the loader's appends, and a save
-   would write a partial document over the file."
+  "The ops a partial buffer answers: the ones that neither change
+   its document nor write it out — they run over the document it
+   has, or over the file itself (find). The rest need the whole
+   document: they start its materialization and wait for it — an
+   edit would race the loader's appends, and a save would write a
+   partial document over the file."
   #{:open :activate :close :new :theme/use :find-next :find-prev
     :complete :doc :forward-sexp :backward-sexp :set-caret})
 
@@ -354,12 +372,14 @@
   (let [path (or path (buffer/active ed))]
     (if (and (not (#{:open :activate :new :theme/use} op)) (not (buffer/open? ed path)))
       {:ok false :error (str "no such buffer: " path)}
-      (if (and (not (load-safe-ops op)) (buffer/loading? ed path))
-        {:ok false :error (str path " is still loading — "
-                               (let [{:keys [loaded total]} (get (buffer/loading-map ed) path)]
-                                 (if (and loaded total (pos? total))
-                                   (str (quot (* 100 loaded) total) "% in")
-                                   "almost in")))}
+      (if (and (not (load-safe-ops op)) (buffer/partial? ed path))
+        (do (buffer/materialize! ed path)
+            {:ok false :preparing true
+             :error (str path " is a partial document — preparing it whole — "
+                         (let [{:keys [loaded total]} (get (buffer/loading-map ed) path)]
+                           (if (and loaded total (pos? total))
+                             (str (quot (* 100 loaded) total) "% in")
+                             "almost in")))})
         (case op
         :open (do (buffer/open-file! ed (:path msg)) (result ed (:path msg)))
         :activate (do (buffer/activate! ed path) (result ed path))

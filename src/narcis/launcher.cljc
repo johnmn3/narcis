@@ -135,6 +135,7 @@
   {:tabs (buffer/tabs ed)
    :active (buffer/active ed)
    :loading (buffer/loading-map ed)
+   :scanning (buffer/scanning-map)
    :project (:project ctx)
    :runtime "Jolt"
    :theme (name (or (buffer/theme-choice ed) (:name @theme-atom)))
@@ -142,27 +143,105 @@
               (if-let [p (first ps)]
                 (recur (rest ps)
                        (if-let [s (buffer/snapshot ed p)]
-                         (assoc acc p {:lines (:lines s)
-                                       :chars (:chars s)
-                                       :cursor (:cursor s)
-                                       :sel (:sel s)
-                                       :undo (:undo s)
-                                       :redo (:redo s)})
+                         (assoc acc p (let [sk (when (buffer/partial? ed p)
+                                                 (buffer/skeleton p))]
+                                        {:lines (max (:lines s) (or (:lines sk) 0))
+                                         :chars (max (:chars s) (or (:chars sk) 0))
+                                         :cursor (:cursor s)
+                                         :sel (:sel s)
+                                         :undo (:undo s)
+                                         :redo (:redo s)}))
                          acc))
                 acc))})
 
+(defn- file-lines-payload
+  "Lines [start, start+count) of path's file, read by its scan's
+   index, in view/window's shape (no spans — the stretch is not a
+   document yet). The stretch is noted as a just-in-time extent
+   when it stops short of the file's last line, so the hydration
+   absorbs it instead of reading it again."
+  [ed path start count total-lines total-chars]
+  (let [w (text/file-window path (buffer/scan-of path) start count)
+        lines (:lines w)]
+    (when (and (seq lines) total-lines
+               (< (inc (:n (peek lines))) total-lines))
+      (buffer/note-extent! ed path lines (:stream-start w) (:stream-end w)))
+    {:start-line start
+     :total-lines (or total-lines (:total-lines w) start)
+     :total-chars (or total-chars (:total-chars w) 0)
+     :spans-mode :window
+     :match nil
+     :lines (mapv (fn [l] (assoc l :spans [])) lines)}))
+
+(defn- beyond-payload
+  "A window wholly past path's document: served from a just-in-time
+   extent when one covers it (it is rope already, analysis and
+   all), else read out of the file."
+  [ed path start count total-lines total-chars]
+  (let [cover (some (fn [[s e]]
+                      (when (and (<= s start)
+                                 (<= (+ start count) (+ s (:lines e))))
+                        [s e]))
+                    (buffer/extents ed path))]
+    (if cover
+      (let [[s e] cover
+            w (view/window (:doc e) {:start (- start s) :count count
+                                     :key [:extent path s (:chars e)]})]
+        {:start-line start
+         :total-lines total-lines
+         :total-chars total-chars
+         :spans-mode (:spans-mode w)
+         :match nil
+         :lines (mapv (fn [l] (-> l
+                                 (update :n + s)
+                                 (update :start + (:start-char e))))
+                      (:lines w))})
+      (file-lines-payload ed path start count total-lines total-chars))))
+
 (defn- window-payload [ed path start count]
-  (assoc (buffer/read ed path
-                      (fn [s]
-                        (merge (view/window (:root s) {:start start :count count
-                                                       :caret (:cursor s)
-                                                       :key (:text-key s)})
-                               {:path path
-                                :caret (:cursor s)
-                                :sel (:sel s)
-                                :undo (:undo s)
-                                :redo (:redo s)})))
-         :rev (buffer/rev ed path)))
+  (let [doc-lines (buffer/read ed path (fn [s] (text/lines (:root s))))
+        partial (buffer/partial? ed path)
+        skel (when partial (buffer/skeleton path))
+        total-lines (if partial (max doc-lines (or (:lines skel) 0)) doc-lines)
+        total-chars (when partial
+                      (max (buffer/read ed path (fn [s] (text/chars (:root s))))
+                           (or (:chars skel) 0)))
+        base (buffer/read ed path
+                          (fn [s]
+                            (merge (view/window (:root s) {:start start :count count
+                                                           :caret (:cursor s)
+                                                           :key (:text-key s)})
+                                   {:path path
+                                    :caret (:cursor s)
+                                    :sel (:sel s)
+                                    :undo (:undo s)
+                                    :redo (:redo s)})))]
+    (assoc (if-not partial
+             ;; a whole buffer: the document serves every window
+             ;; (view/window clamps a count past the end)
+             (assoc base :total-lines total-lines
+                    :total-chars (:total-chars base))
+             (cond
+               ;; wholly within the document
+               (<= (+ start count) doc-lines)
+               (assoc base :total-lines total-lines
+                      :total-chars (or total-chars (:total-chars base)))
+
+               ;; wholly past it: an extent or the file serves
+               (>= start doc-lines)
+               (merge (beyond-payload ed path start count total-lines total-chars)
+                      (select-keys base [:path :caret :sel :undo :redo]))
+
+               ;; straddling the frontier: the document's lines (the
+               ;; doc window already clamps to them), then the file's
+               :else
+               (let [rest (beyond-payload ed path doc-lines
+                                          (+ start count (- doc-lines))
+                                          total-lines total-chars)]
+                 (assoc base :lines (into (:lines base) (:lines rest))
+                        :total-lines total-lines
+                        :total-chars (or total-chars (:total-chars base))))))
+           :rev (buffer/rev ed path))))
 
 #?(:clj
    (def ^:private menus-payload
@@ -264,9 +343,7 @@
                             ;; a jump across the file), where a line
                             ;; number is the one thing it cannot know
                             start (if (and (:caret query) p (buffer/open? ed p))
-                                    (buffer/read ed p
-                                                 (fn [s] (:line (text/line-of (:root s)
-                                                                              (parse-int (:caret query))))))
+                                    (buffer/line-of ed p (parse-int (:caret query)))
                                     (parse-int (or (:start query) "0")))
                             count (parse-int (or (:count query) "100"))]
                         (if (and p (buffer/open? ed p))

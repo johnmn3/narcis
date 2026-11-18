@@ -61,6 +61,28 @@
 
 (defn font-px [] (:font-px @state))
 (defn line-h [] (js/Math.round (* 1.46 (font-px))))
+
+(def max-scroll-px
+  "The tallest scroll space the page may build. Browsers cap an
+   element's height and the scroll offset near 33.5M px, and past
+   the cap the offset clamps — measured on a 2,167,597-line file:
+   the caret at the end asked for 41M px, the browser clamped it
+   to a position at line ~1.77M, the scroll handler then fetched
+   that window, and the caret sat outside every window the page
+   held (the position readout went blank after a find to the end
+   of the file, and the view never reached the end). Past the cap
+   the scroll space scales: a line's slot in the scroll space is
+   px-per-line, while the window's rows stack at the full line
+   height inside their block, so the text stays readable and only
+   the scrollbar's travel is compressed."
+  30000000)
+
+(defn doc-scale []
+  (let [total (or (:total-lines (:win @state)) 0)
+        full (* total (line-h))]
+    (if (> full max-scroll-px) (/ max-scroll-px full) 1)))
+
+(defn px-per-line [] (* (line-h) (doc-scale)))
 (def mono "ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace")
 (defn font [] (str (font-px) "px " mono))
 (def overscan 45)
@@ -169,6 +191,18 @@
     (reset! op-chain (.catch p (fn [_] nil)))
     p))
 
+(defn- wait-whole
+  "A promise that resolves when path's buffer is no longer partial:
+   the load watch keeps :loading fresh in the state while it lasts."
+  [path]
+  (js/Promise.
+   (fn [resolve _]
+     (letfn [(tick []
+               (if (contains? (:loading @state) path)
+                 (js/setTimeout tick 900)
+                 (resolve nil)))]
+       (tick)))))
+
 (defn op-send!
   "One op's send, unqueued: an op on the current buffer carries the
    page's caret and selection, read as they stand when the send runs;
@@ -188,18 +222,28 @@
     (when own?
       (when-let [t (:sync-timer s)] (js/clearTimeout t))
       (swap! state assoc :sync-timer nil))
-    (-> (fetch-edn "/api/op" #js {:method "POST" :body (pr-str msg)})
-        (.then (fn [res]
-                 ;; adopt the reply's caret only when the user has not
-                 ;; moved since this op read it: a reply that lands
-                 ;; after an arrow key or a click must not drag the
-                 ;; caret back to where the op left it (the user's
-                 ;; pending sync tells the server where they went)
-                 (when (and (:ok res) (contains? res :caret) (= (:path msg) (:path @state))
-                            (= (:caret @state) carried-caret)
-                            (= (:sel @state) carried-sel))
-                   (swap! state assoc :caret (:caret res) :sel (:sel res)))
-                 res)))))
+    (letfn [(send [msg]
+              (-> (fetch-edn "/api/op" #js {:method "POST" :body (pr-str msg)})
+                  (.then (fn [res]
+                           ;; adopt the reply's caret only when the user has not
+                           ;; moved since this op read it: a reply that lands
+                           ;; after an arrow key or a click must not drag the
+                           ;; caret back to where the op left it (the user's
+                           ;; pending sync tells the server where they went)
+                           (when (and (:ok res) (contains? res :caret) (= (:path msg) (:path @state))
+                                      (= (:caret @state) carried-caret)
+                                      (= (:sel @state) carried-sel))
+                             (swap! state assoc :caret (:caret res) :sel (:sel res)))
+                           (if (:preparing res)
+                             ;; the buffer is a partial document being
+                             ;; hydrated whole: the op waits for the
+                             ;; document (the load watch keeps the
+                             ;; progress in the status bar) and then
+                             ;; goes again — the keystroke is not lost
+                             (-> (wait-whole (:path msg))
+                                 (.then (fn [] (send msg))))
+                             res)))))]
+      (send msg))))
 
 (defn op!
   "Send one narcis.ops message, queued behind everything before it."
@@ -228,7 +272,7 @@
 
 (defn first-visible []
   (let [sc (by-id "scroll")]
-    (js/Math.floor (/ (.-scrollTop sc) (line-h)))))
+    (js/Math.floor (/ (.-scrollTop sc) (px-per-line)))))
 
 (defn caret-pos
   "[line-idx col line-map] for caret in the current window, or nil."
@@ -280,13 +324,14 @@
   (let [win (:win @state)
         pos (caret-pos win (:caret @state))]
     (when pos
-      (let [line-n (:n (nth (:lines win) (first pos)))
-            fv (first-visible)
-            vc (dec (visible-count))
-            sc (by-id "scroll")]
+      (let [sc (by-id "scroll")
+            row-top (+ (* (:start-line win) (px-per-line)) (* (first pos) (line-h)))
+            top (.-scrollTop sc)
+            bottom (+ top (.-clientHeight sc))]
         (cond
-          (< line-n fv) (set! (.-scrollTop sc) (* line-n (line-h)))
-          (>= line-n (+ fv vc)) (set! (.-scrollTop sc) (* (inc (- line-n vc)) (line-h))))))))
+          (< row-top top) (set! (.-scrollTop sc) row-top)
+          (> (+ row-top (line-h)) bottom)
+          (set! (.-scrollTop sc) (+ row-top (line-h) (- (.-clientHeight sc)))))))))
 
 (defn refresh-window! []
   (let [win (:win @state)
@@ -310,11 +355,13 @@
   res)
 
 (defn watch-load!
-  "While any buffer is still loading, re-sync the state about once a
-   second: the window's total grows with the document (the scroll
-   bar grows with it) and the status bar counts the load up."
+  "While any buffer is still loading or being indexed, re-sync the
+   state about once a second: the skeleton's total settles as the
+   scan finishes, the scroll bar takes the document's real height,
+   and the status bar counts the work up."
   []
-  (when (and (seq (:loading @state)) (not (:load-watch @state)))
+  (when (and (or (seq (:loading @state)) (seq (:scanning @state)))
+             (not (:load-watch @state)))
     (swap! state assoc :load-watch true)
     (js/setTimeout (fn []
                      (swap! state assoc :load-watch false)
@@ -324,24 +371,36 @@
 (defn refresh-state!
   "Re-read /api/state (tabs, the active buffer and its caret) and fetch
    its window: the one flow after an op that changes which buffers exist
-   or which is active."
+   or which is active. When the active buffer is the one already on
+   screen, the window is re-fetched where the user is looking — a
+   re-sync (the load watch ticking, a theme change) must not move the
+   view; anchoring at the caret on every tick yanked a reader who had
+   scrolled down back to the caret, which on a fresh open sits at the
+   top of the file. Only a change of buffer (or no window yet) opens
+   at the caret."
   []
-  (-> (get-edn "/api/state")
-      (.then (fn [st]
-               (let [active (:active st)
-                     b (get (:buffers st) active)]
-                 (swap! state assoc :tabs (:tabs st) :path active
-                        :project (:project st) :runtime (or (:runtime st) "Jolt")
-                        :loading (:loading st)
-                        :caret (or (:cursor b) 0) :sel (:sel b)
-                        :theme-choice (or (:theme st) (:theme-choice @state))))
-               (render-title!)
-               (render-tree!)
-               (watch-load!)
-               ;; the window opens at the restored caret, wherever in
-               ;; the file it sits — not at the top of the file
-               (-> (fetch-window! :caret)
-                   (.then (fn [_] (ensure-caret-visible!) (render!))))))))
+  (let [prev-path (:path @state)
+        prev-win (:win @state)]
+    (-> (get-edn "/api/state")
+        (.then (fn [st]
+                 (let [active (:active st)
+                       b (get (:buffers st) active)]
+                   (swap! state assoc :tabs (:tabs st) :path active
+                          :project (:project st) :runtime (or (:runtime st) "Jolt")
+                          :loading (:loading st) :scanning (:scanning st)
+                          :caret (or (:cursor b) 0) :sel (:sel b)
+                          :theme-choice (or (:theme st) (:theme-choice @state)))
+                 (render-title!)
+                 (render-tree!)
+                 (watch-load!)
+                 (if (and (= active prev-path) (seq (:lines prev-win)))
+                   (-> (fetch-window! (:n (first (:lines prev-win))))
+                       (.then (fn [_] (render!))))
+                   ;; a new buffer on screen: the window opens at its
+                   ;; caret, wherever in the file it sits — not at the
+                   ;; top of the file
+                   (-> (fetch-window! :caret)
+                       (.then (fn [_] (ensure-caret-visible!) (render!)))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; rendering: the editor
@@ -391,7 +450,7 @@
             gw (gutter-w (:total-lines win))
             numbers? (:line-numbers s)
             caret-line (when (:focused s) (first (caret-pos win (:caret s))))]
-        (css! box (str "position:absolute;left:0;right:0;top:" (* (:start-line win) lh) "px;"))
+        (css! box (str "position:absolute;left:0;right:0;top:" (* (:start-line win) (px-per-line)) "px;"))
         (doseq [[i line] (map-indexed vector (:lines win))]
           (let [line-no (inc (:n line))
                 bp? (contains? (get-in s [:breakpoints (:path s)] #{}) line-no)
@@ -427,9 +486,9 @@
         win (:win s)
         pos (caret-pos win (:caret s))]
     (when pos
-      (let [[_ col line] pos]
+      (let [[i col _line] pos]
         [(+ (gutter-w (:total-lines win)) code-pad-x (* col (:char-w @metrics)))
-         (* (:n line) (line-h))]))))
+         (+ (* (:start-line win) (px-per-line)) (* i (line-h)))]))))
 
 (defn render-caret! []
   (let [s @state
@@ -516,10 +575,13 @@
                 "")
         loading (when-let [l (get (:loading s) (:path s))]
                   (when (and (:total l) (pos? (:total l)))
-                    (str " · Loading " (quot (* 100 (:loaded l)) (:total l)) "%")))]
+                    (str " · Loading " (quot (* 100 (:loaded l)) (:total l)) "%")))
+        indexing (when-let [l (get (:scanning s) (:path s))]
+                   (when (and (:total l) (pos? (:total l)))
+                     (str " · Indexing " (quot (* 100 (:loaded l)) (:total l)) "%")))]
     (when-let [m (by-id "status-msg")] (set! (.-textContent m) msg))
     (when-let [p (by-id "status-pos")]
-      (set! (.-textContent p) (str (:runtime s) "  " where (or loading ""))))
+      (set! (.-textContent p) (str (:runtime s) "  " where (or loading indexing ""))))
     (when-let [stop (by-id "btn-stop")]
       (set! (.-disabled stop) (= "idle" (:status con))))))
 
@@ -532,7 +594,7 @@
             w (+ gw (* (inc maxlen) (:char-w @metrics)) 40)]
         ;; the gutter's strip runs the pane's whole height, as jonquil's does
         (css! sizer (str "position:relative;min-height:100%;width:" w "px;min-width:100%;height:"
-                         (* (:total-lines win) (line-h)) "px;"
+                         (* (:total-lines win) (px-per-line)) "px;"
                          "background:linear-gradient(to right,var(--strip) " gw "px,transparent " gw "px);")))
       (css! sizer "position:relative;min-height:100%;"))))
 
@@ -1891,7 +1953,10 @@
         y (- (.-clientY e) (.-top rect))
         win (:win @state)]
     (when win
-      (let [line-n (max 0 (min (dec (:total-lines win)) (js/Math.floor (/ y (line-h)))))
+      (let [line-n (max 0 (min (dec (:total-lines win))
+                               (+ (:start-line win)
+                                  (js/Math.floor (/ (- y (* (:start-line win) (px-per-line)))
+                                                    (line-h))))))
             gw (gutter-w (:total-lines win))
             col (js/Math.max 0 (js/Math.round (/ (- x gw code-pad-x) (:char-w @metrics))))
             line (first (filter (fn [l] (= (:n l) line-n)) (:lines win)))]
@@ -2282,7 +2347,7 @@
                      b (get (:buffers st) active)]
                  (swap! state assoc :tabs (:tabs st) :path active
                         :project (:project st) :runtime (or (:runtime st) "Jolt")
-                        :loading (:loading st)
+                        :loading (:loading st) :scanning (:scanning st)
                         :caret (or (:cursor b) 0) :sel (:sel b)
                         :theme-choice (or (:theme st) (:theme-choice @state))))
                (render-title!)

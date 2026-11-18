@@ -336,6 +336,323 @@
             :done? false
             :tail (assoc tail :pending (if hold? "\r" "") :loaded loaded)})))))
 
+;; ---------------------------------------------------------------------------
+;; the skeleton: one scan of the whole file, reads by line
+;;
+;; A big file is not materialized whole to be looked at. One scan of
+;; the file — bytes only, no document built — counts its lines and
+;; its document characters and records a sparse index: the [line
+;; byte char] position of the first line of every stride of lines.
+;; With the count, the file has its full height from the start (the
+;; page's scroll bar is the document's real size while almost none
+;; of it exists as a document); with the index, any stretch of lines
+;; can be read out of the file on demand — the part of the skeleton
+;; the user scrolls to materializes, the rest stays a count.
+;;
+;; Counts are the document's own: a break is \n, or \r not followed
+;; by \n (\r\n is one break and one document character); characters
+;; are document characters (UTF-8 continuation bytes are not
+;; characters). Lines are breaks + 1, as eve.text counts them.
+
+(def scan-stride
+  "Lines between index entries in a file scan."
+  1024)
+
+#?(:clj
+   (defn scan-file!
+     "Scan the file at path on a background thread: answer a
+      host-side state atom {:lines n :chars n :bytes n
+      :total-bytes n :index [[line byte char stream] ...] :done? b
+      :stopped b}, updated as the scan goes — :lines and :chars are
+      the document's counts for the part scanned so far, exact when
+      :done?. An index entry is a line's first position in three
+      units: bytes (to seek by), document characters, and stream
+      characters (what a reader counts — the two differ by the \\n
+      of a \\r\\n pair, which the document counts once and the
+      stream twice; characters are UTF-16 units, as the hosts count
+      them). Set :stopped to abandon the scan early."
+     [path]
+     (let [st (atom {:lines 1 :chars 0 :bytes 0
+                     :total-bytes (file-length path)
+                     :index [[0 0 0 0]] :done? false :stopped false})
+           run (fn []
+                 (try
+                   (with-open [in (java.io.FileInputStream. ^String path)]
+                     (let [buf (byte-array 1048576)]
+                       (loop [line 0 chars 0 stream 0 bytes 0 idx [[0 0 0 0]] prev -1 pending-cr? false]
+                         (if (:stopped @st)
+                           (swap! st assoc :lines (inc line) :chars chars :bytes bytes :index idx)
+                           (let [n (.read in buf)]
+                             (if (neg? n)
+                               (let [line (if pending-cr? (inc line) line)
+                                     idx (if (and pending-cr?
+                                                  (zero? (mod line scan-stride))
+                                                  (not= line (first (peek idx))))
+                                           (conj idx [line bytes chars stream])
+                                           idx)]
+                                 (swap! st assoc :lines (inc line) :chars chars
+                                        :bytes bytes :index idx :done? true))
+                               (let [[line chars stream idx prev pending-cr?]
+                                     (loop [i 0 line line chars chars stream stream idx idx prev prev pending-cr? pending-cr?]
+                                       (if (< i n)
+                                         (let [b (aget buf i)
+                                               ub (bit-and b 0xFF)
+                                               ;; UTF-16 units this byte carries:
+                                               ;; 0 for a continuation byte, 2 for
+                                               ;; the head of a 4-byte sequence
+                                               ;; (a surrogate pair), else 1
+                                               u (cond (= (bit-and ub 0xC0) 0x80) 0
+                                                       (<= 0xF0 ub 0xF7) 2
+                                                       :else 1)
+                                               ;; a \r held from before resolves now:
+                                               ;; followed by \n it was half of one
+                                               ;; break (the \n counts it); alone it
+                                               ;; was a whole break, and the new line
+                                               ;; starts at this byte
+                                               [line idx pending-cr?]
+                                               (if pending-cr?
+                                                 (if (= b 10)
+                                                   [line idx false]
+                                                   (let [line (inc line)
+                                                         idx (if (zero? (mod line scan-stride))
+                                                               (conj idx [line (+ bytes i) chars stream])
+                                                               idx)]
+                                                     [line idx false]))
+                                                 [line idx false])
+                                               ;; the \n of a \r\n pair is no
+                                               ;; document character of its own
+                                               chars (if (and (= b 10) (= prev 13))
+                                                       chars
+                                                       (+ chars u))
+                                               stream (+ stream u)
+                                               line (if (= b 10) (inc line) line)
+                                               idx (if (and (= b 10)
+                                                            (zero? (mod line scan-stride))
+                                                            (not= line (first (peek idx))))
+                                                     (conj idx [line (+ bytes i 1) chars stream])
+                                                     idx)]
+                                           (recur (inc i) line chars stream idx b (= b 13)))
+                                         [line chars stream idx prev pending-cr?]))
+                                     bytes (+ bytes n)]
+                                 (swap! st assoc :lines (inc line) :chars chars
+                                        :bytes bytes :index idx)
+                                 (recur line chars stream bytes idx prev pending-cr?))))))))
+                   (catch #?(:cljs :default :default Throwable) t
+                     (binding [*out* *err*]
+                       (println "narcis: scan of" path "stopped:" (ex-message t))))))]
+       (doto (Thread. ^Runnable run)
+         (.setDaemon true)
+         (.start))
+       st)))
+
+#?(:clj
+   (defn- index-point
+     "The last index entry [line byte char] whose line is at most n."
+     [index n]
+     (loop [lo 0 hi (count index)]
+       (if (< lo hi)
+         (let [mid (quot (+ lo hi) 2)]
+           (if (<= (first (nth index mid)) n)
+             (recur (inc mid) hi)
+             (recur lo mid)))
+         (nth index (max 0 (dec lo)))))))
+
+#?(:clj
+   (defn file-window
+     "Lines [start, start+count) of the file at path, read by the
+      scan's index: {:lines [{:n n :start char :text s}]
+      :stream-start n :stream-end n :total-lines n-or-nil
+      :total-chars n-or-nil}. The text is the document's (breaks
+      stripped, as a document's lines read; :start is a line's
+      document character offset; the last line is present even when
+      it is the empty line a trailing break leaves). :stream-start
+      and :stream-end are the window's span in stream characters —
+      what a reader counts — for a caller resuming a reader where
+      the window ends. Totals are the scan's, present once it has
+      finished. Reading starts from the nearest indexed line at or
+      before start and walks forward, so a window far past the
+      scanned part costs one walk over the lines between — the scan
+      itself is never waited on."
+     [path scan start nlines]
+     (let [[il ib ic isc] (index-point (:index @scan) start)
+           total-lines (when (:done? @scan) (:lines @scan))
+           total-chars (when (:done? @scan) (:chars @scan))
+           ln (atom il) doc (atom ic) stm (atom isc)
+           sb (StringBuilder.) pend (atom false)
+           out (atom []) sstart (atom nil) send (atom nil)
+           emit! (fn [break-units]
+                   (let [t (str sb) n @ln]
+                     (when (and (>= n start) (< n (+ start nlines)))
+                       (swap! out conj {:n n :start @doc :text t})
+                       (when (nil? @sstart) (reset! sstart @stm))
+                       (reset! send (+ @stm (count t) break-units)))
+                     (swap! doc + (count t) 1)
+                     (swap! stm + (count t) break-units)
+                     (swap! ln inc)
+                     (.setLength sb 0)))]
+       (with-open [in (java.io.FileInputStream. ^String path)]
+         (loop [left ib]
+           (when (pos? left)
+             (let [n (.skip in left)]
+               (when (pos? n) (recur (- left n))))))
+         (let [rdr (java.io.InputStreamReader. in "UTF-8")
+               buf (char-array 65536)
+               step (fn step [c]
+                      (cond
+                        (= c \return) (reset! pend true)
+                        (= c \newline) (emit! 1)
+                        :else (.append sb c)))]
+           (loop []
+             (let [n (.read rdr buf)]
+               (if (neg? n)
+                 (do (when @pend
+                       (reset! pend false)
+                       (emit! 1))
+                     (emit! 0))
+                 (do (loop [i 0]
+                       (when (and (< i n) (< @ln (+ start nlines)))
+                         (let [c (aget buf i)]
+                           (if @pend
+                             (do (reset! pend false)
+                                 (if (= c \newline)
+                                   (emit! 2)
+                                   (do (emit! 1) (step c))))
+                             (step c)))
+                         (recur (inc i))))
+                     (when (< @ln (+ start nlines))
+                       (recur))))))))
+       {:lines @out
+        :stream-start (or @sstart @stm)
+        :stream-end (or @send @stm)
+        :total-lines total-lines
+        :total-chars total-chars})))
+
+#?(:clj
+   (defn- index-point-by-char
+     "The last index entry [line byte char] whose char is at most n."
+     [index n]
+     (loop [lo 0 hi (count index)]
+       (if (< lo hi)
+         (let [mid (quot (+ lo hi) 2)]
+           (if (<= (nth (nth index mid) 2) n)
+             (recur (inc mid) hi)
+             (recur lo mid)))
+         (nth index (max 0 (dec lo)))))))
+
+#?(:clj
+   (defn file-line-of
+     "The line holding document character offset in the file at
+      path, counted from the scan's nearest indexed line at or
+      before it (from the file's start when the scan has not got
+      there). A break character belongs to the line it ends; the
+      offset one past the last character is the last line."
+     [path scan offset]
+     (let [[il ib ic] (if scan
+                        (index-point-by-char (:index @scan) offset)
+                        [0 0 0])]
+       (with-open [in (java.io.FileInputStream. ^String path)]
+         (loop [left ib]
+           (when (pos? left)
+             (let [n (.skip in left)]
+               (when (pos? n) (recur (- left n))))))
+         (let [rdr (java.io.InputStreamReader. in "UTF-8")
+               buf (char-array 65536)]
+           (loop [pos ic line il pending-cr? false]
+             (let [n (.read rdr buf)]
+               (if (neg? n)
+                 ;; an offset at the very end is on the last line; a
+                 ;; trailing held \r was a break, so one line more
+                 (if pending-cr? (inc line) line)
+                 (let [r (loop [i 0 pos pos line line pending-cr? pending-cr?]
+                           (if (< i n)
+                             (let [c (aget buf i)
+                                   ;; a held \r resolves against this
+                                   ;; char: half of a pair when this is
+                                   ;; \n (counted by the \n), a whole
+                                   ;; break otherwise — and only then
+                                   ;; does the line turn, before this
+                                   ;; char is placed
+                                   line (if (and pending-cr? (not= c \newline))
+                                          (inc line)
+                                          line)
+                                   pair? (and pending-cr? (= c \newline))]
+                               (cond
+                                 ;; the \n of a \r\n pair holds no
+                                 ;; document position of its own
+                                 pair? (recur (inc i) pos line false)
+                                 (= pos offset) [:at line]
+                                 :else (recur (inc i) (inc pos)
+                                              (if (= c \newline) (inc line) line)
+                                              (= c \return))))
+                             [:more pos line pending-cr?]))]
+                   (if (= :at (first r))
+                     (second r)
+                     (recur (nth r 1) (nth r 2) (nth r 3))))))))))))
+
+;; A find over the file reads it as normalized text a chunk at a
+;; time, in one pass — the same slice walk narcis.ops runs over a
+;; document, over the file's stream instead. Positions are document
+;; character offsets throughout.
+
+#?(:clj
+   (defn- read-normalized-chunk
+     "Read one chunk of rdr as normalized text: {:text s :eof? b
+      :pending s}. A trailing \r is held in :pending (it may be half
+      of a \r\n the next chunk resolves); pass it back in."
+     [^java.io.Reader rdr pending buf]
+     (let [n (.read rdr buf)]
+       (if (neg? n)
+         {:text (normalize-breaks pending) :eof? true :pending ""}
+         (let [s (str pending (String. buf 0 n))
+               hold? (and (pos? (count s))
+                          (= \return (.charAt s (dec (count s)))))]
+           {:text (normalize-breaks (if hold? (subs s 0 (dec (count s))) s))
+            :eof? false
+            :pending (if hold? "\r" "")})))))
+
+#?(:clj
+   (defn file-find-forward
+     "Start of the first match of query at or after document offset
+      from in the file at path, or nil. One streaming pass."
+     [path query from]
+     (let [q (count query)
+           buf (char-array chunk-chars)]
+       (with-open [rdr (java.io.FileReader. ^String path)]
+         (loop [pos 0 carry "" pending ""]
+           (let [{:keys [text eof? pending]} (read-normalized-chunk rdr pending buf)
+                 window (str carry text)
+                 wstart (- pos (count carry))
+                 i (let [i (clojure.string/index-of window query (max 0 (- from wstart)))]
+                     (when (and i (>= (+ wstart i) from)) i))]
+             (cond
+               i (+ wstart i)
+               eof? nil
+               :else (let [keep (min (count window) (max 0 (dec q)))]
+                       (recur (+ wstart (count window)) (subs window (- (count window) keep)) pending)))))))))
+
+#?(:clj
+   (defn file-find-backward
+     "Start of the last match of query beginning before document
+      offset from in the file at path (the whole file when from is
+      nil), or nil. One streaming pass, remembering the last match."
+     [path query from]
+     (let [q (count query)
+           buf (char-array chunk-chars)]
+       (with-open [rdr (java.io.FileReader. ^String path)]
+         (loop [pos 0 carry "" pending "" best nil]
+           (let [{:keys [text eof? pending]} (read-normalized-chunk rdr pending buf)
+                 window (str carry text)
+                 wstart (- pos (count carry))
+                 limit (if (nil? from) Long/MAX_VALUE from)
+                 best (loop [i (clojure.string/index-of window query) best best]
+                        (if (and i (< (+ wstart i) limit))
+                          (recur (clojure.string/index-of window query (inc i)) (+ wstart i))
+                          best))]
+             (if eof?
+               best
+               (let [keep (min (count window) (max 0 (dec q)))]
+                 (recur (+ wstart (count window)) (subs window (- (count window) keep)) pending best)))))))))
+
 #?(:clj
    (defn spit-file!
      "Write doc to path a leaf's worth of lines at a time, each line ended

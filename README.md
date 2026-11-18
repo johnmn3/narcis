@@ -132,8 +132,11 @@ JVM.
 - `src/narcis/buffer.cljc` — the buffers live in the app's one Eve atom,
   each a `BufferState` in a plain map; every mutation is one `swap!` with
   the text op inside it. Opening a file is progressive: the head becomes
-  the buffer at once and the rest arrives on a background load, the
-  document growing as it lands; edits wait for the load to finish.
+  the buffer at once, a background scan gives the file its full height,
+  and a background hydration fills the document in — a scroll to a part
+  the hydration has not reached reads that part out of the file and
+  lands it in the same document, for the hydration to absorb; edits
+  wait for the document to be whole.
 - `src/narcis/` (syntax, edit, structural, commands, ops, eval, console,
   docs, theme, paint, menus, nav, view, debugger, breakpoints, changed,
   instrument-lock) — Jonquil's language core, lifted; `UPSTREAM.md` has
@@ -186,12 +189,11 @@ nightly); on a Jolt without it, it prints SKIP and exits 0, and the corpus'
 live debugger tests take the same skipped path there.
 
 Latest results at the current tip (2026-11-18, Jolt v0.8.23, Eve
-at the pinned public tip — the corpus below was run against a fresh
-clone of that public tree; the sources are `.cljc` now, and the launch above is the
-`jolt narcis` workflow): 248 tests, 1,677 assertions, 0 failures across the corpus
+at the pinned public tip; the sources are `.cljc` now, and the launch above is the
+`jolt narcis` workflow): 258 tests, 1,720 assertions, 0 failures across the corpus
 (the debugger suites included; their live sections take the skipped path
 on this Jolt and run on the nightly); buffer and store gates pass; the
-editor gate passes 27/27; the page gate passes 44/44; the editor e2e
+editor gate passes 28/28; the page gate passes 44/44; the editor e2e
 passes 38/38; the debugger e2e passes 12/12 on the nightly Jolt; the
 viewport gate passes 3/3 with a 1,000,000-line file opening inside a
 60 s run. Over HTTP at 4,000 lines, a keystroke with its repaint measures

@@ -284,55 +284,188 @@
        (swap! (app-atom ed) update :editor (fn [s] (add-tab s path)))))))
 
 ;; ---------------------------------------------------------------------------
-;; progressive file loading: the head is the buffer, the tail arrives
+;; big files: a partial document over a scanned skeleton
 ;;
-;; A load in flight is plain data in the app atom at [:loading path]:
-;; {:id n :loaded-chars n :total-bytes n}. The id names the load: the
-;; background thread runs under the id it was spawned with and stops
-;; when the entry no longer carries it (the buffer was closed, or a
-;; newer load claimed the path). The tail state itself — an open
-;; reader — is host-side, in the loader thread's hands, never in the
-;; atom.
+;; A partial buffer is plain data in the app atom at [:loading
+;; path]: {:id n :loaded-chars n :total-bytes n} — its document
+;; accounts for :loaded-chars of the file's stream characters, and
+;; the entry's presence IS the partiality (it persists, so a buffer
+;; left partial by a dead process reopens partial). The id names a
+;; materialization run: the loader thread runs under the id it was
+;; spawned with and stops when the entry no longer carries it (the
+;; buffer was closed, or a newer run claimed the path). The tail
+;; state itself — an open reader — is host-side, in the loader
+;; thread's hands, never in the atom. Scans are host-side too.
 
 (defonce ^:private load-ids (atom 0))
+(defonce ^:private scans (atom {}))
+(defonce ^:private materializing (atom #{}))
 
-(defn loading?
-  "True while path's file is still arriving (see open-file!)."
+(defn partial?
+  "True while path's document is a prefix of its file (see
+   open-file!): the rest of the file is a skeleton — counted and
+   indexed by its scan, readable by line, not yet a document."
   [ed path]
   (true? ($ (some? (get-in @(:atom (:store ed)) [:loading path])))))
 
+(defn materializing?
+  "True while a loader thread is materializing path's document."
+  [path]
+  (contains? @materializing path))
+
 (defn loading-map
-  "The loads in flight, as plain data: {path {:loaded n :total n}} —
-   stream characters in, of the file's bytes."
+  "The partial buffers, as plain data: {path {:loaded n :total n
+   :active b}} — stream characters in, of the file's bytes;
+   :active while a materialization is running."
   [ed]
   (or ($ (into {}
                (map (fn [[p l]] [p {:loaded (:loaded-chars l)
-                                    :total (:total-bytes l)}]))
+                                    :total (:total-bytes l)
+                                    :active (contains? @materializing p)}]))
                (get @(:atom (:store ed)) :loading)))
       {}))
 
-(defn- claim-load!
-  "Register path's load in the app atom and answer its id."
+(defn scanning-map
+  "The scans in flight, as plain data: {path {:loaded n :total
+   n}} — bytes scanned, of the file's bytes."
+  []
+  (into {}
+        (keep (fn [[p s]]
+                (let [s @s]
+                  (when-not (:done? s)
+                    [p {:loaded (:bytes s) :total (:total-bytes s)}]))))
+        @scans))
+
+(defn skeleton
+  "What is known of path's file beyond its document: {:lines n
+   :chars n :done? b} from its scan — the counts grow as the scan
+   goes and are exact when :done?. Nil when there is no scan (a
+   whole buffer, or one not opened from a file)."
+  [path]
+  (when-let [s (get @scans path)]
+    (let [s @s]
+      {:lines (:lines s) :chars (:chars s) :done? (:done? s)})))
+
+(defn scan-of
+  "Path's scan state atom, or nil."
+  [path]
+  (get @scans path))
+
+(defn- start-scan! [path]
+  (or (get @scans path)
+      (let [s (text/scan-file! path)]
+        (swap! scans assoc path s)
+        s)))
+
+(defn- stop-scan! [path]
+  (when-let [s (get @scans path)]
+    (swap! s assoc :stopped true)
+    (swap! scans dissoc path)))
+
+(defn- claim-partial!
+  "Register path's partiality in the app atom and answer the run id."
   [ed path loaded-chars total-bytes]
   (let [id (swap! load-ids inc)]
     (swap! (app-atom ed) assoc-in [:loading path]
            {:id id :loaded-chars loaded-chars :total-bytes total-bytes})
     id))
 
+;; ---------------------------------------------------------------------------
+;; just-in-time extents: pieces of the file a view asked for, landed
+;; in the same rope the background hydration is filling
+;;
+;; [:extents path] in the app atom: {start-line {:doc d :chars n
+;; :lines n :start-char n :start-stream n :stream-chars n}} — a
+;; stretch of the file read out for a view (narcis.launcher's
+;; window), built into a document so the hydration absorbs it by
+;; reference when its frontier reaches it (run-load!) instead of
+;; reading those lines again. Extents never reach the file's last
+;; line: a stretch short of it always ends on a break, which keeps
+;; an extent's text uniform (every line with its ending). Positions
+;; are kept in both units the file is counted in: document
+;; characters (:start-char, :chars) and stream characters
+;; (:start-stream, :stream-chars) — they differ by the \n of a
+;; \r\n pair.
+
+(defn extents
+  "Path's just-in-time extents, as stored (see the section note)."
+  [ed path]
+  (or ($ (get-in @(:atom (:store ed)) [:extents path])) {}))
+
+(defn- extent-doc-for
+  "The document of file-window lines: every line with its break,
+   as the file holds them. Built where documents are built:
+   inside a swap."
+  [lines]
+  (text/from-string (apply str (map (fn [l] (str (:text l) "\n")) lines))))
+
+(defn note-extent!
+  "Land lines read out of path's file for a view as an extent (see
+   the section note). lines are one stretch of file-window lines
+   ({:n :start :text}); stream-start and stream-end are the
+   stretch's span in stream characters, as file-window reports
+   them. A stretch an existing extent already covers — or merely
+   overlaps — is left unnoted (the view was served either way); a
+   fresh stretch merges with any extent it touches end to end."
+  [ed path lines stream-start stream-end]
+  (when (seq lines)
+    (swap! (app-atom ed)
+           (fn [app]
+             (let [exts (get-in app [:extents path] {})
+                   a (:n (first lines))
+                   b (inc (:n (peek lines)))
+                   overlap? (boolean
+                             (some (fn [[s e]]
+                                     (and (< s b) (< a (+ s (:lines e)))))
+                                   exts))]
+               (if overlap?
+                 app
+                 (let [e {:doc (extent-doc-for lines)
+                          :chars (reduce + (map (fn [l] (inc (count (:text l)))) lines))
+                          :lines (count lines)
+                          :start-char (:start (first lines))
+                          :start-stream stream-start
+                          :stream-chars (- stream-end stream-start)}
+                       ;; merge with an extent ending at a
+                       [exts e a] (if-let [[ps pe] (some (fn [[s x]]
+                                                           (when (= (+ s (:lines x)) a) [s x]))
+                                                         exts)]
+                                    [(dissoc exts ps)
+                                     {:doc (text/replace (:doc pe) (:chars pe) (:chars pe) (:doc e))
+                                      :chars (+ (:chars pe) (:chars e))
+                                      :lines (+ (:lines pe) (:lines e))
+                                      :start-char (:start-char pe)
+                                      :start-stream (:start-stream pe)
+                                      :stream-chars (+ (:stream-chars pe) (:stream-chars e))}
+                                     ps]
+                                    [exts e a])
+                       ;; and with one starting at b
+                       exts (if-let [ne (get exts b)]
+                              (assoc (dissoc exts b) a
+                                     {:doc (text/replace (:doc e) (:chars e) (:chars e) (:doc ne))
+                                      :chars (+ (:chars e) (:chars ne))
+                                      :lines (+ (:lines e) (:lines ne))
+                                      :start-char (:start-char e)
+                                      :start-stream (:start-stream e)
+                                      :stream-chars (+ (:stream-chars e) (:stream-chars ne))})
+                              (assoc exts a e))]
+                   (assoc-in app [:extents path] exts))))))))
+
 #?(:clj
    (defn- run-load!
-     "The background half of a progressive open: append the tail's
-      chunks to path's document, one swap per chunk, until the file
-      is in or the load's entry leaves the app atom. The reading is
-      done out here (plain IO); the appending is done inside the
-      swap, on the document the buffer holds at that moment — while
-      a buffer loads its edits are refused (narcis.ops), so nothing
+     "A materialization run: append the tail's chunks to path's
+      document, one swap per chunk, until the file is in or the
+      partial entry leaves the app atom. The reading is done out
+      here (plain IO); the appending is done inside the swap, on
+      the document the buffer holds at that moment — while a buffer
+      materializes its edits are refused (narcis.ops), so nothing
       else moves its root, and a retried swap re-appends the same
-      piece to the same document. A stopped load (a read failure)
+      piece to the same document. A stopped run (a read failure)
       clears its entry and says so on the server's err: the buffer
       stays, holding what arrived."
      [ed path load-id tail]
-     (let [tail-box (atom tail)]
+     (let [tail-box (atom tail)
+           absorbed-to (volatile! nil)]
        (try
          (loop []
            (let [entry ($ (get-in @(:atom (:store ed)) [:loading path]))]
@@ -348,12 +481,57 @@
                                   root (-root b)
                                   root' (if piece
                                           (text/insert root (text/chars root) piece)
-                                          root)]
+                                          root)
+                                  ;; absorb any extent the frontier has
+                                  ;; reached: its part from the frontier
+                                  ;; line on goes onto the rope by
+                                  ;; reference, and the run's count jumps
+                                  ;; to the extent's end in stream chars
+                                  [root' loaded-chars exts]
+                                  (loop [root root' loaded loaded-chars
+                                         exts (get-in app [:extents path] {})]
+                                    (let [[s e] (first (sort-by key exts))
+                                          fl (text/lines root)]
+                                      (if (or (nil? e) (> s fl))
+                                        [root loaded exts]
+                                        (cond
+                                          ;; the chunks hydrated it already
+                                          (<= (+ s (:lines e)) fl)
+                                          (recur root loaded (dissoc exts s))
+
+                                          ;; an extent whose start does not
+                                          ;; sit where the file says is stale
+                                          (not= (text/line-start-offset root s)
+                                                (:start-char e))
+                                          (recur root loaded (dissoc exts s))
+
+                                          :else
+                                          (let [edoc (:doc e)
+                                                part (if (= fl s)
+                                                       edoc
+                                                       (text/from-string
+                                                        (text/slice-string
+                                                         edoc
+                                                         (text/line-start-offset edoc (- fl s))
+                                                         (text/chars edoc))))
+                                                root (text/replace root (text/chars root)
+                                                                   (text/chars root) part)
+                                                end (+ (:start-stream e) (:stream-chars e))]
+                                            (vreset! absorbed-to end)
+                                            (recur root end (dissoc exts s)))))))]
                               (cond-> (assoc-in app [:buffers path]
                                                 (with-state b {:root root'}))
+                                true (assoc-in [:extents path] exts)
                                 done? (update :loading dissoc path)
+                                done? (update :extents dissoc path)
                                 (not done?) (assoc-in [:loading path :loaded-chars] loaded-chars)))
                             app)))
+                 ;; an absorption moved the run past where the reader
+                 ;; stands: resync it to the extent's end
+                 (when (and (not done?) @absorbed-to (> @absorbed-to loaded-chars))
+                   (text/ingest-tail-close @tail-box)
+                   (reset! tail-box (text/ingest-tail path @absorbed-to)))
+                 (vreset! absorbed-to nil)
                  (when-not done?
                    (recur))))))
          (catch #?(:cljs :default :default Throwable) t
@@ -365,43 +543,80 @@
                       (update app :loading dissoc path)
                       app))))
          (finally
-           (text/ingest-tail-close @tail-box))))))
+           (text/ingest-tail-close @tail-box)
+           (swap! materializing disj path)
+           ;; the entry is gone when the run finished (or the buffer
+           ;; closed under it): the skeleton has served its turn
+           (when-not (partial? ed path)
+             (stop-scan! path)))))))
 
 #?(:clj
    (defn- start-load!
-     "Spawn path's background load on its own daemon thread."
+     "Spawn path's materialization on its own daemon thread."
      [ed path load-id tail]
      (doto (Thread. ^Runnable (fn [] (run-load! ed path load-id tail)))
        (.setDaemon true)
        (.start))))
 
-(defn open-file!
-  "Open a file from disk, progressively: the file's head (about
-   64 KB) is read synchronously and becomes the buffer, open and
-   viewable at once; the rest is appended by a background load, a
-   chunk at a time (loading? says whether it is still arriving).
-   While a buffer loads, its edits and saves are refused
-   (narcis.ops): an edit would race the load's appends, and a save
-   would write a partial document over the file.
+#?(:clj
+   (defn materialize!
+     "Start materializing path's whole document (see the section
+      note): the file's tail appended by a background loader, from
+      where the document stops. Answers true when the buffer is
+      partial — a run already going counts; false when it is whole
+      and there was nothing to start."
+     [ed path]
+     (if (partial? ed path)
+       (do (when-not (materializing? path)
+             (let [entry ($ (get-in @(:atom (:store ed)) [:loading path]))
+                   tail (text/ingest-tail path (:loaded-chars entry))
+                   id (claim-partial! ed path (:loaded-chars entry) (:total-bytes entry))]
+               (swap! materializing conj path)
+               (start-load! ed path id tail)))
+           true)
+       false)))
 
-   Opening a path whose load was interrupted (the process died
-   mid-load) resumes the load where the buffer's contents stop —
-   unless the file's size changed meanwhile, in which case the
-   load restarts from the head."
+(defn line-of
+  "The line holding char offset in path's buffer: counted in the
+   document when the offset is in it; in the file, by its scan's
+   index, when the buffer is partial and the offset is past the
+   document."
+  [ed path offset]
+  (let [line (read ed path
+                   (fn [{doc :root}]
+                     (when (<= offset (text/chars doc))
+                       (:line (text/line-of doc offset)))))]
+    (or line
+        (text/file-line-of path (scan-of path) offset))))
+
+(defn open-file!
+  "Open a file from disk: its head (about 64 KB) is read
+   synchronously and becomes the buffer, open and viewable at
+   once. A bigger file opens partial: a background hydration
+   appends the rest to the document a chunk at a time, and
+   meanwhile the unhydrated rest is a skeleton — a background
+   scan counts and indexes it (see the section note), any stretch
+   of it reads out of the file on demand for a view and lands in
+   the same document as an extent for the hydration to absorb.
+   A file that fits its head opens whole, as any small file does.
+
+   Reopening a buffer left partial (the process died, or the app
+   closed mid-way) resumes its hydration where the document
+   stops — unless the file's size changed meanwhile, in which
+   case the open restarts from the head."
   ([ed path] (open-file! ed path {}))
   ([ed path {:keys [head]}]
    (cond
-     (and (open? ed path) (not (loading? ed path)))
+     (and (open? ed path) (not (partial? ed path)))
      (activate! ed path)
 
      (open? ed path)
      (let [entry ($ (get-in @(:atom (:store ed)) [:loading path]))
            size (text/file-length path)]
        (if (and entry (= size (:total-bytes entry)))
-         (let [tail (text/ingest-tail path (:loaded-chars entry))
-               id (claim-load! ed path (:loaded-chars entry) (:total-bytes entry))]
-           (start-load! ed path id tail)
-           (activate! ed path))
+         (do (start-scan! path)
+             (materialize! ed path)
+             (activate! ed path))
          (do (close-buffer! ed path)
              (open-file! ed path {:head head}))))
 
@@ -415,13 +630,18 @@
               (fn [_] (->BufferState (text/from-pieces pieces) 0 nil nil nil eol 0 0 gen 0 0)))
        (swap! (app-atom ed) update :editor (fn [s] (add-tab s path)))
        (when-not done?
-         (let [id (claim-load! ed path loaded-chars total-bytes)]
-           (start-load! ed path id tail)))))))
+         (let [id (claim-partial! ed path loaded-chars total-bytes)]
+           (swap! materializing conj path)
+           (start-load! ed path id tail)
+           (start-scan! path)))))))
 
 (defn close-buffer! [ed path]
+  (stop-scan! path)
   (swap! (app-atom ed) (fn [app] (cond-> (update app :buffers dissoc path)
                                    (contains? app :loading)
-                                   (update :loading dissoc path))))
+                                   (update :loading dissoc path)
+                                   (contains? app :extents)
+                                   (update :extents dissoc path))))
   (swap! (app-atom ed) update :editor (fn [s] (let [tabs (vec (remove #(= % path) (:tabs s)))]
                           (bump-editor
                            (-> s
