@@ -153,6 +153,14 @@
 
 (defonce op-chain (atom (js/Promise.resolve nil)))
 
+(defonce batch-close-requested
+  ;; Set by op!/chain-step! when work queues behind a pending typing
+  ;; batch (the batch lives further down, by typed!): the batch's
+  ;; flush step then closes the burst at once instead of waiting out
+  ;; its pause, so queued work never jumps ahead of the text — nor
+  ;; the text of the brackets it belongs inside.
+  (atom false))
+
 (defn chained
   "Run thunk (a fn answering a promise) after every request queued
    before it. Requests go to the server one at a time, in the order the
@@ -162,38 +170,43 @@
     (reset! op-chain (.catch p (fn [_] nil)))
     p))
 
-(defn op!
-  "Send one narcis.ops message. An op on the current buffer carries the
-   page's caret and selection, read when the op actually runs (three
-   fast keystrokes would otherwise all carry the same caret); an op that
-   names its own :path goes as it is."
+(defn op-send!
+  "One op's send, unqueued: an op on the current buffer carries the
+   page's caret and selection, read as they stand when the send runs;
+   an op that names its own :path goes as it is. The reply's caret is
+   adopted only when the user has not moved since the send read it.
+   Callers queue the send (op!, the typing batch's flush)."
   [msg]
-  (chained
-   (fn []
-     (let [s @state
-           own? (not (contains? msg :path))
-           msg (if own?
-                 (assoc msg :path (:path s) :caret (:caret s) :sel (:sel s))
-                 msg)
-           carried-caret (:caret msg)
-           carried-sel (:sel msg)]
-       ;; this op carries the caret: a caret sync still waiting has nothing
-       ;; left to say (and sent later it would say a caret that has moved)
-       (when own?
-         (when-let [t (:sync-timer s)] (js/clearTimeout t))
-         (swap! state assoc :sync-timer nil))
-       (-> (fetch-edn "/api/op" #js {:method "POST" :body (pr-str msg)})
-           (.then (fn [res]
-                    ;; adopt the reply's caret only when the user has not
-                    ;; moved since this op read it: a reply that lands
-                    ;; after an arrow key or a click must not drag the
-                    ;; caret back to where the op left it (the user's
-                    ;; pending sync tells the server where they went)
-                    (when (and (:ok res) (contains? res :caret) (= (:path msg) (:path @state))
-                               (= (:caret @state) carried-caret)
-                               (= (:sel @state) carried-sel))
-                      (swap! state assoc :caret (:caret res) :sel (:sel res)))
-                    res)))))))
+  (let [s @state
+        own? (not (contains? msg :path))
+        msg (if own?
+              (assoc msg :path (:path s) :caret (:caret s) :sel (:sel s))
+              msg)
+        carried-caret (:caret msg)
+        carried-sel (:sel msg)]
+    ;; this op carries the caret: a caret sync still waiting has nothing
+    ;; left to say (and sent later it would say a caret that has moved)
+    (when own?
+      (when-let [t (:sync-timer s)] (js/clearTimeout t))
+      (swap! state assoc :sync-timer nil))
+    (-> (fetch-edn "/api/op" #js {:method "POST" :body (pr-str msg)})
+        (.then (fn [res]
+                 ;; adopt the reply's caret only when the user has not
+                 ;; moved since this op read it: a reply that lands
+                 ;; after an arrow key or a click must not drag the
+                 ;; caret back to where the op left it (the user's
+                 ;; pending sync tells the server where they went)
+                 (when (and (:ok res) (contains? res :caret) (= (:path msg) (:path @state))
+                            (= (:caret @state) carried-caret)
+                            (= (:sel @state) carried-sel))
+                   (swap! state assoc :caret (:caret res) :sel (:sel res)))
+                 res)))))
+
+(defn op!
+  "Send one narcis.ops message, queued behind everything before it."
+  [msg]
+  (reset! batch-close-requested true)
+  (chained (fn [] (op-send! msg))))
 
 (defn chain-step!
   "Queue f behind every op already in the chain. The page's one
@@ -204,6 +217,7 @@
    typing abcdef at a line end and pressing Left twice mid-queue
    landed the last four letters before the line's last character)."
   [f]
+  (reset! batch-close-requested true)
   (chained f))
 
 ;; ---------------------------------------------------------------------------
@@ -1700,6 +1714,68 @@
       (and (= k "F6") (not shift)) (run "focus/toggle")
       :else false)))
 
+;; ---------------------------------------------------------------------------
+;; typing, batched: plain characters collect and go as ONE :insert-text
+;; op — one swap on the server, one undo step — once the burst pauses
+;; (batch-quiet-ms) or has run batch-max-ms. The structural characters
+;; :type-char treats specially (the pairs and the quote) and typing
+;; while the completion menu is open keep the per-character path. The
+;; flush is a step on the op chain, so it stays in press order with
+;; caret moves and every other op: characters typed before a move are
+;; sent before it, at the caret they were typed at. Anything queueing
+;; behind a pending burst — a bracket, a move, any op — closes the
+;; burst at once (batch-close-requested): the wait is only ever for
+;; more plain characters, never a wall other work piles up behind
+;; (measured without it: (defn twice [x] (* 2 x)) landed as
+;; (defn twice x * 2 x[]()) — every bracket queued behind the burst's
+;; pause while the text collected, then ran after it).
+
+(def ^:private batch-quiet-ms 120)
+(def ^:private batch-max-ms 600)
+(defonce ^:private type-batch (atom {:text "" :first 0 :last 0 :queued? false}))
+
+(defn- flush-step!
+  "The batch's step on the op chain: wait out the burst, then send
+   what collected as one :insert-text op."
+  []
+  (chained
+   (fn []
+     (js/Promise.
+      (fn [resolve]
+        (letfn [(check []
+                  (let [b @type-batch
+                        now (js/Date.now)]
+                    (if (or @batch-close-requested
+                            (>= (- now (:last b)) batch-quiet-ms)
+                            (>= (- now (:first b)) batch-max-ms))
+                      (let [t (:text b)]
+                        (reset! batch-close-requested false)
+                        (swap! type-batch assoc :text "" :queued? false)
+                        (if (seq t)
+                          (-> (op-send! {:op :insert-text :text t})
+                              (.then (fn [res]
+                                       (after-op! res)
+                                       (refresh-complete!)
+                                       (resolve res))))
+                          (resolve nil)))
+                      (js/setTimeout check 25))))]
+          (check)))))))
+
+(defn type-batched!
+  "One plain typed character into the batch, queueing the flush step
+   when a burst starts."
+  [ch]
+  (let [now (js/Date.now)]
+    (when (empty? (:text @type-batch))
+      (reset! batch-close-requested false))
+    (swap! type-batch (fn [b]
+                        (if (seq (:text b))
+                          (assoc b :text (str (:text b) ch) :last now)
+                          (assoc b :text (str ch) :first now :last now))))
+    (when-not (:queued? @type-batch)
+      (swap! type-batch assoc :queued? true)
+      (flush-step!))))
+
 (defn complete-key!
   "Keys the completion popup takes while it is open. True when taken."
   [e]
@@ -1774,7 +1850,10 @@
         (= k "Home") (do (.preventDefault e) (line-edge! false shift))
         (= k "End") (do (.preventDefault e) (line-edge! true shift))
 
-        (and (not cmd) (not alt) (= 1 (count k))) (typed! {:op :type-char :ch k})
+        (and (not cmd) (not alt) (= 1 (count k)))
+        (if (or (:complete s) (contains? #{"(" ")" "[" "]" "{" "}" "\""} k))
+          (typed! {:op :type-char :ch k})
+          (do (.preventDefault e) (type-batched! k)))
 
         :else nil))))
 
