@@ -87,22 +87,25 @@
 (defn font [] (str (font-px) "px " mono))
 (def overscan 45)
 
-;; Wheel scrolling is capped in LINES, not pixels. The browser
-;; scrolls the element by the wheel's pixel delta, and a line's
-;; slot in the scroll space shrinks as the file grows (px-per-line),
-;; so the same notch carries more and more lines the bigger the
-;; buffer gets — on a 1 GB file one notch replaced most of the
-;; visible page and a flick was unreadable. The wheel handler
-;; below owns the delta instead: it converts the delta to lines
-;; and spends from a bucket that refills at wheel-rate lines per
-;; second up to a burst of wheel-burst lines, so one notch is
-;; always about the same travel whatever the file's size, fast
-;; spinning still moves fast, and nothing moves faster than the
-;; cap. On an unscaled file a notch is a few lines and never
-;; reaches the bucket at all.
-(def wheel-burst-lines 24)
-(def wheel-rate-lines 360)
-(def wheel-bucket (atom {:lines wheel-burst-lines :at 0}))
+;; Wheel scrolling has two regimes, divided by speed. SLOW
+;; travel is absolute: the wheel's travel moves the text by the
+;; same amount on every file, so inching through a passage feels
+;; identical whatever the buffer's size — the earlier line-based
+;; cap broke this, because a budget denominated in lines buys
+;; fewer pixels the bigger the file gets, and the gig file crept
+;; where the small file glided. Only past the threshold does
+;; travel become relative to the buffer: the excess demand is
+;; spent at the file's compressed rate, a line per px-per-line
+;; of wheel travel, so spinning the wheel flies through a big
+;; file the way it should. The boundary is a bucket of text
+;; pixels: it refills at wheel-absolute-rate pixels per second
+;; up to a burst of wheel-burst-px, demand spends from it at
+;; par, and whatever demand overflows the bucket converts at
+;; the compressed rate. On an unscaled file the two rates are
+;; the same rate and the regimes are indistinguishable.
+(def wheel-burst-px 160)
+(def wheel-absolute-rate 700)
+(def wheel-bucket (atom {:px wheel-burst-px :at 0}))
 
 (def theme-cycle-fallback
   ["light" "dark" "solarized" "navy" "gruvbox-dark" "gruvbox-light"
@@ -321,30 +324,35 @@
           (+ (:start-line win) (js/Math.floor (/ rel (line-h)))))))))
 
 (defn on-wheel
-  "The wheel cap described at wheel-burst-lines: translate the
-   event's delta to lines, spend what the bucket holds, and set
-   the scroll offset directly (the scroll handler then fetches
-   as usual). Ctrl-wheel is the browser's zoom gesture and is
-   left alone."
+  "The two wheel regimes described at wheel-burst-px: the
+   event's delta is first made into text pixels (a line-mode
+   delta counts a text line per unit, a page-mode delta a
+   viewport per unit), the part the bucket covers moves the
+   scroll offset at par, and any overflow converts at the
+   file's compressed rate — the offset advances by the overflow
+   times the scale factor, which traverses a line per
+   px-per-line of it. The scroll handler then fetches as usual.
+   Ctrl-wheel is the browser's zoom gesture and is left alone."
   [e]
   (when (and (not (.-ctrlKey e)) (not (zero? (.-deltaY e))))
     (.preventDefault e)
     (let [sc (by-id "scroll")
-          ppl (px-per-line)
           want (case (.-deltaMode e)
-                 1 (.-deltaY e)
-                 2 (* (.-deltaY e)
-                      (js/Math.ceil (/ (.-clientHeight sc) ppl)))
-                 (/ (.-deltaY e) ppl))
+                 1 (* (.-deltaY e) (line-h))
+                 2 (* (.-deltaY e) (.-clientHeight sc))
+                 (.-deltaY e))
           now (.now js/performance)
           b @wheel-bucket
-          avail (min wheel-burst-lines
-                     (+ (:lines b)
-                        (* (- now (:at b)) (/ wheel-rate-lines 1000))))
-          spend (max (- avail) (min avail want))]
-      (reset! wheel-bucket {:lines (- avail (js/Math.abs spend)) :at now})
-      (when-not (zero? spend)
-        (set! (.-scrollTop sc) (+ (.-scrollTop sc) (* spend ppl)))))))
+          avail (min wheel-burst-px
+                     (+ (:px b)
+                        (* (- now (:at b)) (/ wheel-absolute-rate 1000))))
+          spend (max (- avail) (min avail want))
+          excess (- want spend)]
+      (reset! wheel-bucket {:px (- avail (js/Math.abs spend)) :at now})
+      (set! (.-scrollTop sc)
+            (+ (.-scrollTop sc)
+               spend
+               (* excess (/ (line-h) (px-per-line))))))))
 
 (defn caret-pos
   "[line-idx col line-map] for caret in the current window, or nil."
