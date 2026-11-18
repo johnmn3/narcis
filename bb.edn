@@ -37,12 +37,24 @@
           (throw (ex-info "No Eve checkout found: set EVE_RELEASE to a checkout of Eve (one with hosts.edn in it)." {})))
         (let [hosts (edn/read-string (slurp (fs/file eve "hosts.edn")))]
           (str/join ":" (map (fn [r] (str (fs/file eve r)))
-                             (cons "src" (:jolt hosts))))))))
+                             (cons "src" (:jolt hosts)))))))
+
+    (defn launch
+      "Start narcis.launcher with this task's command-line args. With
+       no args the launcher's own defaults rule: the store in ./data,
+       port 8377, the current directory as the project, no file open
+       beyond the ones the store's session already has."
+      []
+      (apply shell "jolt" "-Scp" (str (eve-jolt-cp) ":src")
+             "-m" "narcis.launcher" *command-line-args*)))
+
+  narcis
+  {:doc "Launch Narcis: jolt narcis [--dir data] [--port 8377] [--file file.clj] [--project dir]"
+   :task (launch)}
 
   app:run
   {:doc "Launch Narcis, optionally opening a file: jolt app:run [--dir data] [--port 8377] [--file file.clj]"
-   :task (apply shell "jolt" "-Scp" (str (eve-jolt-cp) ":src")
-                "-m" "narcis.launcher" *command-line-args*)}
+   :task (launch)}
 
   app:test
   {:doc "Run the test corpus: jolt app:test"

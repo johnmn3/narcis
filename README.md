@@ -41,12 +41,28 @@ git clone https://github.com/johnmn3/narcis.git ~/narcis-app
 ```
 
 ```bash
-cd ~/narcis-app && jolt app:run --dir ~/narcis-app/data --port 8377 --file <path-to-a-clj-file>
+cd ~/narcis-app && jolt narcis
 ```
 
-`jolt app:run` is this repo's workflow task (in `bb.edn`, the way
-Jonquil's is): it composes Eve's Jolt classpath from the Eve checkout's
-own `hosts.edn` and starts `narcis.launcher` on it. The test corpus is
+That's the whole ceremony. The app opens in your browser on the
+current directory, on port 8377, with no file forced open. Files you
+open stay open: the session — open files, carets, undo history —
+lives in Eve disk atoms under `./data` and comes back on the next
+launch.
+
+When you do want to make a big deal out of it, every knob is there
+(`jolt app:run` is the same launch under its longer name):
+
+```bash
+jolt app:run --dir ~/narcis-app/data --port 8377 --file <path-to-a-clj-file>
+```
+
+Both spellings are this repo's workflow tasks (in `bb.edn`, the way
+Jonquil's are): the launch composes Eve's Jolt classpath from the Eve
+checkout's own `hosts.edn` and starts `narcis.launcher` on it;
+`--dir` is where the Eve disk atoms live, and `--project` picks the
+folder the file tree shows (default: the current directory). The
+test corpus is
 `jolt app:test`; `jolt tasks` lists what there is.
 
 The launcher opens `http://127.0.0.1:8377/` in your browser (open it yourself
