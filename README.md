@@ -75,11 +75,9 @@ A store made by an earlier Narcis (its buffers were `narcis.rope` trees) is
 not read: this layout's store has its own name inside `--dir`, and the old
 files are left as they are.
 
-One honest note on the store: the buffer domain is opened with Eve's
-journal off. Every commit is still forced to disk, but an editor commits on
-every keystroke, and at the current Eve pin the journaled path measured
-600 keystrokes in 73 s against 5.5 s without it. `narcis.store-eve`'s
-`domain-opts` are the opener's to change.
+The store is a regular Eve disk domain at `--dir`, opened with Eve's
+defaults, journal included; its atoms hold the buffers and the editor
+state.
 
 ## Using it
 

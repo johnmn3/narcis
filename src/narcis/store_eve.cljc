@@ -61,35 +61,13 @@
           (swap! atoms assoc k a)
           a))))
 
-(defn open [{:keys [dir name domain-opts]}]
-  (let [base (str dir "/" name)
-        ;; Force the domain into existence now (S2 lifecycle:
-        ;; the domain is created at open, closed at close!),
-        ;; sized for editor-scale trees: the same capacities +
-        ;; coalescing-descriptor count narcis.rope's standalone
-        ;; heap domain measured out — with Eve's defaults a
-        ;; 1e6-line ingest spends its time growing regions and
-        ;; walls at ~450k lines (Eve's error names the parameter;
-        ;; sizing a domain for its workload is the opener's job).
-        ;; (The domain opener creates the path's directories itself.)
-        ;; Durability: every commit is durable (Eve forces the pages
-        ;; it touched and the root before the swap answers), without
-        ;; the journal file. An editor commits on every keystroke, and
-        ;; with the journal 600 keystrokes took 73 s on Jolt at this
-        ;; pin — one commit in eight over 50 ms, some over a second —
-        ;; against 5.5 s without it, none over 40 ms.
-        ;; domain-opts are eve.atom/persistent-atom-domain's
-        ;; own (:durable? :journal? :journal-batch ...), for an opener
-        ;; that wants otherwise.
-        _ (apply ea/persistent-atom-domain
-                 base
-                 (mapcat identity
-                         (merge {:capacities {0 (* 16 1024 1024) 1 (* 8 1024 1024)
-                                              2 (* 8 1024 1024) 3 (* 32 1024 1024)
-                                              4 (* 8 1024 1024) 5 (* 8 1024 1024)}
-                                 :coalesc-descriptors 262144
-                                 :journal? false}
-                                domain-opts)))]
+(defn open [{:keys [dir name]}]
+  (let [base (str dir "/" name)]
+    ;; A regular Eve disk domain at base, with Eve's defaults —
+    ;; journal included. Opening it now is the store's lifecycle:
+    ;; the domain is created at open, closed at close!. The store's
+    ;; atoms are regular Eve atoms in it (see named-atom).
+    (ea/persistent-atom-domain base)
     {:impl :eve :base base :atoms (atom {})}))
 
 (defn put! [store buffer-name value]
