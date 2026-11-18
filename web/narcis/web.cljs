@@ -242,8 +242,12 @@
       (:lines win)))))
 
 (defn fetch-window!
-  "Fetch a window covering line `around`, then re-render. Never moves
-   the caret. Serialized: a fetch in flight records the newest want and
+  "Fetch a window covering line `around`, then re-render. `around` may
+   be :caret, which asks the server to anchor the window at the line
+   holding the caret — the only way to bring the caret into view when
+   it sits outside the window the page holds, since the page cannot
+   turn a char offset into a line number on its own. Never moves the
+   caret. Serialized: a fetch in flight records the newest want and
    follows up. Always returns a promise."
   [around]
   (let [s @state]
@@ -251,13 +255,15 @@
       (do (swap! state assoc :want-start around)
           (js/Promise. (fn [resolve _]
                          (js/setTimeout (fn [] (resolve (:win @state))) 80))))
-      (let [start (max 0 (- around overscan))
-            cnt (+ (visible-count) (* 2 overscan))
+      (let [cnt (+ (visible-count) (* 2 overscan))
             path (:path s)]
         (if path
           (do (swap! state assoc :fetching true)
               (-> (get-edn (str "/api/window?path=" (js/encodeURIComponent path)
-                                "&start=" start "&count=" cnt))
+                                (if (= around :caret)
+                                  (str "&caret=" (:caret s))
+                                  (str "&start=" (max 0 (- around overscan))))
+                                "&count=" cnt))
                   (.then (fn [win]
                            (swap! state assoc :win win :fetching false)
                            (render!)
@@ -284,9 +290,14 @@
 
 (defn refresh-window! []
   (let [win (:win @state)
-        pos (caret-pos win (:caret @state))
-        around (if pos (:n (nth (:lines win) (first pos))) (or (:start-line win) 0))]
-    (fetch-window! around)))
+        pos (caret-pos win (:caret @state))]
+    (if pos
+      (fetch-window! (:n (nth (:lines win) (first pos))))
+      ;; the caret is outside the window the page holds (a restored
+      ;; session, a find or an undo that jumped across the file):
+      ;; re-anchoring at the old window would leave it there, with no
+      ;; caret and no position to show — fetch at the caret instead
+      (fetch-window! :caret))))
 
 (defn after-op! [res]
   (if (:ok res)
@@ -311,10 +322,12 @@
                         :project (:project st) :runtime (or (:runtime st) "Jolt")
                         :caret (or (:cursor b) 0) :sel (:sel b)
                         :theme-choice (or (:theme st) (:theme-choice @state))))
-               (set! (.-scrollTop (by-id "scroll")) 0)
                (render-title!)
                (render-tree!)
-               (fetch-window! 0)))))
+               ;; the window opens at the restored caret, wherever in
+               ;; the file it sits — not at the top of the file
+               (-> (fetch-window! :caret)
+                   (.then (fn [_] (ensure-caret-visible!) (render!))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; rendering: the editor
@@ -2259,5 +2272,8 @@
       (.then (fn [payload]
                (apply-theme! payload)
                (poll-console!)
-               (fetch-window! 0)
+               ;; open at the restored caret, wherever in the file it
+               ;; sits — the same anchoring refresh-state! does
+               (-> (fetch-window! :caret)
+                   (.then (fn [_] (ensure-caret-visible!) (render!))))
                (focus-editor!)))))

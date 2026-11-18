@@ -20,6 +20,7 @@
             [narcis.menus :as menus]
             [narcis.ops :as ops]
             [narcis.store :as store]
+            [narcis.text :as text]
             [narcis.theme :as theme]
             [narcis.view :as view]
             [clojure.edn :as edn]
@@ -255,7 +256,17 @@
                         [404 (pr-str {:ok false :error (str "not a directory: " path)})
                          "text/plain; charset=utf-8"]))
         "/api/window" (let [p (or (:path query) (buffer/active ed))
-                            start (parse-int (or (:start query) "0"))
+                            ;; a caret param anchors the window at the
+                            ;; line holding that char offset: the page
+                            ;; asks for this when its caret sits outside
+                            ;; the window it holds (a restored session,
+                            ;; a jump across the file), where a line
+                            ;; number is the one thing it cannot know
+                            start (if (and (:caret query) p (buffer/open? ed p))
+                                    (buffer/read ed p
+                                                 (fn [s] (:line (text/line-of (:root s)
+                                                                              (parse-int (:caret query))))))
+                                    (parse-int (or (:start query) "0")))
                             count (parse-int (or (:count query) "100"))]
                         (if (and p (buffer/open? ed p))
                           [200 (pr-str (window-payload ed p start count)) "text/plain; charset=utf-8"]
