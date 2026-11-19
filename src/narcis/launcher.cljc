@@ -70,6 +70,19 @@
 </body></html>")
 
 #?(:clj
+   (defn- page-html
+     "The page with its script URL stamped by the bundle's
+      modification time: a browser holding an older bundle in
+      cache must not keep running it after a rebuild — a tab
+      opened before an update otherwise goes on showing the old
+      page's behavior (a load line that never appears, a scroll
+      fix that never lands) while a fresh tab shows the new one."
+     [web-dir]
+     (let [f (File. web-dir "app.js")
+           v (if (.exists f) (.lastModified f) 0)]
+       (str/replace page "/app.js'" (str "/app.js?v=" v "'")))))
+
+#?(:clj
    (defn- attempt-auto-open! [url]
      (let [os (str/lower-case (System/getProperty "os.name"))
         cmd (cond (str/includes? os "mac") ["open" url]
@@ -372,7 +385,7 @@
             [status body ctype]
             (cond
               (= path "/buffer") [200 (store/current-buffer (:store ctx) "hello") "text/plain; charset=utf-8"]
-              (or (= path "/") (= path "/index.html")) [200 page "text/html; charset=utf-8"]
+              (or (= path "/") (= path "/index.html")) [200 (page-html (:web-dir ctx)) "text/html; charset=utf-8"]
               (= path "/app.js") (let [f (File. (:web-dir ctx) "app.js")]
                                    (if (.exists f)
                                      [200 (slurp f) "text/javascript; charset=utf-8"]
