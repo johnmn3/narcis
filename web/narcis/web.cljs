@@ -811,6 +811,20 @@
     (when-let [m (by-id "status-msg")] (set! (.-textContent m) msg))
     (when-let [p (by-id "status-pos")]
       (set! (.-textContent p) (str (:runtime s) "  " where (or loading indexing ""))))
+    ;; the load line at the bottom of the buffer (see build-dom!):
+    ;; visible while the active buffer is loading, filled to the
+    ;; load's fraction; gone when the buffer is whole
+    (when-let [bar (by-id "loadbar")]
+      (if-let [l (get (:loading s) (:path s))]
+        (when (and (:total l) (pos? (:total l)))
+          (show! bar true)
+          (when-let [f (by-id "loadfill")]
+            ;; a fractional width: at a whole percent the light
+            ;; would sit dead at the left edge for the first
+            ;; stretch of a big file's load
+            (set! (.. f -style -width)
+                  (str (.toFixed (* 100 (/ (:loaded l) (:total l))) 1) "%"))))
+        (show! bar false)))
     (when-let [stop (by-id "btn-stop")]
       (set! (.-disabled stop) (= "idle" (:status con))))))
 
@@ -2400,6 +2414,8 @@
           next-b (el "button" "btn small" "↓")
           close-b (el "button" "btn small" "×")
           sc (with-id (el "div" nil nil) "scroll")
+          loadbar (show! (with-id (el "div" nil nil) "loadbar") false)
+          loadfill (with-id (el "div" nil nil) "loadfill")
           sizer (with-id (el "div" nil nil) "sizer")
           win (with-id (el "div" nil nil) "win")
           caret (with-id (el "div" nil nil) "caret")
@@ -2434,6 +2450,14 @@
       (.setAttribute ta "autocomplete" "off")
       (append! sizer win caret ta)
       (.appendChild sc sizer)
+      ;; the load line: a thin blue bar at the bottom of the
+      ;; buffer while a file is still loading into it, filling
+      ;; left to right with the load; when it reaches the right
+      ;; edge the buffer is whole and the direct-from-disk
+      ;; jankiness is over. Driven from update-status!
+      (css! loadbar "height:3px;flex:none;background:transparent;")
+      (css! loadfill "height:100%;width:0%;min-width:2px;background:#2f7bff;box-shadow:0 0 6px rgba(47,123,255,.55);transition:width .35s linear;")
+      (append! loadbar loadfill)
       ;; console
       (set! (.-rows con-in) 1)
       (set! (.-spellcheck con-in) false)
@@ -2441,7 +2465,7 @@
       (append! con-row con-prompt con-in)
       (css! frames "display:none;")
       (append! console con-out frames con-row)
-      (append! work tabs findbar sc divider console)
+      (append! work tabs findbar sc loadbar divider console)
       (append! main tree work)
       (.appendChild app main)
       ;; editor events
