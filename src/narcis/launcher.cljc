@@ -145,27 +145,42 @@
 ;; API
 
 (defn- state-payload [ed theme-atom ctx]
-  {:tabs (buffer/tabs ed)
-   :active (buffer/active ed)
-   :loading (buffer/loading-map ed)
-   :scanning (buffer/scanning-map)
-   :project (:project ctx)
-   :runtime "Jolt"
-   :theme (name (or (buffer/theme-choice ed) (:name @theme-atom)))
-   :buffers (loop [ps (buffer/tabs ed) acc {}]
-              (if-let [p (first ps)]
-                (recur (rest ps)
-                       (if-let [s (buffer/snapshot ed p)]
-                         (assoc acc p (let [sk (when (buffer/partial? ed p)
-                                                 (buffer/skeleton p))]
-                                        {:lines (max (:lines s) (or (:lines sk) 0))
-                                         :chars (max (:chars s) (or (:chars sk) 0))
-                                         :cursor (:cursor s)
-                                         :sel (:sel s)
-                                         :undo (:undo s)
-                                         :redo (:redo s)}))
-                         acc))
-                acc))})
+  (let [[buffers doc-lines]
+        (loop [ps (buffer/tabs ed) bs {} ds {}]
+          (if-let [p (first ps)]
+            (let [[bs ds] (if-let [s (buffer/snapshot ed p)]
+                            (let [sk (when (buffer/partial? ed p)
+                                       (buffer/skeleton p))]
+                              [(assoc bs p {:lines (max (:lines s) (or (:lines sk) 0))
+                                            :chars (max (:chars s) (or (:chars sk) 0))
+                                            :cursor (:cursor s)
+                                            :sel (:sel s)
+                                            :undo (:undo s)
+                                            :redo (:redo s)})
+                               (assoc ds p (:lines s))])
+                            [bs ds])]
+              (recur (rest ps) bs ds))
+            [bs ds]))
+        ;; a partial buffer's load, enriched for the page's load
+        ;; line: how much of the file is materialized (the
+        ;; hydrated prefix, in lines), the file's whole height,
+        ;; and the extents navigation has pulled in ahead of the
+        ;; frontier
+        loading (into {}
+                      (map (fn [[p l]]
+                             [p (assoc l
+                                       :loaded-lines (get doc-lines p 0)
+                                       :total-lines (get-in buffers [p :lines] 0)
+                                       :extents (buffer/extent-ranges ed p))]))
+                      (buffer/loading-map ed))]
+    {:tabs (buffer/tabs ed)
+     :active (buffer/active ed)
+     :loading loading
+     :scanning (buffer/scanning-map)
+     :project (:project ctx)
+     :runtime "Jolt"
+     :theme (name (or (buffer/theme-choice ed) (:name @theme-atom)))
+     :buffers buffers}))
 
 (defn- file-lines-payload
   "Lines [start, start+count) of path's file, read by its scan's

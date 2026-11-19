@@ -325,6 +325,17 @@
                (get @(:atom (:store ed)) :loading)))
       {}))
 
+(defn extent-ranges
+  "The materialized extents of a partial buffer, as sorted
+   [start-line line-count] pairs in file line coordinates: the
+   stretches a reader pulled into the store ahead of the
+   hydration frontier by navigating to them."
+  [ed path]
+  (or ($ (into []
+               (map (fn [[s e]] [s (:lines e)]))
+               (sort-by key (get-in @(:atom (:store ed)) [:extents path] {}))))
+      []))
+
 (defn scanning-map
   "The scans in flight, as plain data: {path {:loaded n :total
    n}} — bytes scanned, of the file's bytes."

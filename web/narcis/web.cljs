@@ -811,20 +811,35 @@
     (when-let [m (by-id "status-msg")] (set! (.-textContent m) msg))
     (when-let [p (by-id "status-pos")]
       (set! (.-textContent p) (str (:runtime s) "  " where (or loading indexing ""))))
-    ;; the load line at the bottom of the buffer (see build-dom!):
-    ;; visible while the active buffer is loading, filled to the
-    ;; load's fraction; gone when the buffer is whole
+    ;; the load line down the buffer's left side (see
+    ;; build-dom!): visible while the active buffer is loading;
+    ;; its segments are the materialized stretches of the file —
+    ;; the hydrated prefix from the top, plus a band for every
+    ;; extent navigation pulled in. The segment DOM is rebuilt
+    ;; only when the segment signature changes
     (when-let [bar (by-id "loadbar")]
-      (if-let [l (get (:loading s) (:path s))]
-        (when (and (:total l) (pos? (:total l)))
-          (show! bar true)
-          (when-let [f (by-id "loadfill")]
-            ;; a fractional width: at a whole percent the light
-            ;; would sit dead at the left edge for the first
-            ;; stretch of a big file's load
-            (set! (.. f -style -width)
-                  (str (.toFixed (* 100 (/ (:loaded l) (:total l))) 1) "%"))))
-        (show! bar false)))
+      (let [l (get (:loading s) (:path s))
+            sc (by-id "scroll")]
+        (if (and l sc (:total-lines l) (pos? (:total-lines l)))
+          (do (show! bar true)
+              (set! (.. bar -style -top) (str (.-offsetTop sc) "px"))
+              (set! (.. bar -style -height) (str (.-clientHeight sc) "px"))
+              (let [sig (str (:loaded-lines l) "|" (:extents l))]
+                (when (not= sig (.-loadsig bar))
+                  (set! (.-loadsig bar) sig)
+                  (clear! bar)
+                  (let [total (:total-lines l)
+                        seg! (fn [start n]
+                               (let [d (el "div" "loadseg" nil)]
+                                 (css! d (str "position:absolute;left:0;width:100%;"
+                                              "top:" (.toFixed (* 100 (/ start total)) 3) "%;"
+                                              "height:max(1px," (.toFixed (* 100 (/ n total)) 3) "%);"
+                                              "background:#2f7bff;box-shadow:0 0 6px rgba(47,123,255,.55);"))
+                                 (append! bar d)))]
+                    (seg! 0 (:loaded-lines l))
+                    (doseq [[start n] (:extents l)]
+                      (seg! start n))))))
+          (show! bar false))))
     (when-let [stop (by-id "btn-stop")]
       (set! (.-disabled stop) (= "idle" (:status con))))))
 
@@ -2415,7 +2430,6 @@
           close-b (el "button" "btn small" "×")
           sc (with-id (el "div" nil nil) "scroll")
           loadbar (show! (with-id (el "div" nil nil) "loadbar") false)
-          loadfill (with-id (el "div" nil nil) "loadfill")
           sizer (with-id (el "div" nil nil) "sizer")
           win (with-id (el "div" nil nil) "win")
           caret (with-id (el "div" nil nil) "caret")
@@ -2450,14 +2464,18 @@
       (.setAttribute ta "autocomplete" "off")
       (append! sizer win caret ta)
       (.appendChild sc sizer)
-      ;; the load line: a thin blue bar at the bottom of the
-      ;; buffer while a file is still loading into it, filling
-      ;; left to right with the load; when it reaches the right
-      ;; edge the buffer is whole and the direct-from-disk
-      ;; jankiness is over. Driven from update-status!
-      (css! loadbar "height:3px;flex:none;background:transparent;")
-      (css! loadfill "height:100%;width:0%;min-width:2px;background:#2f7bff;box-shadow:0 0 6px rgba(47,123,255,.55);transition:width .35s linear;")
-      (append! loadbar loadfill)
+      ;; the load line: a thin blue strip down the buffer's left
+      ;; side while a file is still loading into it — a map of
+      ;; what is materialized in the store: the hydrated stretch
+      ;; fills from the top, and every extent navigation pulled
+      ;; in ahead of the frontier fills its own band, so a reader
+      ;; can see the part they jumped to is on disk. When the
+      ;; strip is blue end to end the buffer is whole and the
+      ;; direct-from-disk jankiness is over. Positioned over the
+      ;; scroll area and driven from update-status!
+      (css! work "position:relative;")
+      (css! loadbar "position:absolute;left:0;width:3px;z-index:6;pointer-events:none;background:transparent;")
+      (append! work loadbar)
       ;; console
       (set! (.-rows con-in) 1)
       (set! (.-spellcheck con-in) false)
@@ -2465,7 +2483,7 @@
       (append! con-row con-prompt con-in)
       (css! frames "display:none;")
       (append! console con-out frames con-row)
-      (append! work tabs findbar sc loadbar divider console)
+      (append! work tabs findbar sc divider console)
       (append! main tree work)
       (.appendChild app main)
       ;; editor events
