@@ -465,7 +465,10 @@
                            (js/setTimeout (fn [] (resolve (:win @state))) 80)))))
       (let [cnt (+ (visible-count) (* 2 overscan))
             path (:path s)
-            anchor (when keep-view? (view-anchor))]
+            anchor (when keep-view? (view-anchor))
+            pre-top (when keep-view?
+                      (when-let [sc (by-id "scroll")] (.-scrollTop sc)))
+            pre-ppl (when keep-view? (px-per-line))]
         (if path
           (do (swap! state assoc :fetching true)
               (-> (get-edn (str "/api/window?path=" (js/encodeURIComponent path)
@@ -479,18 +482,35 @@
                                               (:start-line (:win @state)))]
                              (swap! state assoc :win win :fetching false)
                              (render!)
-                             (when (and anchor (= path (:path @state)))
-                               ;; translate the offset whenever the
-                               ;; window actually moved, even for a
-                               ;; keep-view fetch: one that lands a
-                               ;; different start than the window on
-                               ;; screen (a stale re-sync racing a
-                               ;; scroll fetch) must not shift the
-                               ;; text either
-                               (restore-view! anchor
-                                              (or (not keep-view?)
-                                                  (not= held-start
-                                                        (:start-line win))))))
+                             (let [restored (when (and anchor (= path (:path @state)))
+                                              ;; translate the offset whenever the
+                                              ;; window actually moved, even for a
+                                              ;; keep-view fetch: one that lands a
+                                              ;; different start than the window on
+                                              ;; screen (a stale re-sync racing a
+                                              ;; scroll fetch) must not shift the
+                                              ;; text either
+                                              (restore-view! anchor
+                                                             (or (not keep-view?)
+                                                                 (not= held-start
+                                                                       (:start-line win)))))]
+                               ;; no line anchor held and the geometry
+                               ;; drifted while the file loads (the
+                               ;; total, hence px-per-line, changed
+                               ;; under a mid-file reader): scale the
+                               ;; offset by the geometry ratio, which
+                               ;; keeps the reader at the same file
+                               ;; position — without it the window's
+                               ;; block walks away from the viewport as
+                               ;; the total grows and the page sits
+                               ;; white until the user scrolls
+                               (when (and keep-view? (not restored) pre-top
+                                          (= path (:path @state))
+                                          (<= (js/Math.abs
+                                               (- (.-scrollTop (by-id "scroll")) pre-top)) 1)
+                                          (not (== pre-ppl (px-per-line))))
+                                 (set! (.-scrollTop (by-id "scroll"))
+                                       (* pre-top (/ (px-per-line) pre-ppl))))))
                            (when-let [w (:want-start @state)]
                              (let [k (:want-keep @state)]
                                (swap! state assoc :want-start nil :want-keep nil)
@@ -591,8 +611,19 @@
                    ;; window one overscan earlier on every tick —
                    ;; the text slid up the page for as long as the
                    ;; file loaded, and the viewport ended up below
-                   ;; the window altogether, looking at blank space
-                   (-> (fetch-window! (+ (:start-line (:win @state)) overscan) true true)
+                   ;; the window altogether, looking at blank space.
+                   ;; But when the viewport is not on the held
+                   ;; window at all (it drifted off it while the
+                   ;; geometry changed under the load, or the user
+                   ;; jumped and no scroll event has landed yet),
+                   ;; the held window is the wrong one to re-fetch:
+                   ;; fetch the scroll position's window instead,
+                   ;; or the page sits white next to a window it
+                   ;; cannot see
+                   (-> (fetch-window! (if (rendered-top-line)
+                                        (+ (:start-line (:win @state)) overscan)
+                                        (first-visible))
+                                      true true)
                        (.then (fn [_] (render!))))
                    ;; a new buffer on screen: the window opens at its
                    ;; caret, wherever in the file it sits — not at the
