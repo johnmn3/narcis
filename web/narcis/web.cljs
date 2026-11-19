@@ -804,7 +804,7 @@
                 "")
         loading (when-let [l (get (:loading s) (:path s))]
                   (when (and (:total l) (pos? (:total l)))
-                    (str " · Loading " (quot (* 100 (:loaded l)) (:total l)) "%")))
+                    (str " · Loading " (quot (* 100 (or (:prefix-bytes l) (:loaded l))) (:total l)) "%")))
         indexing (when-let [l (get (:scanning s) (:path s))]
                    (when (and (:total l) (pos? (:total l)))
                      (str " · Indexing " (quot (* 100 (:loaded l)) (:total l)) "%")))]
@@ -819,25 +819,33 @@
     ;; only when the segment signature changes
     (when-let [bar (by-id "loadbar")]
       (let [l (get (:loading s) (:path s))
-            sc (by-id "scroll")]
-        (if (and l sc (:total-lines l) (pos? (:total-lines l)))
+            sc (by-id "scroll")
+            ;; the strip's geometry is in bytes against the
+            ;; file's byte length — exact from the first moment,
+            ;; so a segment's place and thickness never move as
+            ;; the scan's line count grows under it. Line
+            ;; geometry only until the first scan table exists
+            byte? (and l (some? (:prefix-bytes l)) (:total l) (pos? (:total l)))
+            total (if byte? (:total l) (:total-lines l))
+            pfx (if byte? (:prefix-bytes l) (:loaded-lines l))
+            exts (if byte? (:extent-bytes l) (:extents l))]
+        (if (and l sc total (pos? total))
           (do (show! bar true)
               (set! (.. bar -style -top) (str (.-offsetTop sc) "px"))
               (set! (.. bar -style -height) (str (.-clientHeight sc) "px"))
-              (let [sig (str (:loaded-lines l) "|" (:extents l))]
+              (let [sig (str pfx "|" exts)]
                 (when (not= sig (.-loadsig bar))
                   (set! (.-loadsig bar) sig)
                   (clear! bar)
-                  (let [total (:total-lines l)
-                        seg! (fn [start n]
+                  (let [seg! (fn [start n]
                                (let [d (el "div" "loadseg" nil)]
                                  (css! d (str "position:absolute;left:0;width:100%;"
                                               "top:" (.toFixed (* 100 (/ start total)) 3) "%;"
                                               "height:max(1px," (.toFixed (* 100 (/ n total)) 3) "%);"
                                               "background:#2f7bff;box-shadow:0 0 6px rgba(47,123,255,.55);"))
                                  (append! bar d)))]
-                    (seg! 0 (:loaded-lines l))
-                    (doseq [[start n] (:extents l)]
+                    (seg! 0 pfx)
+                    (doseq [[start n] exts]
                       (seg! start n))))))
           (show! bar false))))
     (when-let [stop (by-id "btn-stop")]

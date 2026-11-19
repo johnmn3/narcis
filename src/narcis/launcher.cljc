@@ -168,10 +168,26 @@
         ;; frontier
         loading (into {}
                       (map (fn [[p l]]
-                             [p (assoc l
-                                       :loaded-lines (get doc-lines p 0)
-                                       :total-lines (get-in buffers [p :lines] 0)
-                                       :extents (buffer/extent-ranges ed p))]))
+                             (let [ranges (buffer/extent-ranges ed p)
+                                   ;; the load line's geometry, in
+                                   ;; bytes against the file's byte
+                                   ;; length — the one scale that is
+                                   ;; exact from the first moment and
+                                   ;; never grows under the segments
+                                   scan (buffer/scan-of p)
+                                   geo (when scan
+                                         {:prefix-bytes (text/byte-offset-of-line
+                                                         scan (get doc-lines p 0))
+                                          :extent-bytes (mapv (fn [[s n]]
+                                                                (let [b0 (text/byte-offset-of-line scan s)]
+                                                                  [b0 (- (text/byte-offset-of-line scan (+ s n)) b0)]))
+                                                              ranges)})]
+                               [p (assoc l
+                                         :loaded-lines (get doc-lines p 0)
+                                         :total-lines (get-in buffers [p :lines] 0)
+                                         :extents ranges
+                                         :prefix-bytes (:prefix-bytes geo)
+                                         :extent-bytes (:extent-bytes geo))])))
                       (buffer/loading-map ed))]
     {:tabs (buffer/tabs ed)
      :active (buffer/active ed)

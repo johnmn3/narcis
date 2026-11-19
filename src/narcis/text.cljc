@@ -512,6 +512,28 @@
          [line byte doc stream]))))
 
 #?(:clj
+   (defn byte-offset-of-line
+     "The approximate byte offset of line n, from scan's chunk
+      table: exact at chunk starts, a proportional share inside
+      the chunk holding the line, extrapolated past the scanned
+      prefix by that prefix's average bytes per line. For display
+      geometry (the load line), where what matters is that the
+      scale — the file's byte length, exact from the start —
+      never moves as the scan grows: a position computed this
+      way settles as the scan passes it and never walks."
+     [scan n]
+     (loop [cs (:chunks @scan) line 0 byte 0]
+       (if-let [[cb cbr _cp _cu] (first cs)]
+         (cond (< (+ line cbr) n)
+               (recur (rest cs) (+ line cbr) (+ byte cb))
+               (pos? cbr)
+               (+ byte (long (* (/ (- n line) cbr) cb)))
+               :else byte)
+         (if (pos? line)
+           (+ byte (long (* (/ byte line) (- n line))))
+           0)))))
+
+#?(:clj
    (defn- chunk-anchor-by-char
      "The [line byte doc stream] at the start of the chunk holding
       document character offset, summed from the chunk table."
