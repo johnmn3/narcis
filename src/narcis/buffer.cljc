@@ -349,13 +349,24 @@
 
 (defn skeleton
   "What is known of path's file beyond its document: {:lines n
-   :chars n :done? b} from its scan — the counts grow as the scan
-   goes and are exact when :done?. Nil when there is no scan (a
-   whole buffer, or one not opened from a file)."
+   :chars n :done? b} from its scan. While the scan runs, the
+   counts are the scanned prefix's, extrapolated to the whole
+   file by the bytes that prefix took: the file's height is
+   approximately known from the scan's first chunks and exact
+   when :done?, instead of growing linearly under the reader
+   for as long as the scan runs (a reader parked at the bottom
+   watched the scroll thumb slide up the whole scan). Nil when
+   there is no scan (a whole buffer, or one not opened from a
+   file)."
   [path]
   (when-let [s (get @scans path)]
-    (let [s @s]
-      {:lines (:lines s) :chars (:chars s) :done? (:done? s)})))
+    (let [s @s
+          {:keys [lines chars bytes total-bytes done?]} s]
+      (if (and (not done?) (pos? bytes) (pos? lines) (< bytes total-bytes))
+        {:lines (long (* lines (/ total-bytes bytes)))
+         :chars (long (* chars (/ total-bytes bytes)))
+         :done? false}
+        {:lines lines :chars chars :done? done?}))))
 
 (defn scan-of
   "Path's scan state atom, or nil."
