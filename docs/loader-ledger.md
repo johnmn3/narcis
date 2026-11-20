@@ -10,6 +10,51 @@ cores, 15 GB RAM; Jolt v0.8.28 release binary built from source
 `EVE_RELEASE` unset (or pointed at that same checkout for
 `scripts/jolt-run.sh` probes); fresh store per run. Not the Mac.
 
+## 2026-11-20 (night): the two-buffer load model (A over B)
+
+The user's model. Buffer A opens at once and is editable; its rope is
+populated lazily as the reader moves around the file (the head, and
+every stretch a view reads). Buffer B is built from the whole file in
+the background. When B finishes, one merge puts A's pieces, edits
+included, over their file spans in B.
+
+- 1734649 made loading buffers read-only, which misread the model.
+  f0c555b reverted that.
+- e6672a8 is the model. B's pieces live in `[:build path]` and are
+  appended to the root; A's pieces are the extents and are never taken
+  in early; `merge-pieces` runs once at the end. Views of a loading
+  buffer show A over the file and never read B. Blue is B, amber is A.
+- 28a9770 fixed two defects found in the real page:
+  - The caret was clamped to B's length: a click 30,183,100 chars in
+    answered caret 130,580. This predates e6672a8.
+  - After an edit the view jumped forward: the re-sync guessed a byte
+    for rows that have none.
+- **Verified at 28a9770** (Jolt v0.8.28, pinned Eve, x86_64):
+  - corpus: 256 tests, 1,770 assertions; the only failures are the 8
+    Jolt-version debugger ones;
+  - narcis.progressive-test: 8 tests, 49 assertions, 0 failures,
+    including head-is-editable-while-loading and
+    extent-is-editable-while-partial;
+  - page gate 44/44; editor e2e 38/38;
+  - launch e2e (fresh clone, run against e6672a8): PASS;
+  - real page, 60 MB file:
+    - typed at the head and mid-file while it loaded;
+    - both edits on screen, including after jumping away and back;
+    - rows on screen steady (23–24 at every 250 ms sample for 3 s
+      after each edit);
+    - both edits in the finished document, which ends on "Whole
+      document";
+    - a mid-file click lands on the clicked row (caret 30,183,100,
+      "Ln 1899350" = file line index 1,899,349, the clicked text).
+- **Unexplained:** one earlier run of the edit test captured a fully
+  white frame 0.8 s after a mid-file edit. It did not recur in the
+  traced rerun; cause unknown.
+- **Known gaps while loading:**
+  - find searches the raw file, so it misses A's edits;
+  - completion, doc lookup and sexp moves read B around the caret;
+  - typing in a stretch no view has read is refused, and so is
+    saving, until the load is whole.
+
 ## 2026-11-20 (evening): byte reads, and the load model's first part
 
 - **Jumps to the top of a 13.9 GB file: an int overflow.** Byte and
