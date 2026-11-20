@@ -114,10 +114,19 @@
   "The held window's block top in scroll space: its start byte
    at the byte rate while its buffer is loading, its start line
    at the line rate otherwise. The window's rows stack at the
-   full line height inside the block either way."
+   full line height inside the block either way. In byte mode
+   the block is also pulled back so it never runs past the end
+   of the space: its rows are taller than its bytes' slots, so
+   placed at its byte the last window's block would overrun the
+   space's end, the scroll height would grow by the overrun
+   when it landed, and a view parked at the bottom would sit a
+   block's height short of the file's last line. The bottom of
+   the scrollbar is the bottom of the file."
   [win]
   (if (and (byte-mode?) (:start-byte win))
-    (* (:start-byte win) (px-per-byte))
+    (min (* (:start-byte win) (px-per-byte))
+         (max 0 (- (* (total-bytes) (px-per-byte))
+                   (* (count (:lines win)) (line-h)))))
     (* (:start-line win) (px-per-line))))
 
 (defn scroll-scale
