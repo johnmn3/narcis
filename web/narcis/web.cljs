@@ -693,7 +693,15 @@
                  ;; jumped backwards under a reader who was inching
                  ;; forwards (traced in the fetch log, Nov 18)
                  (if (and (= active prev-path) (seq (:lines (:win @state))))
-                   (if (and flip-frac (= active prev-path))
+                   (if (and flip-frac (= active prev-path)
+                            ;; and the load is actually over: the
+                            ;; entry was there when this sync began
+                            ;; and is gone from the state it read.
+                            ;; (Without this the branch fired on
+                            ;; every load tick, re-fetching the held
+                            ;; window and re-applying a stale
+                            ;; fraction over the byte fetches.)
+                            (not (get (:loading st) active)))
                      ;; the load handoff: the scroll space has just
                      ;; changed denomination under this buffer. No
                      ;; line anchor — it is denominated in the old
