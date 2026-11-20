@@ -594,12 +594,12 @@
                                 (cond (<= (+ xs xc) a) [[a b]]
                                       (>= xs b) [[a b]]
                                       :else (concat (when (< a xs) [[a xs]])
-                                                    (when (> b (+ xs xc)) [[(+ xs xc) b]]))))
+                                                    (when (> b (+ xs xc)) [[(+ xs xc) b]])))))
                       rs)
                 (rest es))
          (into [] (comp (filter (fn [[a b]] (> b a)))
                         (map (fn [[a b]] [a (- b a)])))
-               rs))))))
+               rs)))))
 
 #?(:clj
    (defn- run-segment-worker!
