@@ -676,12 +676,17 @@
                          (update-in app [:buffers path]
                                     (fn [b] (with-state b {:cursor caret :sel sel})))
                          (let [dchars (- (text/chars nd) (:chars e))
-                               dlines (- (text/lines nd) (:lines e))]
+                               ;; an extent's :lines is its span's
+                               ;; break count — the window's line
+                               ;; count — which is the document's
+                               ;; line count less its standing
+                               ;; last line
+                               dlines (- (dec (text/lines nd)) (:lines e))]
                            (-> app
                                (assoc-in [:extents path s]
                                          (assoc e :doc nd
                                                   :chars (text/chars nd)
-                                                  :lines (text/lines nd)))
+                                                  :lines (dec (text/lines nd))))
                                (update-in [:extents path]
                                           (fn [exts]
                                             (if (and (zero? dchars) (zero? dlines))
@@ -949,6 +954,7 @@
                   (partial? ed path))
          (let [t (get @parked-tails path)
                start (- (dec (:lines @scan)) (:breaks t))
+               total-stream (scan-stream-total scan)
                tchar (- (:chars @scan) (:chars t))
                gaps (uncovered-ranges (extent-ranges ed path)
                                       (dec (frontier-line ed path))
@@ -983,8 +989,20 @@
                                     :lines cnt
                                     :start-char (+ tchar head-off)
                                     :start-stream (:stream-start w)
-                                    :stream-chars (- (:stream-end w)
-                                                     (:stream-start w))}))))
+                                    ;; a gap running to the
+                                    ;; tail's end owns the
+                                    ;; file's last, partial
+                                    ;; line too — a window's
+                                    ;; stream end stops at its
+                                    ;; last break, so the end
+                                    ;; gap's span runs to the
+                                    ;; file's stream total
+                                    :stream-chars (if (= (+ g cnt)
+                                                         (+ start (:breaks t)))
+                                                    (- total-stream
+                                                       (:stream-start w))
+                                                    (- (:stream-end w)
+                                                       (:stream-start w)))}))))
            (swap! parked-tails dissoc path))))))
 
 #?(:clj
