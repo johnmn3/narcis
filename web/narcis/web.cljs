@@ -967,7 +967,15 @@
 
 (defn render-tabs! []
   (let [s @state
-        bar (by-id "tabs")]
+        bar (by-id "tabs")
+        ;; rebuilt only when the tabs or the active one change: render!
+        ;; runs on every window landing and load tick, and rebuilding
+        ;; the bar each time replaced the tab under a pointer several
+        ;; times a second while files loaded (measured: a click on a
+        ;; tab found it detached mid-click)
+        sig (pr-str [(:tabs s) (:path s)])]
+   (when (not= sig (.-tabsig bar))
+    (set! (.-tabsig bar) sig)
     (clear! bar)
     (show! bar (> (count (:tabs s)) 1))
     (doseq [p (:tabs s)]
@@ -987,7 +995,7 @@
                (.stopPropagation e)
                (-> (op! {:op :close :path p})
                    (.then (fn [_] (refresh-state!))))))
-        (.appendChild bar tab)))))
+        (.appendChild bar tab))))))
 
 (defn update-status! []
   (let [s @state
