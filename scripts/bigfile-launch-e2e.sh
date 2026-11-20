@@ -14,12 +14,18 @@
 # cores must finish in roughly 1/N the time, not the
 # same time.
 #
+# The API payloads are EDN, not JSON; the poller reads
+# them with extraction regexes. The window endpoint takes
+# start= (a line number), not line=.
+#
 #   FILE=/path/to/big.txt LEGS="1 3" bash scripts/bigfile-launch-e2e.sh
 #
 # Knobs: BRANCH (default fix/loader-v3), HEAP (default 4g),
 # DEADLINE_S per leg (default 3600), BASE_PORT (default 8420),
 # E2E_WORK (default ~/workspace/e2e-narcis/run-<time>),
-# E2E_MIN_SPEEDUP (default 2.0).
+# E2E_MIN_SPEEDUP (default 2.0), E2E_KEEP_STORES=1 to keep
+# each leg's store (default: removed after the leg, so
+# multi-leg runs on a tight disk fit).
 set -u
 FILE=${FILE:?set FILE to the big file}
 LEGS=${LEGS:-"1 3"}
@@ -56,17 +62,35 @@ run_leg() {
      "$JOLT" narcis --dir "$store" --port "$port" --file "$FILE" \
      > "$log" 2>&1 &)
   python3 - "$port" "$FILE" "$log" "$DEADLINE_S" <<'PYEOF'
-import json, re, sys, time, urllib.parse, urllib.request
+import re, sys, time, urllib.parse, urllib.request
 port, path, log, deadline = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 
-def window(line, count=1):
-    url = (f"http://localhost:{port}/api/window?path={urllib.parse.quote(path)}"
-           f"&line={line}&count={count}")
-    with urllib.request.urlopen(url, timeout=20) as r:
-        return json.loads(r.read().decode())
+def get(url, timeout=20):
+    with urllib.request.urlopen(url, timeout=timeout) as r:
+        return r.read().decode()
 
-def field(d, name):
-    return d.get(":" + name, d.get(name))
+def window(start, count=1):
+    return get(f"http://localhost:{port}/api/window?path={urllib.parse.quote(path)}"
+               f"&start={start}&count={count}")
+
+def loading_entry(state):
+    # the :loading map's own braces, brace-matched — the path
+    # also appears elsewhere in the payload (:tabs, :active)
+    m = re.search(r':loading \{', state)
+    if not m:
+        return ""
+    depth = 0; i = m.end() - 1
+    while i < len(state):
+        if state[i] == '{': depth += 1
+        elif state[i] == '}':
+            depth -= 1
+            if depth == 0: return state[m.start():i + 1]
+        i += 1
+    return state[m.start():]
+
+def line_text(payload, n):
+    m = re.search(r':n %d, :start \d+, :text "((?:[^"\\]|\\.)*)"' % n, payload)
+    return m.group(1) if m else None
 
 t0 = time.time(); serving = None; last_loaded = -1
 while time.time() - t0 < deadline:
@@ -75,63 +99,59 @@ while time.time() - t0 < deadline:
             txt = f.read()
         m = re.search(r"assembly of .* stopped: (.*)", txt)
         if m:
-            print(f"LEG FAIL assembly stopped: {m.group(1)}"); sys.exit(3)
+            print(f"LEG FAIL assembly stopped: {m.group(1)}", flush=True); sys.exit(3)
     except FileNotFoundError:
         pass
     try:
-        with urllib.request.urlopen(f"http://localhost:{port}/api/state", timeout=8) as r:
-            state = r.read().decode()
+        state = get(f"http://localhost:{port}/api/state", timeout=8)
     except Exception:
         time.sleep(5); continue
     if serving is None:
         serving = time.time() - t0
-        print(f"serving after {serving:.1f}s")
-    lm = re.search(r':loading \{', state)
-    loading = lm and (f'"{path}"' in state[lm.start():])
-    if loading:
-        m2 = re.search(r':loaded-lines (\d+)', state[lm.start():])
+        print(f"serving after {serving:.1f}s", flush=True)
+    entry = loading_entry(state)
+    if f'"{path}"' in entry:
+        m2 = re.search(r':loaded-lines (\d+)', entry)
         if m2:
             cur = int(m2.group(1))
             if cur != last_loaded:
                 last_loaded = cur
-                print(f"  t+{time.time()-t0:.0f}s loaded-lines {cur}")
+                print(f"  t+{time.time()-t0:.0f}s loaded-lines {cur}", flush=True)
         time.sleep(5); continue
     # loading entry gone: the document must answer whole and exact
     try:
         win = window(0, 2)
     except Exception as e:
-        print(f"  window not ready: {e}"); time.sleep(5); continue
-    total = field(win, "total-lines")
-    print(f"LEG DONE boot-to-finish {time.time()-t0:.1f}s total-lines {total}")
-    # spot checks against the file itself: head, middle, last real line
+        print(f"  window not ready: {e}", flush=True); time.sleep(5); continue
+    m = re.search(r":total-lines (\d+)", win)
+    total = int(m.group(1)) if m else None
+    print(f"LEG DONE boot-to-finish {time.time()-t0:.1f}s total-lines {total}", flush=True)
     with open(path, "rb") as f:
         pieces = f.read().split(b"\n")
     last_real = len(pieces) - 2 if pieces[-1] == b"" else len(pieces) - 1
     ok = (total == len(pieces))
     if not ok:
-        print(f"  total-lines mismatch: doc {total} vs file breaks+1 {len(pieces)}")
+        print(f"  total-lines mismatch: doc {total} vs file breaks+1 {len(pieces)}", flush=True)
     for n in sorted({0, last_real // 2, last_real}):
         want = pieces[n].decode("utf-8", "replace")
-        got = None
-        for ln in field(window(n), "lines") or []:
-            if field(ln, "n") == n:
-                got = field(ln, "text")
+        got = line_text(window(n), n)
         if got != want:
             ok = False
-            print(f"  spot line {n} MISMATCH want {want[:40]!r} got {str(got)[:40]!r}")
+            print(f"  spot line {n} MISMATCH want {want[:40]!r} got {str(got)[:40]!r}", flush=True)
         else:
-            print(f"  spot line {n} OK")
+            print(f"  spot line {n} OK", flush=True)
     if not ok:
-        print("LEG FAIL content"); sys.exit(4)
-    print(f"RESULT {time.time()-t0:.3f} {total}")
+        print("LEG FAIL content", flush=True); sys.exit(4)
+    print(f"RESULT {time.time()-t0:.3f} {total}", flush=True)
     sys.exit(0)
-print(f"LEG FAIL deadline {deadline}s exceeded (last loaded-lines {last_loaded})")
+print(f"LEG FAIL deadline {deadline}s exceeded (last loaded-lines {last_loaded})", flush=True)
 sys.exit(2)
 PYEOF
   local rc=$?
   local pid; pid=$(port_pid "$port")
   [ -n "$pid" ] && kill "$pid" 2>/dev/null
   sleep 3
+  [ "${E2E_KEEP_STORES:-0}" = "1" ] || rm -rf "$store"
   return $rc
 }
 
@@ -141,9 +161,10 @@ i=0
 keys=($LEGS)
 for w in $LEGS; do
   port=$((BASE_PORT + i)); i=$((i+1))
-  out=$(run_leg "$w" "$port" 2>&1); rc=$?
-  echo "$out"
-  ms=$(echo "$out" | grep '^RESULT ' | awk '{print $2}')
+  out="$WORK/leg-w$w.out"
+  run_leg "$w" "$port" > "$out" 2>&1; rc=$?
+  cat "$out"
+  ms=$(grep '^RESULT ' "$out" | awk '{print $2}')
   if [ $rc -ne 0 ] || [ -z "$ms" ]; then
     echo "leg workers=$w FAILED rc=$rc"; fail=1; break
   fi
