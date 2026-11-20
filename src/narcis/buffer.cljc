@@ -956,17 +956,25 @@
            (doseq [[g cnt] gaps]
              (let [l0 (- g start)
                    head-off (text/line-start-offset (:doc t) l0)
-                   d1 (if (zero? l0)
-                        (:doc t)
-                        (text/replace (:doc t) 0 head-off ""))
-                   ;; a gap that runs to the tail's end keeps
-                   ;; the doc's last, partial line; a gap that
-                   ;; stops inside the tail is trimmed at its
-                   ;; end line's start
-                   doc (if (= (+ g cnt) (+ start (:breaks t)))
-                         d1
-                         (text/replace d1 (text/line-start-offset d1 cnt)
-                                       (text/chars d1) ""))
+                   ;; the slicing is rope surgery — it builds
+                   ;; Eve data, so it runs inside a swap on the
+                   ;; tail's own scratch atom, the domain
+                   ;; context its document was built in
+                   doc (swap! (segment-scratch ed "tail")
+                              (fn [_]
+                                (let [d1 (if (zero? l0)
+                                           (:doc t)
+                                           (text/replace (:doc t) 0 head-off ""))]
+                                  ;; a gap that runs to the
+                                  ;; tail's end keeps the doc's
+                                  ;; last, partial line; a gap
+                                  ;; that stops inside the tail
+                                  ;; is trimmed at its end
+                                  ;; line's start
+                                  (if (= (+ g cnt) (+ start (:breaks t)))
+                                    d1
+                                    (text/replace d1 (text/line-start-offset d1 cnt)
+                                                  (text/chars d1) "")))))
                    w (text/file-window path scan g cnt)]
                (when (= cnt (count (:lines w)))
                  (note-extent-doc! ed path g
