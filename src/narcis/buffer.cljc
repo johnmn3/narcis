@@ -963,10 +963,21 @@
              (let [l0 (- g start)
                    head-off (text/line-start-offset (:doc t) l0)
                    ;; the slicing is rope surgery — it builds
-                   ;; Eve data, so it runs inside a swap on the
-                   ;; tail's own scratch atom, the domain
-                   ;; context its document was built in
-                   doc (swap! (segment-scratch ed "tail")
+                   ;; Eve data, so it runs inside a swap on a
+                   ;; scratch atom, the domain context its
+                   ;; document was built in. The scratch is NOT
+                   ;; the tail's own: the parked document stays
+                   ;; rooted on the tail scratch for the whole
+                   ;; noting, because every later gap still
+                   ;; reads it — slicing on the tail scratch
+                   ;; replaces that root with the first gap's
+                   ;; slice, leaving the parked document rooted
+                   ;; nowhere while the noting continues, and
+                   ;; the domain's deferred frees may then
+                   ;; reuse its blocks under the reads (the
+                   ;; assembly died exactly there: a node slot
+                   ;; reread as a foreign tag)
+                   doc (swap! (segment-scratch ed "tail-slice")
                               (fn [_]
                                 (let [d1 (if (zero? l0)
                                            (:doc t)
