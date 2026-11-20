@@ -259,6 +259,42 @@
                          (:lines w))})))
       (file-lines-payload ed path start count total-lines total-chars)))
 
+(defn- byte-window-payload
+  "A loading buffer's window read straight from its file by byte (see
+   narcis.text's reading by byte): the count lines ending with the
+   line that holds byte b, in window-payload's shape, each line with
+   its :byte, and :approx when the scan has not reached them yet (the
+   line numbers and char offsets are then estimates). A stretch read
+   with exact positions is noted as an extent, as a line read is — the
+   temporary rope a reader's views build. Costs a seek and the
+   window's own bytes anywhere in the file."
+  [ed path b count]
+  (let [scan (buffer/scan-of path)
+        w (text/file-window-at-byte path scan b count)
+        lines (:lines w)
+        skel (buffer/skeleton path)
+        doc-lines (or (buffer/read ed path (fn [s] (text/lines (:root s)))) 0)
+        snap (buffer/snapshot ed path)]
+    (when (and (not (:approx? w)) (not (:eof? w)) (= (clojure.core/count lines) count))
+      (buffer/note-extent! ed path (mapv (fn [l] (dissoc l :byte)) lines)
+                           (:stream-start w) (:stream-end w)))
+    {:start-line (or (:n (first lines)) 0)
+     :total-lines (max doc-lines (or (:lines skel) 0))
+     :total-chars (max (or (buffer/read ed path (fn [s] (text/chars (:root s)))) 0)
+                       (or (:chars skel) 0))
+     :spans-mode :window
+     :match nil
+     :lines (mapv (fn [l] (assoc l :spans [])) lines)
+     :approx (:approx? w)
+     :path path
+     :caret (:cursor snap)
+     :sel (:sel snap)
+     :undo (:undo snap)
+     :redo (:redo snap)
+     :rev (buffer/rev ed path)
+     :start-byte (:start-byte w)
+     :total-bytes (get-in (buffer/loading-map ed) [path :total])}))
+
 (defn- window-payload [ed path start count]
   (let [doc-lines (buffer/read ed path (fn [s] (text/lines (:root s))))
         partial (buffer/partial? ed path)
@@ -406,7 +442,11 @@
                          "text/plain; charset=utf-8"]))
         "/api/window" (let [p (or (:path query) (buffer/active ed))
                             count (parse-int (or (:count query) "100"))
-                            start (cond
+                            ;; a delay: the byte read below needs no
+                            ;; line number, and counting one past the
+                            ;; scan is the costly part
+                            start (delay
+                                   (cond
                                     ;; a byte param anchors the window
                                     ;; so it ENDS at the line holding
                                     ;; that file byte: the page's
@@ -428,9 +468,21 @@
                                     ;; number is the one thing it cannot know
                                     (and (:caret query) p (buffer/open? ed p))
                                     (buffer/line-of ed p (parse-int (:caret query)))
-                                    :else (parse-int (or (:start query) "0")))]
-                        (if (and p (buffer/open? ed p))
-                          [200 (pr-str (window-payload ed p start count)) "text/plain; charset=utf-8"]
+                                    :else (parse-int (or (:start query) "0"))))]
+                        (cond
+                          ;; a loading buffer whose document is still
+                          ;; its file: a byte window is read from the
+                          ;; file by byte, with no line count
+                          (and (:byte query) p (buffer/open? ed p)
+                               (buffer/partial? ed p) (buffer/scan-of p)
+                               (not (buffer/edited-during-load? ed p)))
+                          [200 (pr-str (byte-window-payload ed p (parse-int (:byte query)) count))
+                           "text/plain; charset=utf-8"]
+
+                          (and p (buffer/open? ed p))
+                          [200 (pr-str (window-payload ed p @start count)) "text/plain; charset=utf-8"]
+
+                          :else
                           [404 "no buffer" "text/plain"]))
         "/api/op" (let [msg (edn/read-string (:body req))
                         res (ops/apply-op ed msg)

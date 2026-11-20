@@ -629,6 +629,23 @@
             [s e]))
         (extents ed path)))
 
+(defn edited-during-load?
+  "True when path's partial document differs from its file: an edit
+   landed in an extent during the load (its counts left its file
+   span's, or the assembly already absorbed one — the loading entry's
+   frame account is nonzero). Until then the file IS the document, so
+   a window can be read straight from it by byte."
+  [ed path]
+  (true? ($ (let [app @(:atom (:store ed))
+                  l (get-in app [:loading path])]
+              (boolean
+               (or (not (zero? (or (:line-delta l) 0)))
+                   (not (zero? (or (:char-delta l) 0)))
+                   (some (fn [[_ e]]
+                           (or (not= (:lines e) (file-lines-of e))
+                               (not= (:chars e) (file-chars-of e))))
+                         (get-in app [:extents path]))))))))
+
 (defn read-extent
   "(f s e) over the extent of path whose lines cover [start,
    start+count) in the document frame — s its start line, e the
