@@ -533,7 +533,7 @@
         :redo (if (buffer/redo! ed path)
                 (result ed path)
                 {:ok false :error "nothing to redo"})
-        :set-caret (let [n (:chars (buffer/snapshot ed path))
+        :set-caret (let [n (buffer/doc-chars ed path)
                          in (fn [x] (max 0 (min n x)))
                          sel (when (and (sequential? (:sel msg)) (= 2 (count (:sel msg))))
                                (let [a (in (first (:sel msg))) b (in (second (:sel msg)))]

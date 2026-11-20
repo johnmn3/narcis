@@ -1413,6 +1413,21 @@
                                                 (peek tabs)
                                                 (:active s)))))))))
 
+(defn doc-chars
+  "The length of path's document as the reader sees it: the document
+   itself when whole; while it loads, buffer A over the file — the
+   file's characters (the scan's count, estimated until it finishes)
+   plus the char deltas of A's edited pieces. (The root is buffer B's
+   assembled prefix then, and clamping a caret to its length parked
+   every click past B's frontier at the frontier.)"
+  [ed path]
+  (let [n (or (:chars (snapshot ed path)) 0)]
+    (if (partial? ed path)
+      (max n (+ (or (:chars (skeleton path)) 0)
+                (reduce + 0 (map (fn [sp] (- (:chars sp) (:file-chars sp)))
+                                 (extent-spans ed path)))))
+      n)))
+
 (defn set-caret!
   "Move path's caret to offset with selection sel ([a b] or nil): one
    swap, no undo step."

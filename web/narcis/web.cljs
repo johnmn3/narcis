@@ -817,8 +817,8 @@
                      ;; byte: the fetch anchors on the viewport's
                      ;; bottom byte, so the window it lands ends at
                      ;; the line the reader's bottom edge is on
-                     (-> (fetch-window! (cond (and (byte-mode?) (rendered-top-line))
-                                              {:byte (or (view-end-byte) (bottom-byte))}
+                     (-> (fetch-window! (cond (and (byte-mode?) (rendered-top-line) (view-end-byte))
+                                              {:byte (view-end-byte)}
                                               (rendered-top-line)
                                               (+ (:start-line (:win @state)) overscan)
                                               (byte-mode?) {:byte (bottom-byte)}
@@ -2754,8 +2754,15 @@
                    (when (or (< top (+ (:start-line win) 15))
                              (> (+ top (visible-count))
                                 (+ (:start-line win) (count (:lines win)) -15)))
-                     (fetch-window! (if (byte-mode?)
-                                      {:byte (or (view-end-byte) (bottom-byte))}
+                     ;; by byte while the held rows carry their
+                     ;; bytes; rows from a reader's edited piece have
+                     ;; none (an edit has no file byte), and there the
+                     ;; line numbers are exact — fetch by line (a
+                     ;; byte guessed from the scroll offset landed
+                     ;; far past the rows on screen: the view jumped
+                     ;; forward after every edit)
+                     (fetch-window! (if-let [b (and (byte-mode?) (view-end-byte))]
+                                      {:byte b}
                                       (+ top (quot (visible-count) 2)))
                                     false false))
                    ;; the viewport is off the held window entirely
