@@ -21,7 +21,20 @@
    (Jolt/Chez threads, allocation, GC), not Eve's.
 
    Run: scripts/jolt-run.sh narcis.probe-domscale <dir> [mb-per-build]
-        [builds-per-thread] [widths, e.g. 1,2,3]"
+        [builds-per-thread] [widths, e.g. 1,2,3]
+
+   Measured 2026-11-20 (BASE ba24c46 + this probe; pinned Eve
+   a14775a; Jolt v0.8.28 release binary built from source; 4-core
+   x86_64 Linux; 4 MB builds of ~95-char lines, 2 per thread),
+   MB/s total at W = 1 / 2 / 3 / 4:
+     window      11.48 / 18.05 / 18.74 / 28.61
+     one-domain   2.22 /  4.64 /  6.52 /  6.89
+     domains      2.56 /  4.38 /  6.24 /  7.63
+   Eve's build scales near-linearly to W=3 at ~2.2 MB/s/thread, and
+   one domain and separate domains are within noise: the shared
+   domain / swap path is NOT the wall. The loader's measured
+   0.43 MB/s/thread with no worker scaling is lost in the loader's
+   shape."
   (:require [eve.alpha :as eve :refer [$]]
             [clojure.string :as str]
             [narcis.text :as text]))
