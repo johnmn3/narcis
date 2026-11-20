@@ -841,6 +841,77 @@
                            (second r)
                            (recur (nth r 1) (nth r 2) (nth r 3)))))))))))))))
 
+#?(:clj
+   (defn line-of-byte
+     "The line holding byte offset in the file at path: the count
+      of the breaks whose last byte lies before the offset's
+      byte. A break belongs to the line it ends, so a byte that
+      is itself a break's last byte stands on the line the break
+      ends; and an offset at or past the file's end stands on
+      the file's last byte, so the end offset answers the last
+      line — never the empty line a trailing break leaves.
+      Counted from the scan's chunk table where it reaches and
+      in bulk past it, on the raw bytes decoded as Latin-1 for
+      the counting only: a break byte is never part of a
+      multi-byte character, so the count is the file's own.
+      The scan is never waited on."
+     [path scan byte]
+     (let [total (file-length path)]
+       (if (or (nil? total) (not (pos? total)) (not (pos? byte)))
+         0
+         (let [limit (min byte (dec total))
+               ;; the table's whole chunks ending at or before
+               ;; the limit, and the byte counting resumes from:
+               ;; a chunk's byte count is the span of its text, so
+               ;; the resume byte is a text boundary — a \r held
+               ;; out of a counted chunk stands at it, uncounted,
+               ;; and is the first byte counted here
+               [line abyte] (loop [cs (if scan (:chunks @scan) [])
+                                   line 0 b 0]
+                              (if-let [[cb cbr _cp _cu] (first cs)]
+                                (if (<= (+ b cb) limit)
+                                  (recur (rest cs) (+ line cbr) (+ b cb))
+                                  [line b])
+                                [line b]))]
+           (if (>= abyte limit)
+             line
+             (with-open [in (java.io.FileInputStream. ^String path)]
+               (skip-to in abyte)
+               (let [buf (byte-array 1048576)]
+                 (loop [line line b abyte prev-cr? false]
+                   (let [n (.read in buf)]
+                     (if (neg? n)
+                       line
+                       (let [final? (>= (+ b n) limit)
+                             k (if final? (- limit b) n)
+                             ;; a trailing \r is held out of the
+                             ;; count: it is counted as the next
+                             ;; piece's prefix, where what follows
+                             ;; it resolves it — or by the peek at
+                             ;; the limit, where it ends the count
+                             trail? (and (pos? k) (= 13 (aget buf (dec k))))
+                             m (if trail? (dec k) k)
+                             s (String. (if prev-cr?
+                                          (let [all (byte-array (inc m))]
+                                            (aset all 0 (byte 13))
+                                            (System/arraycopy buf 0 all 1 m)
+                                            all)
+                                          buf)
+                                        0 (if prev-cr? (inc m) m) "ISO-8859-1")
+                             line (+ line (:breaks (chunk-stats s)))]
+                         (cond
+                           (not final?) (recur line (+ b n) trail?)
+                           ;; the limit's byte resolves the held
+                           ;; \r: when it is a \n the pair completes
+                           ;; there — its break belongs past this
+                           ;; count; anything else (or the file's
+                           ;; end) leaves the \r a break of its own
+                           trail? (let [peek (if (< k n)
+                                               (aget buf k)
+                                               (.read in))]
+                                    (if (= 10 peek) line (inc line)))
+                           :else line)))))))))))))
+
 ;; A find over the file reads it as normalized text a chunk at a
 ;; time, in one pass — the same slice walk narcis.ops runs over a
 ;; document, over the file's stream instead. Positions are document

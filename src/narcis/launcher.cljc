@@ -297,7 +297,15 @@
                  (assoc base :lines (into (:lines base) (:lines rest))
                         :total-lines total-lines
                         :total-chars (or total-chars (:total-chars base))))))
-           :rev (buffer/rev ed path))))
+           :rev (buffer/rev ed path)
+           ;; the load-phase scroll geometry is denominated in
+           ;; the file's bytes — the one quantity exact from t=0:
+           ;; the page places this window's block at :start-byte
+           ;; in a scroll space :total-bytes tall
+           :start-byte (when partial
+                         (text/byte-offset-of-line (buffer/scan-of path) start))
+           :total-bytes (when partial
+                          (get-in (buffer/loading-map ed) [path :total])))))
 
 #?(:clj
    (def ^:private menus-payload
@@ -392,16 +400,30 @@
                         [404 (pr-str {:ok false :error (str "not a directory: " path)})
                          "text/plain; charset=utf-8"]))
         "/api/window" (let [p (or (:path query) (buffer/active ed))
-                            ;; a caret param anchors the window at the
-                            ;; line holding that char offset: the page
-                            ;; asks for this when its caret sits outside
-                            ;; the window it holds (a restored session,
-                            ;; a jump across the file), where a line
-                            ;; number is the one thing it cannot know
-                            start (if (and (:caret query) p (buffer/open? ed p))
+                            count (parse-int (or (:count query) "100"))
+                            start (cond
+                                    ;; a byte param anchors the window
+                                    ;; so it ENDS at the line holding
+                                    ;; that file byte: the page's
+                                    ;; load-phase geometry is byte-
+                                    ;; denominated, and the byte it
+                                    ;; sends is its viewport's bottom —
+                                    ;; the lines down to it, the file's
+                                    ;; last line included, are the ones
+                                    ;; it must be able to show
+                                    (and (:byte query) p (buffer/open? ed p))
+                                    (max 0 (- (text/line-of-byte p (buffer/scan-of p)
+                                                                 (parse-int (:byte query)))
+                                              (dec count)))
+                                    ;; a caret param anchors the window at the
+                                    ;; line holding that char offset: the page
+                                    ;; asks for this when its caret sits outside
+                                    ;; the window it holds (a restored session,
+                                    ;; a jump across the file), where a line
+                                    ;; number is the one thing it cannot know
+                                    (and (:caret query) p (buffer/open? ed p))
                                     (buffer/line-of ed p (parse-int (:caret query)))
-                                    (parse-int (or (:start query) "0")))
-                            count (parse-int (or (:count query) "100"))]
+                                    :else (parse-int (or (:start query) "0")))]
                         (if (and p (buffer/open? ed p))
                           [200 (pr-str (window-payload ed p start count)) "text/plain; charset=utf-8"]
                           [404 "no buffer" "text/plain"]))
