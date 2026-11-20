@@ -107,37 +107,60 @@
           "the document is the file, whole — the extent absorbed, not doubled")
     (t/is (= {} (buffer/extents ed path)) "no extents remain")))
 
-(t/deftest loading-buffer-is-read-only
-  ;; the load model: while a file loads its buffer is read-only — its
-  ;; view is the file, the rope is built behind it and taken over in
-  ;; one switch at the end. A stretch a view pulled in as an extent is
-  ;; part of that rope, not an editable island: an edit inside it is
-  ;; refused like any other edit during the load. (Replaces
-  ;; extent-is-editable-while-partial, which asserted the retired
-  ;; edit-in-extent behaviour.)
+(t/deftest extent-is-editable-while-partial
   (let [ed (fresh-editor)
         content (numbered 40000)
         path (temp-file content)]
     (buffer/open-file! ed path {:head 2048})
     (t/is (await-scan path))
+    ;; two stretches land as extents, as the window endpoint
+    ;; lands them; the buffer is partial throughout the edits
     (doseq [start [30000 35000]]
       (let [w (text/file-window path (buffer/scan-of path) start 40)]
         (buffer/note-extent! ed path (:lines w) (:stream-start w) (:stream-end w))))
     (t/is (buffer/partial? ed path))
     (t/is (contains? (buffer/extents ed path) 30000))
-    (let [off (.indexOf content "line-30010")
+    (t/is (contains? (buffer/extents ed path) 35000))
+    ;; what no single extent covers keeps the partial refusal:
+    ;; a selection straddling the first extent's end, and a
+    ;; caret in the gap between the extents
+    (let [e (get (buffer/extents ed path) 30000)
+          end (+ (:start-char e) (:chars e))
           res (ops/apply-op ed {:op :insert-text :path path
-                                :caret off :text "EDITED "})]
-      (t/is (not (:ok res)) "an edit inside an extent is refused while loading")
-      (t/is (:preparing res))
-      (t/is (str/includes? (:error res) "read-only")))
+                                :sel [(dec end) (+ end 3)] :text "X"})]
+      (t/is (:preparing res) "a straddle of an extent's edge is refused"))
+    (let [gap (some (fn [ln]
+                      (let [off (.indexOf content (str "line-" ln))]
+                        (when (nil? (buffer/covering-extent ed path off off))
+                          off)))
+                    [31000 32000 33000 34000])
+          res (when gap
+                (ops/apply-op ed {:op :insert-text :path path
+                                  :caret gap :text "X"}))]
+      (t/is (some? gap) "a gap between the extents exists to aim at")
+      (t/is (:preparing res) "a caret outside every extent is refused"))
+    ;; an edit inside the first extent goes through, and a
+    ;; line added there rekeys the later extent in the same swap
+    (let [off (.indexOf content "line-30010")]
+      (t/is (:ok (ops/apply-op ed {:op :insert-text :path path
+                                   :caret off :text "EDITED "}))
+            "the covered edit answers ok while partial"))
+    (let [e (get (buffer/extents ed path) 30000)
+          caret (+ (:start-char e) (text/line-start-offset (:doc e) 20))]
+      (t/is (:ok (ops/apply-op ed {:op :insert-text :path path
+                                   :caret caret :text "\n"}))
+            "a line split inside the extent answers ok"))
+    (t/is (contains? (buffer/extents ed path) 35001)
+          "the later extent is rekeyed by the split's line delta")
+    (t/is (not (contains? (buffer/extents ed path) 35000)))
     (t/is (await-whole ed path) "the hydration finishes")
-    (t/is (= content (buffer/buffer-text ed path))
-          "the finished document is the file, untouched")
-    (t/is (:ok (ops/apply-op ed {:op :insert-text :path path
-                                 :caret (.indexOf content "line-30010")
-                                 :text "EDITED "}))
-          "and the same edit answers once the buffer is whole")))
+    (let [off1 (.indexOf content "line-30010")
+          off2 (.indexOf content "line-30020")
+          expected (str (subs content 0 off1) "EDITED "
+                        (subs content off1 off2) "\n"
+                        (subs content off2))]
+      (t/is (= expected (buffer/buffer-text ed path))
+            "the finished document is the file with exactly the extents' edits"))))
 
 (t/deftest line-of-counts-in-doc-and-file
   (let [ed (fresh-editor)

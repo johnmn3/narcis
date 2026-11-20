@@ -439,7 +439,7 @@
   [ed path]
   (buffer/materialize! ed path)
   {:ok false :preparing true
-   :error (str path " is loading — read-only until it is whole — "
+   :error (str path " is a partial document — preparing it whole — "
                (let [{:keys [loaded total]} (get (buffer/loading-map ed) path)]
                  (if (and loaded total (pos? total))
                    (str (quot (* 100 loaded) total) "% in")
@@ -454,13 +454,8 @@
   (let [path (or path (buffer/active ed))]
     (if (and (not (#{:open :activate :new :theme/use} op)) (not (buffer/open? ed path)))
       {:ok false :error (str "no such buffer: " path)}
-      ;; a loading buffer is read-only until it is whole: its view
-      ;; is the file, read by byte, and the rope is built behind it
-      ;; and taken over in one switch at the end. (Edits inside
-      ;; just-in-time extents during the load were retired with
-      ;; that model — every one of them moved the document frame
-      ;; under the load's own accounts.)
-      (if (and (not (load-safe-ops op)) (buffer/partial? ed path))
+      (if (and (not (load-safe-ops op)) (buffer/partial? ed path)
+               (not (extent-editable? op)))
         (preparing ed path)
         (case op
         :open (do (buffer/open-file! ed (:path msg)) (result ed (:path msg)))
