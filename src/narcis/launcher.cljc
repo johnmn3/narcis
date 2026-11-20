@@ -33,7 +33,13 @@
 ;; are the clj hosts' shapes today; the request handling and the API
 ;; above them are every host's.
 (defn- now-ms [] #?(:clj (System/currentTimeMillis) :cljs (js/Date.now)))
-(defn- parse-int [s] #?(:clj (Integer/parseInt s) :cljs (js/parseInt s 10)))
+;; a request's numbers are file positions — bytes and characters of a
+;; file that can be many gigabytes — so they parse as longs: an int
+;; parse threw NumberFormatException for every offset past 2 GiB, the
+;; window route answered 500, and the page fell back to the file's
+;; head (measured on a 13.9 GB file: every jump past the first 15% of
+;; the scrollbar snapped the view to line 1)
+(defn- parse-int [s] #?(:clj (Long/parseLong s) :cljs (js/parseInt s 10)))
 (defn- class-name [v] #?(:clj (.getName (class v)) :cljs (.-name (type v))))
 (defn- url-decode [s]
   #?(:clj (URLDecoder/decode s "UTF-8")
