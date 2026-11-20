@@ -81,20 +81,71 @@
 ;; ---------------------------------------------------------------------------
 ;; edits
 
+(declare preparing)
+
+(defn- extent-edit-op
+  "edit-op on a partial buffer. The op's target — its selection,
+   or its caret — is in document coordinates, the frame the
+   whole file will have; when ONE extent's document covers it,
+   the edit runs on that document, in its own coordinates, and
+   lands as one swap on the extent (buffer/edit-extent!): the
+   stretch the reader navigated to is editable while the rest
+   of the file is still arriving. A target no extent covers —
+   the unhydrated skeleton, the root's prefix, a straddle of
+   an extent's edge — keeps the partial buffer's answer,
+   :preparing. An edit that does not apply inside the extent
+   (a backspace at its first char, which would reach into the
+   skeleton) answers why, as it would at the start of any
+   document."
+  [ed path msg why f]
+  (let [[cursor ssel] (buffer/read ed path (fn [{c :cursor s :sel}] [c s]))
+        caret (if (contains? msg :caret) (:caret msg) cursor)
+        sel (if (contains? msg :sel) (:sel msg) ssel)
+        sel (when (and (sequential? sel) (= 2 (count sel))
+                       (< (first sel) (second sel)))
+              sel)
+        [a b] (if sel sel [caret caret])
+        cover (when (and (integer? a) (integer? b))
+                (buffer/covering-extent ed path a b))]
+    (if-not cover
+      (preparing ed path)
+      (let [[s e] cover
+            base (:start-char e)
+            applied (buffer/edit-extent!
+                     ed path s
+                     (fn [edoc]
+                       (let [lcaret (- caret base)
+                             lsel (when sel [(- (first sel) base)
+                                             (- (second sel) base)])
+                             r (f edoc lcaret lsel
+                                  (delay (region edoc
+                                                 [:extent path s (:chars edoc)]
+                                                 lcaret)))]
+                         (when r (assoc r :caret (get r :caret lcaret))))))]
+        (cond (= applied ::gone) (preparing ed path)
+              applied (merge (result ed path)
+                             (select-keys applied [:copy]))
+              :else {:ok false :error why})))))
+
 (defn- edit-op
   "Run f as one edit of path: (f doc caret sel region) -> {:doc :caret
    :sel} or nil, where region is a delay of the text the op can see.
-   why is the answer's :error when f does not apply."
+   why is the answer's :error when f does not apply. On a partial
+   buffer the edit runs on an extent when one covers the op's
+   target (extent-edit-op); the whole-text commands never reach
+   here on a partial buffer — the dispatch refuses them first."
   [ed path msg why f]
-  (let [applied (buffer/edit! ed path
-                              (fn [doc cursor sel key]
-                                (let [[caret sel] (at doc msg cursor sel)]
-                                  (f doc caret sel (delay (region doc key caret))))))]
-    (if applied
-      ;; an op may hand the page something beside the new state: :copy is
-      ;; text for the clipboard (Kill Form, Copy Form)
-      (merge (result ed path) (select-keys applied [:copy]))
-      {:ok false :error why})))
+  (if (buffer/partial? ed path)
+    (extent-edit-op ed path msg why f)
+    (let [applied (buffer/edit! ed path
+                                (fn [doc cursor sel key]
+                                  (let [[caret sel] (at doc msg cursor sel)]
+                                    (f doc caret sel (delay (region doc key caret))))))]
+      (if applied
+        ;; an op may hand the page something beside the new state: :copy is
+        ;; text for the clipboard (Kill Form, Copy Form)
+        (merge (result ed path) (select-keys applied [:copy]))
+        {:ok false :error why}))))
 
 (defn- insert-at
   "The plain insert of s at caret, replacing sel when there is one."
@@ -363,6 +414,37 @@
   #{:open :activate :close :new :theme/use :find-next :find-prev
     :complete :doc :forward-sexp :backward-sexp :set-caret})
 
+(def ^:private extent-editable-ops
+  "The text-edit ops: the ones that run through edit-op, on a
+   document and its caret. On a partial buffer these are the
+   ops an extent can answer — when the op's target sits inside
+   one extent, the edit runs on that extent's document (see
+   extent-edit-op). The whole-text commands are not here (they
+   read the whole text by definition), and neither are saves
+   or undo (the histories hold root documents)."
+  #{:insert-text :type-char :smart-enter :indent :unindent
+    :toggle-comment :backspace :delete-forward :structural})
+
+(defn- extent-editable?
+  "True when op is a text-edit op an extent can answer: one of
+   extent-editable-ops, or a structural command sent by name."
+  [op]
+  (or (contains? extent-editable-ops op)
+      (and (keyword? op) (contains? structural-ops (name op)))))
+
+(defn- preparing
+  "A partial buffer's answer to an op that needs the whole
+   document: the materialization is started (or continued)
+   and the answer says how far in it is."
+  [ed path]
+  (buffer/materialize! ed path)
+  {:ok false :preparing true
+   :error (str path " is a partial document — preparing it whole — "
+               (let [{:keys [loaded total]} (get (buffer/loading-map ed) path)]
+                 (if (and loaded total (pos? total))
+                   (str (quot (* 100 loaded) total) "% in")
+                   "almost in")))})
+
 (defn apply-op
   "Apply one op message to the editor. See the ns docstring for the
    result shape. Unknown ops and inapplicable structural ops answer
@@ -372,14 +454,9 @@
   (let [path (or path (buffer/active ed))]
     (if (and (not (#{:open :activate :new :theme/use} op)) (not (buffer/open? ed path)))
       {:ok false :error (str "no such buffer: " path)}
-      (if (and (not (load-safe-ops op)) (buffer/partial? ed path))
-        (do (buffer/materialize! ed path)
-            {:ok false :preparing true
-             :error (str path " is a partial document — preparing it whole — "
-                         (let [{:keys [loaded total]} (get (buffer/loading-map ed) path)]
-                           (if (and loaded total (pos? total))
-                             (str (quot (* 100 loaded) total) "% in")
-                             "almost in")))})
+      (if (and (not (load-safe-ops op)) (buffer/partial? ed path)
+               (not (extent-editable? op)))
+        (preparing ed path)
         (case op
         :open (do (buffer/open-file! ed (:path msg)) (result ed (:path msg)))
         :activate (do (buffer/activate! ed path) (result ed path))
