@@ -79,9 +79,12 @@
         path (temp-file content)]
     (buffer/open-file! ed path {:head 2048})
     (t/is (buffer/partial? ed path))
-    (let [res (ops/apply-op ed {:op :type-char :path path :ch "y"})]
+    ;; past everything a view has read (buffer A holds only the head
+    ;; so far) an edit has nothing to land in
+    (let [res (ops/apply-op ed {:op :type-char :path path :ch "y"
+                                :caret (.indexOf content "line-30000")})]
       (t/is (not (:ok res)))
-      (t/is (true? (:preparing res)) "an edit needs the whole document"))
+      (t/is (true? (:preparing res)) "an edit past every piece of A is refused"))
     (let [res (ops/apply-op ed {:op :save :path path})]
       (t/is (not (:ok res)) "a save would write a partial document over the file"))
     (t/is (:ok (ops/apply-op ed {:op :set-caret :path path :offset 3}))
@@ -89,6 +92,23 @@
     (t/is (await-whole ed path))
     (t/is (:ok (ops/apply-op ed {:op :type-char :path path :ch "y"}))
           "and edits answer again once the buffer is whole")))
+
+(t/deftest head-is-editable-while-loading
+  ;; the load model: the buffer a reader sees is A — the head and every
+  ;; stretch they reach — and it is editable from the first moment; the
+  ;; background build (B) never takes A's pieces in early, so an edit
+  ;; made before B's frontier passes it survives the passing, and the
+  ;; load's one merge puts it in the finished document
+  (let [ed (fresh-editor)
+        content (numbered 40000)
+        path (temp-file content)]
+    (buffer/open-file! ed path {:head 2048})
+    (t/is (buffer/partial? ed path))
+    (t/is (:ok (ops/apply-op ed {:op :insert-text :path path :caret 0 :text "EDIT "}))
+          "an edit in the head answers while the file loads")
+    (t/is (await-whole ed path) "the load finishes")
+    (t/is (= (str "EDIT " content) (buffer/buffer-text ed path))
+          "the finished document is the file with the head's edit")))
 
 (t/deftest extent-lands-and-is-absorbed
   (let [ed (fresh-editor)

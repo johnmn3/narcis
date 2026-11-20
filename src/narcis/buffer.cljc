@@ -376,16 +376,19 @@
                                  0))))
       []))
 
-(defn view-extent-ranges
-  "extent-ranges' file-frame [start-line line-count] pairs of the
-   extents a view read (:src :view): the temporary rope the load line
-   draws over the built one. A view stretch merged with a built one
-   counts as built."
+(defn extent-spans
+  "Buffer A's pieces as plain data, sorted, without their documents:
+   [{:key doc-line :file-start file-line :lines n :file-lines n
+     :start-char doc-char :chars n :file-chars n}] — where each piece
+   stands in the document and in the file, for composing a window of
+   A's pieces over the file and shifting the file's rows past an
+   edited piece into the document frame."
   [ed path]
-  (or ($ (into []
-               (keep (fn [{:keys [file-start extent]}]
-                       (when (= :view (:src extent))
-                         [file-start (file-lines-of extent)])))
+  (or ($ (mapv (fn [{:keys [key file-start extent]}]
+                 {:key key :file-start file-start
+                  :lines (:lines extent) :file-lines (file-lines-of extent)
+                  :start-char (:start-char extent) :chars (:chars extent)
+                  :file-chars (file-chars-of extent)})
                (extent-table (get-in @(:atom (:store ed)) [:extents path] {})
                              (or (get-in @(:atom (:store ed))
                                          [:loading path :line-delta])
@@ -630,6 +633,36 @@
                                 ;; load line
                                 :src :view})))))))
 
+(defn build-ranges
+  "Buffer B's pieces — the background build's segments and tail,
+   built from the file alone and never edited — as sorted [start-line
+   line-count] pairs in file lines ([:build path] in the app atom).
+   The reader's pieces are buffer A's, the extents; B never reads
+   them: it builds the whole file, and A's pieces go over it in one
+   merge when it is whole."
+  [ed path]
+  (or ($ (into [] (map (fn [[s x]] [s (:lines x)]))
+               (sort-by key (get-in @(:atom (:store ed)) [:build path] {}))))
+      []))
+
+(defn- build-starts
+  "The start lines of B's pending pieces, sorted (no documents)."
+  [ed path]
+  (or ($ (vec (sort (keys (get-in @(:atom (:store ed)) [:build path] {}))))) []))
+
+(defn- note-build-doc!
+  "Land a piece of B (see build-ranges) at file line a: e is
+   {:doc :lines :chars :start-char :start-stream :stream-chars}, its
+   document built by the caller in the store's domain. A piece
+   overlapping one B already holds is dropped."
+  [ed path a e]
+  (swap! (app-atom ed)
+         (fn [app]
+           (let [b (+ a (:lines e))
+                 overlap? (some (fn [[s x]] (and (< s b) (< a (+ s (:lines x)))))
+                                (get-in app [:build path] {}))]
+             (if overlap? app (assoc-in app [:build path a] e))))))
+
 (defn note-extent-doc!
   "Land a prebuilt extent: e is the full extent map (see
    note-extent!), its :doc built by the caller in the store's
@@ -650,23 +683,6 @@
                      (<= b (+ (:start-char e) (:chars e))))
             [s e]))
         (extents ed path)))
-
-(defn edited-during-load?
-  "True when path's partial document differs from its file: an edit
-   landed in an extent during the load (its counts left its file
-   span's, or the assembly already absorbed one — the loading entry's
-   frame account is nonzero). Until then the file IS the document, so
-   a window can be read straight from it by byte."
-  [ed path]
-  (true? ($ (let [app @(:atom (:store ed))
-                  l (get-in app [:loading path])]
-              (boolean
-               (or (not (zero? (or (:line-delta l) 0)))
-                   (not (zero? (or (:char-delta l) 0)))
-                   (some (fn [[_ e]]
-                           (or (not= (:lines e) (file-lines-of e))
-                               (not= (:chars e) (file-chars-of e))))
-                         (get-in app [:extents path]))))))))
 
 (defn read-extent
   "(f s e) over the extent of path whose lines cover [start,
@@ -714,13 +730,10 @@
     (swap! (app-atom ed)
            (fn [app]
              (let [e (get-in app [:extents path s])]
-               (if (or (nil? e)
-                       ;; the root has already taken this
-                       ;; stretch in: an edit here would be
-                       ;; spliced away by the assembly, so the
-                       ;; extent counts as gone
-                       (< s (dec (text/lines
-                                  (-root (get-in app [:buffers path]))))))
+               ;; A's pieces live until the load's one merge — the
+               ;; background rope (the root) never takes them in
+               ;; early, so an edit here is never spliced away
+               (if (nil? e)
                  (do (vreset! out ::gone) app)
                  (let [r (f (:doc e))]
                    (if (nil? r)
@@ -888,7 +901,7 @@
                      spans (when scan (segment-spans scan))
                      nxc (dec (frontier-line ed path))
                      claims (get @segment-claims path {})
-                     exts (extent-ranges ed path)
+                     exts (build-ranges ed path)
                      ranges (into []
                                   (mapcat (fn [[s cnt]]
                                             (let [owner (get claims s)]
@@ -910,7 +923,7 @@
                        (when (and (= load-id ($ (get-in @(:atom (:store ed)) [:loading path :id])))
                                   (= (clojure.core/count lines) (second pick))
                                   (not (:eof? w)))
-                         (note-extent-doc!
+                         (note-build-doc!
                           ed path (first pick)
                           {:doc (swap! scratch (fn [_] (extent-doc-for lines)))
                            :chars (reduce + (map (fn [l] (inc (count (:text l)))) lines))
@@ -1017,7 +1030,7 @@
                start (- (dec (:lines @scan)) (:breaks t))
                total-stream (scan-stream-total scan)
                tchar (- (:chars @scan) (:chars t))
-               gaps (uncovered-ranges (extent-ranges ed path)
+               gaps (uncovered-ranges (build-ranges ed path)
                                       (dec (frontier-line ed path))
                                       start (:breaks t))]
            (doseq [[g cnt] gaps]
@@ -1055,7 +1068,7 @@
                                                   (text/chars d1) "")))))
                    w (text/file-window path scan g cnt)]
                (when (= cnt (count (:lines w)))
-                 (note-extent-doc! ed path g
+                 (note-build-doc! ed path g
                                    {:doc doc
                                     :chars (text/chars doc)
                                     :lines cnt
@@ -1078,6 +1091,22 @@
                                                        (:stream-start w)))}))))
            (swap! parked-tails dissoc path))))))
 
+(defn- merge-pieces
+  "Buffer B's whole document with buffer A's pieces put over their
+   file spans: each A piece (an extent: the reader's stretch, edited
+   or not) replaces the file lines it was read from, last first, so
+   every earlier span still stands at its file position in B. B is
+   the file itself (built from it, never edited), so B's line n is
+   the file's line n. Runs inside the merging swap."
+  [root a-exts]
+  (reduce (fn [r {:keys [file-start extent]}]
+            (text/replace r
+                          (text/line-start-offset r file-start)
+                          (text/line-start-offset r (+ file-start (file-lines-of extent)))
+                          (:doc extent)))
+          root
+          (reverse (extent-table a-exts 0))))
+
 #?(:clj
    (defn- assemble!
      "One assembly pass over path's extents: append to the
@@ -1098,14 +1127,14 @@
       to do does not swap at all."
      [ed path load-id]
      (let [scan (scan-of path)
-           exts (extents ed path)
+           starts (build-starts ed path)
            doc-lines (frontier-line ed path)
            loaded0 (or ($ (get-in @(:atom (:store ed)) [:loading path :loaded-chars])) 0)
            total-stream (when (and scan (:done? @scan))
                           (scan-stream-total scan))
-           work? (or (and (seq exts)
-                          (<= (apply min (keys exts)) (dec doc-lines)))
-                     (and total-stream (empty? exts)
+           work? (or (and (seq starts)
+                          (<= (first starts) (dec doc-lines)))
+                     (and total-stream (empty? starts)
                           (= loaded0 total-stream)))]
        (when work?
          (swap! (app-atom ed)
@@ -1116,7 +1145,7 @@
                           [root loaded exts dlines dchars]
                           (loop [root (-root b)
                                  loaded (get-in app [:loading path :loaded-chars])
-                                 exts (get-in app [:extents path] {})
+                                 exts (get-in app [:build path] {})
                                  dlines 0 dchars 0]
                             ;; nxc is the line the root stands
                             ;; at: text/lines counts the
@@ -1183,15 +1212,22 @@
                       (if (and scan (:done? @scan)
                                (empty? exts)
                                (= loaded total-stream))
+                        ;; B is whole: the one merge. A's pieces —
+                        ;; the reader's rope, edits and all — go
+                        ;; over their file spans in B, and the
+                        ;; buffer is that document
                         (-> app
                             (assoc-in [:buffers path]
-                                      (with-state b {:root root}))
+                                      (with-state b {:root (merge-pieces
+                                                            root
+                                                            (get-in app [:extents path] {}))}))
                             (update :loading dissoc path)
-                            (update :extents dissoc path))
+                            (update :extents dissoc path)
+                            (update :build dissoc path))
                         (-> app
                             (assoc-in [:buffers path]
                                       (with-state b {:root root}))
-                            (assoc-in [:extents path] exts)
+                            (assoc-in [:build path] exts)
                             (assoc-in [:loading path :loaded-chars] loaded)
                             (assoc-in [:loading path :line-delta]
                                       (+ (or (get-in app [:loading path :line-delta]) 0)
@@ -1344,7 +1380,18 @@
               (fn [_] (->BufferState (text/from-pieces pieces) 0 nil nil nil eol 0 0 gen 0 0)))
        (swap! (app-atom ed) update :editor (fn [s] (add-tab s path)))
        (when-not done?
-         (let [id (claim-partial! ed path loaded-chars total-bytes)]
+         (let [id (claim-partial! ed path loaded-chars total-bytes)
+               ;; the head is buffer A's first piece: the reader can
+               ;; edit it while the file loads (the root is buffer B,
+               ;; the background build, which takes A's pieces only
+               ;; in the load's one merge). Its complete lines, read
+               ;; with their stream positions as a view's are
+               k (or (read ed path (fn [s] (dec (text/lines (:root s))))) 0)
+               hw (when (pos? k)
+                    #?(:clj (text/file-window path (atom {:chunks [] :done? false}) 0 k)
+                       :cljs nil))]
+           (when (and hw (= k (count (:lines hw))) (not (:eof? hw)))
+             (note-extent! ed path (:lines hw) (:stream-start hw) (:stream-end hw)))
            (swap! materializing conj path)
            (start-load! ed path id)
            (start-scan! path)))))))
@@ -1355,7 +1402,9 @@
                                    (contains? app :loading)
                                    (update :loading dissoc path)
                                    (contains? app :extents)
-                                   (update :extents dissoc path))))
+                                   (update :extents dissoc path)
+                                   (contains? app :build)
+                                   (update :build dissoc path))))
   (swap! (app-atom ed) update :editor (fn [s] (let [tabs (vec (remove #(= % path) (:tabs s)))]
                           (bump-editor
                            (-> s

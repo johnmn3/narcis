@@ -174,7 +174,10 @@
         ;; frontier
         loading (into {}
                       (map (fn [[p l]]
-                             (let [ranges (buffer/extent-ranges ed p)
+                             (let [;; blue: buffer B, the background
+                                   ;; build's pieces; amber: buffer A,
+                                   ;; the reader's pieces
+                                   ranges (buffer/build-ranges ed p)
                                    ;; the load line's geometry, in
                                    ;; bytes against the file's byte
                                    ;; length — the one scale that is
@@ -194,7 +197,7 @@
                                           :view-bytes (mapv (fn [[s n]]
                                                               (let [b0 (text/byte-offset-of-line scan s)]
                                                                 [b0 (- (text/byte-offset-of-line scan (+ s n)) b0)]))
-                                                            (buffer/view-extent-ranges ed p))})
+                                                            (buffer/extent-ranges ed p))})
                                    ;; the parked tail's band, in
                                    ;; the same byte geometry: the
                                    ;; file's end, drawn from the
@@ -225,47 +228,62 @@
      :theme (name (or (buffer/theme-choice ed) (:name @theme-atom)))
      :buffers buffers}))
 
-(defn- file-lines-payload
-  "Lines [start, start+count) of path's file, read by its scan's
-   index, in view/window's shape (no spans — the stretch is not a
-   document yet). The stretch is noted as a just-in-time extent
-   when it is a full stretch that stops short of the file's end,
-   so the hydration absorbs it instead of reading it again."
+(defn- composed-payload
+  "Document lines [start, start+count) of a loading buffer, as buffer A
+   holds them: a piece's rows where one of A's pieces stands (its own
+   document, edits and all, read in place), the file's rows elsewhere,
+   shifted into the document frame by the line and char deltas of the
+   edited pieces before them. A stretch read out of the file is noted
+   as a new piece of A (the rope a reader's views populate). The root
+   — buffer B, the background build — is never read here: it has none
+   of A's edits until the load's one merge."
   [ed path start count total-lines total-chars]
-  (let [w (text/file-window path (buffer/scan-of path) start count)
-        lines (:lines w)]
-    (when (and (= (clojure.core/count lines) count) (not (:eof? w)))
-      (buffer/note-extent! ed path lines (:stream-start w) (:stream-end w)))
-    {:start-line start
-     :total-lines (or total-lines (:total-lines w) start)
-     :total-chars (or total-chars (:total-chars w) 0)
-     :spans-mode :window
-     :match nil
-     :lines (mapv (fn [l] (assoc l :spans [])) lines)}))
+  (let [scan (or (buffer/scan-of path) (atom {:chunks [] :done? false}))
+        spans (buffer/extent-spans ed path)
+        finish (fn [rows]
+                 {:start-line start
+                  :total-lines total-lines
+                  :total-chars total-chars
+                  :spans-mode :window
+                  :match nil
+                  :lines (mapv (fn [l] (if (:spans l) l (assoc l :spans []))) rows)})]
+    (loop [line start rows []]
+      (let [need (- count (clojure.core/count rows))
+            p (some (fn [sp] (when (and (<= (:key sp) line)
+                                        (< line (+ (:key sp) (:lines sp))))
+                               sp))
+                    spans)]
+        (cond
+          (<= need 0) (finish rows)
 
-(defn- beyond-payload
-  "A window wholly past path's document: served from a just-in-time
-   extent when one covers it (it is rope already, analysis and
-   all), else read out of the file."
-  [ed path start count total-lines total-chars]
-  ;; the extent's document is read in place, through read-extent's
-  ;; region: a document taken out of the app atom (buffer/extents)
-  ;; is an unpinned handle the assembly may let go mid-render
-  (or (buffer/read-extent
-       ed path start count
-       (fn [s e]
-         (let [w (view/window (:doc e) {:start (- start s) :count count
-                                        :key [:extent path s (:chars e)]})]
-           {:start-line start
-            :total-lines total-lines
-            :total-chars total-chars
-            :spans-mode (:spans-mode w)
-            :match nil
-            :lines (mapv (fn [l] (-> l
-                                    (update :n + s)
-                                    (update :start + (:start-char e))))
-                         (:lines w))})))
-      (file-lines-payload ed path start count total-lines total-chars)))
+          p
+          (let [k (min need (- (+ (:key p) (:lines p)) line))
+                got (or (buffer/read-extent
+                         ed path line k
+                         (fn [s e]
+                           (mapv (fn [l] (-> l (update :n + s) (update :start + (:start-char e))))
+                                 (:lines (view/window (:doc e)
+                                                      {:start (- line s) :count k
+                                                       :key [:extent path s (:chars e)]})))))
+                        [])]
+            (if (seq got)
+              (recur (+ line (clojure.core/count got)) (into rows got))
+              (finish rows)))
+
+          :else
+          (let [before (filter (fn [sp] (<= (+ (:key sp) (:lines sp)) line)) spans)
+                dl (reduce + 0 (map (fn [sp] (- (:lines sp) (:file-lines sp))) before))
+                dc (reduce + 0 (map (fn [sp] (- (:chars sp) (:file-chars sp))) before))
+                nxt (some (fn [sp] (when (> (:key sp) line) (:key sp))) spans)
+                k (if nxt (min need (- nxt line)) need)
+                w (text/file-window path scan (- line dl) k)
+                ls (:lines w)]
+            (when (and (= (clojure.core/count ls) k) (not (:eof? w)))
+              (buffer/note-extent! ed path ls (:stream-start w) (:stream-end w)))
+            (let [rs (mapv (fn [l] (-> l (update :n + dl) (update :start + dc))) ls)]
+              (if (or (empty? ls) (:eof? w) (< (clojure.core/count ls) k))
+                (finish (into rows rs))
+                (recur (+ line (clojure.core/count ls)) (into rows rs))))))))))
 
 (defn- byte-window-payload
   "A loading buffer's window read straight from its file by byte (see
@@ -279,21 +297,46 @@
   [ed path b count]
   (let [scan (buffer/scan-of path)
         w (text/file-window-at-byte path scan b count)
-        lines (:lines w)
+        spans (buffer/extent-spans ed path)
+        fl0 (or (:n (first (:lines w))) 0)
+        edited? (fn [sp] (or (not= (:lines sp) (:file-lines sp))
+                             (not= (:chars sp) (:file-chars sp))))
+        ;; A's pieces wholly before the window move its rows into the
+        ;; document frame by their edits' deltas
+        before (filter (fn [sp] (<= (+ (:file-start sp) (:file-lines sp)) fl0)) spans)
+        dl (reduce + 0 (map (fn [sp] (- (:lines sp) (:file-lines sp))) before))
+        dc (reduce + 0 (map (fn [sp] (- (:chars sp) (:file-chars sp))) before))
+        touches-edit? (and (not (:approx? w))
+                           (some (fn [sp] (and (edited? sp)
+                                               (< (:file-start sp) (+ fl0 (clojure.core/count (:lines w))))
+                                               (> (+ (:file-start sp) (:file-lines sp)) fl0)))
+                                 spans))
+        lines (mapv (fn [l] (-> l (update :n + dl) (update :start + dc))) (:lines w))
         skel (buffer/skeleton path)
         doc-lines (or (buffer/read ed path (fn [s] (text/lines (:root s)))) 0)
         snap (buffer/snapshot ed path)]
-    (when (and (not (:approx? w)) (not (:eof? w)) (= (clojure.core/count lines) count))
-      (buffer/note-extent! ed path (mapv (fn [l] (dissoc l :byte)) lines)
+    (when (and (not (:approx? w)) (not (:eof? w)) (= (clojure.core/count lines) count)
+               (not touches-edit?))
+      ;; noted in the file frame, as a read of the file reports it
+      (buffer/note-extent! ed path (mapv (fn [l] (dissoc l :byte)) (:lines w))
                            (:stream-start w) (:stream-end w)))
-    {:start-line (or (:n (first lines)) 0)
+    (merge
+     (if touches-edit?
+       ;; an edited piece of A is in the window: the rows come from
+       ;; A as it stands, composed over the file (no :byte on them —
+       ;; a reader's edit has no file byte)
+       (composed-payload ed path (+ fl0 dl) count
+                         (max doc-lines (or (:lines skel) 0))
+                         (max (or (buffer/read ed path (fn [s] (text/chars (:root s)))) 0)
+                              (or (:chars skel) 0)))
+       {:start-line (or (:n (first lines)) 0)
      :total-lines (max doc-lines (or (:lines skel) 0))
      :total-chars (max (or (buffer/read ed path (fn [s] (text/chars (:root s)))) 0)
                        (or (:chars skel) 0))
      :spans-mode :window
      :match nil
-     :lines (mapv (fn [l] (assoc l :spans [])) lines)
-     :approx (:approx? w)
+     :lines (mapv (fn [l] (assoc l :spans [])) lines)})
+     {:approx (:approx? w)
      :path path
      :caret (:cursor snap)
      :sel (:sel snap)
@@ -301,7 +344,7 @@
      :redo (:redo snap)
      :rev (buffer/rev ed path)
      :start-byte (:start-byte w)
-     :total-bytes (get-in (buffer/loading-map ed) [path :total])}))
+     :total-bytes (get-in (buffer/loading-map ed) [path :total])})))
 
 (defn- window-payload [ed path start count]
   (let [doc-lines (buffer/read ed path (fn [s] (text/lines (:root s))))
@@ -326,26 +369,12 @@
              ;; (view/window clamps a count past the end)
              (assoc base :total-lines total-lines
                     :total-chars (:total-chars base))
-             (cond
-               ;; wholly within the document
-               (<= (+ start count) doc-lines)
-               (assoc base :total-lines total-lines
-                      :total-chars (or total-chars (:total-chars base)))
-
-               ;; wholly past it: an extent or the file serves
-               (>= start doc-lines)
-               (merge (beyond-payload ed path start count total-lines total-chars)
-                      (select-keys base [:path :caret :sel :undo :redo]))
-
-               ;; straddling the frontier: the document's lines (the
-               ;; doc window already clamps to them), then the file's
-               :else
-               (let [rest (beyond-payload ed path doc-lines
-                                          (+ start count (- doc-lines))
-                                          total-lines total-chars)]
-                 (assoc base :lines (into (:lines base) (:lines rest))
-                        :total-lines total-lines
-                        :total-chars (or total-chars (:total-chars base))))))
+             ;; a loading buffer is buffer A: its pieces over the
+             ;; file. The root is buffer B, the background build,
+             ;; which holds none of A's edits until the load's merge
+             (merge (composed-payload ed path start count total-lines
+                                      (or total-chars (:total-chars base)))
+                    (select-keys base [:path :caret :sel :undo :redo])))
            :rev (buffer/rev ed path)
            ;; the load-phase scroll geometry is denominated in
            ;; the file's bytes — the one quantity exact from t=0:
@@ -482,8 +511,7 @@
                           ;; its file: a byte window is read from the
                           ;; file by byte, with no line count
                           (and (:byte query) p (buffer/open? ed p)
-                               (buffer/partial? ed p) (buffer/scan-of p)
-                               (not (buffer/edited-during-load? ed p)))
+                               (buffer/partial? ed p) (buffer/scan-of p))
                           [200 (pr-str (byte-window-payload ed p (parse-int (:byte query)) count))
                            "text/plain; charset=utf-8"]
 
