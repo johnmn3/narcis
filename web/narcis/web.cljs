@@ -123,10 +123,26 @@
    block's height short of the file's last line. The bottom of
    the scrollbar is the bottom of the file."
   [win]
-  (if (and (byte-mode?) (:start-byte win))
+  (cond
+    ;; a window fetched by a byte ENDS at the line holding that
+    ;; byte (the server's contract: the byte is the viewport's
+    ;; bottom edge), so its block ends at the byte's place. Its
+    ;; rows are taller than their bytes' slots: placed by its
+    ;; start byte, the block hung a block's height below the
+    ;; anchor — a viewport of white with the window's first
+    ;; rows at its bottom, the rest below it (measured in the
+    ;; real page on a 2 GB load: block top 278 px into a 429 px
+    ;; viewport, 8 rows of 113 on screen)
+    (and (byte-mode?) (:anchor-byte win))
+    (max 0 (- (* (:anchor-byte win) (px-per-byte))
+              (* (count (:lines win)) (line-h))))
+
+    (and (byte-mode?) (:start-byte win))
     (min (* (:start-byte win) (px-per-byte))
          (max 0 (- (* (total-bytes) (px-per-byte))
                    (* (count (:lines win)) (line-h)))))
+
+    :else
     (* (:start-line win) (px-per-line))))
 
 (defn scroll-scale
@@ -172,6 +188,10 @@
 (def wheel-burst-px 160)
 (def wheel-absolute-rate 700)
 (def wheel-bucket (atom {:px wheel-burst-px :at 0}))
+
+;; the paths this page has seen loading: their status says
+;; "Whole document" once the load ends
+(defonce seen-loading (atom #{}))
 
 (def theme-cycle-fallback
   ["light" "dark" "solarized" "navy" "gruvbox-dark" "gruvbox-light"
@@ -566,7 +586,11 @@
                            (let [anchor (or anchor (view-anchor))
                                  held-start (when (:win @state)
                                               (:start-line (:win @state)))]
-                             (swap! state assoc :win win :fetching false)
+                             (swap! state assoc
+                                    :win (if (map? around)
+                                           (assoc win :anchor-byte (:byte around))
+                                           win)
+                                    :fetching false)
                              (render!)
                              (let [restored (when (and anchor (= path (:path @state)))
                                               ;; translate the offset whenever the
@@ -929,9 +953,23 @@
         where (if (and win pos)
                 (str "Ln " (inc (:n (nth (:lines win) (first pos)))) ", Col " (inc (second pos)))
                 "")
-        loading (when-let [l (get (:loading s) (:path s))]
+        ;; the share of the file already built into documents —
+        ;; the assembled prefix plus every extent (worker segments,
+        ;; the parked tail, view stretches); the prefix alone sat
+        ;; near 0% while most of a big file was built (measured:
+        ;; "Loading 0%" two minutes into a 2 GB load). Once a
+        ;; buffer this page saw loading is whole, the status says
+        ;; so, so the switch from reading the file to the rope is
+        ;; visible.
+        loading (if-let [l (get (:loading s) (:path s))]
                   (when (and (:total l) (pos? (:total l)))
-                    (str " · Loading " (quot (* 100 (or (:prefix-bytes l) (:loaded l))) (:total l)) "%")))
+                    (swap! seen-loading conj (:path s))
+                    (let [built (+ (or (:prefix-bytes l) (:loaded l) 0)
+                                   (reduce + 0 (map second (:extent-bytes l))))]
+                      (str " · Loading from file "
+                           (min 99 (quot (* 100 built) (:total l))) "%")))
+                  (when (contains? @seen-loading (:path s))
+                    " · Whole document"))
         indexing (when-let [l (get (:scanning s) (:path s))]
                    (when (and (:total l) (pos? (:total l)))
                      (str " · Indexing " (quot (* 100 (:loaded l)) (:total l)) "%")))]
