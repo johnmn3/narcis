@@ -10,6 +10,27 @@ cores, 15 GB RAM; Jolt v0.8.28 release binary built from source
 `EVE_RELEASE` unset (or pointed at that same checkout for
 `scripts/jolt-run.sh` probes); fresh store per run. Not the Mac.
 
+## 2026-11-20 (afternoon): the white page while scrolling a loading file
+
+- **Reproduced in the real page.** Headless Chromium, wheel scrolling
+  in bursts with pauses and jumps, a frame every 2 s over a 2 GB load,
+  at 8188ed7 on Jolt v0.8.28. Of 725 frames during the load, 13 showed
+  a full editor; 407 were partly white and 305 blank. The cause is the
+  window's position on the page, not slow fetches: every fetch was a
+  200 within 1.7 s. A byte-fetched window ends at the viewport's
+  bottom byte but was placed by its start byte, so the block hung
+  below the viewport.
+- **Fixed in 8681ef0.** The window is now placed by the byte it was
+  fetched for (`:anchor-byte`). With the same load and the same
+  scrolling: 351 of 379 settled frames full, 0 partly white, 28 blank
+  (the longest blank run was 6 s, during the scan). The status now
+  reads "Loading from file N%" over all built bytes, then "Whole
+  document". Page gate 44/44, editor e2e 38/38.
+- Mac provenance (from the user): tree 8188ed7, Eve a14775a via
+  gitlibs, no `../eve`, `EVE_RELEASE` unset. Jolt was v0.8.23, and the
+  user upgraded to v0.8.28 with Homebrew. Jolt's changelog lists
+  concurrency fixes after 0.8.23, one of them arm64-only.
+
 ## 2026-11-20
 
 ### Issue 1: scroll mid-load
