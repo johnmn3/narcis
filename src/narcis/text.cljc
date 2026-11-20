@@ -383,7 +383,7 @@
                (if (< k need) k 0))))))))
 
 #?(:clj
-   (defn- chunk-stats
+   (defn chunk-stats
      "Bulk counts for one decoded chunk of file text: {:breaks n
       :pairs n :units n} — breaks (a \\r\\n pair is one), pairs
       among them, and characters in UTF-16 units, as the hosts
