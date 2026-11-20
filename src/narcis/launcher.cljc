@@ -187,7 +187,14 @@
                                           :extent-bytes (mapv (fn [[s n]]
                                                                 (let [b0 (text/byte-offset-of-line scan s)]
                                                                   [b0 (- (text/byte-offset-of-line scan (+ s n)) b0)]))
-                                                              ranges)})
+                                                              ranges)
+                                          ;; the stretches views read —
+                                          ;; the temporary rope — drawn
+                                          ;; over the built ones
+                                          :view-bytes (mapv (fn [[s n]]
+                                                              (let [b0 (text/byte-offset-of-line scan s)]
+                                                                [b0 (- (text/byte-offset-of-line scan (+ s n)) b0)]))
+                                                            (buffer/view-extent-ranges ed p))})
                                    ;; the parked tail's band, in
                                    ;; the same byte geometry: the
                                    ;; file's end, drawn from the
@@ -206,7 +213,8 @@
                                          :total-lines (get-in buffers [p :lines] 0)
                                          :extents ranges
                                          :prefix-bytes (:prefix-bytes geo)
-                                         :extent-bytes (:extent-bytes geo))])))
+                                         :extent-bytes (:extent-bytes geo)
+                                         :view-bytes (:view-bytes geo))])))
                       (buffer/loading-map ed))]
     {:tabs (buffer/tabs ed)
      :active (buffer/active ed)
@@ -565,6 +573,9 @@
     (when-let [f (:file m)]
       (buffer/open-file! ed f)
       (println "NARCIS-S3 file-opened:" f "lines:" (:lines (buffer/snapshot ed f))))
+    ;; every other buffer left loading by the last run goes on loading
+    (doseq [p (buffer/resume-loads! ed)]
+      (println "NARCIS-S3 load-resumed:" p))
     (let [text (store/current-buffer st "hello")
           versions (store/version-count st "hello")]
       (println "NARCIS-S0 buffer-versions:" versions)

@@ -603,7 +603,7 @@
                       (when-let [sc (by-id "scroll")] (.-scrollTop sc)))
             pre-ppl (when keep-view? (scroll-scale))]
         (if path
-          (do (swap! state assoc :fetching true)
+          (do (swap! state assoc :fetching true :fetch-at (js/Date.now))
               (-> (get-edn (str "/api/window?path=" (js/encodeURIComponent path)
                                 (cond (= around :caret)
                                       (str "&caret=" (:caret s))
@@ -1047,20 +1047,27 @@
           (do (show! bar true)
               (set! (.. bar -style -top) (str (.-offsetTop sc) "px"))
               (set! (.. bar -style -height) (str (.-clientHeight sc) "px"))
-              (let [sig (str pfx "|" exts)]
+              (let [sig (str pfx "|" exts "|" (:view-bytes l))]
                 (when (not= sig (.-loadsig bar))
                   (set! (.-loadsig bar) sig)
                   (clear! bar)
-                  (let [seg! (fn [start n]
+                  (let [seg! (fn [start n color glow]
                                (let [d (el "div" "loadseg" nil)]
                                  (css! d (str "position:absolute;left:0;width:100%;"
                                               "top:" (.toFixed (* 100 (/ start total)) 3) "%;"
                                               "height:max(1px," (.toFixed (* 100 (/ n total)) 3) "%);"
-                                              "background:#2f7bff;box-shadow:0 0 6px rgba(47,123,255,.55);"))
+                                              "background:" color ";box-shadow:0 0 6px " glow ";"))
                                  (append! bar d)))]
-                    (seg! 0 pfx)
+                    ;; the rope being built, blue: the assembled
+                    ;; prefix and every built stretch
+                    (seg! 0 pfx "#2f7bff" "rgba(47,123,255,.55)")
                     (doseq [[start n] exts]
-                      (seg! start n))))))
+                      (seg! start n "#2f7bff" "rgba(47,123,255,.55)"))
+                    ;; over it, amber: the temporary rope — the
+                    ;; stretches views read out of the file
+                    (when byte?
+                      (doseq [[start n] (:view-bytes l)]
+                        (seg! start n "#f0a020" "rgba(240,160,32,.6)")))))))
           (show! bar false))))
     (when-let [stop (by-id "btn-stop")]
       (set! (.-disabled stop) (= "idle" (:status con))))))
@@ -2561,6 +2568,7 @@
    ".gutter{flex:0 0 auto;box-sizing:border-box;text-align:right;padding-right:10px;user-select:none;color:var(--muted);}"
    ".code{white-space:pre;padding-left:" code-pad-x "px;}"
    "@keyframes narcis-blink{0%,55%{opacity:1}56%,100%{opacity:0}}"
+   "@keyframes narcis-reading{0%,100%{opacity:.35}50%{opacity:1}}"
    ;; divider + console
    "#divider{flex:0 0 5px;cursor:row-resize;background:var(--bg);border-top:1px solid var(--chrome-border);}"
    "#console{flex:0 0 auto;overflow:auto;background:var(--bg);cursor:text;padding:2px 8px 8px 8px;"
@@ -2654,6 +2662,7 @@
           close-b (el "button" "btn small" "×")
           sc (with-id (el "div" nil nil) "scroll")
           loadbar (show! (with-id (el "div" nil nil) "loadbar") false)
+          readbar (show! (with-id (el "div" nil nil) "readbar") false)
           sizer (with-id (el "div" nil nil) "sizer")
           win (with-id (el "div" nil nil) "win")
           caret (with-id (el "div" nil nil) "caret")
@@ -2700,6 +2709,26 @@
       (css! work "position:relative;")
       (css! loadbar "position:absolute;left:0;width:3px;z-index:6;pointer-events:none;background:transparent;")
       (append! work loadbar)
+      ;; the reading line: a thin blue line along the editor's
+      ;; bottom while a stretch of a loading file is being read —
+      ;; shown once a window fetch has been out 150 ms, so a quick
+      ;; read never flickers it, and a slow one is never a silent
+      ;; white page. Driven by its own ticker, below
+      (css! readbar (str "position:absolute;left:0;right:0;height:3px;z-index:7;"
+                         "pointer-events:none;background:#2f7bff;"
+                         "box-shadow:0 0 6px rgba(47,123,255,.55);"
+                         "animation:narcis-reading 1s ease-in-out infinite;"))
+      (append! work readbar)
+      (js/setInterval
+       (fn []
+         (let [s @state
+               on? (and (:fetching s) (:fetch-at s)
+                        (> (- (js/Date.now) (:fetch-at s)) 150))]
+           (when-let [sc (by-id "scroll")]
+             (set! (.. readbar -style -top)
+                   (str (+ (.-offsetTop sc) (.-clientHeight sc) -3) "px")))
+           (show! readbar on?)))
+       100)
       ;; console
       (set! (.-rows con-in) 1)
       (set! (.-spellcheck con-in) false)

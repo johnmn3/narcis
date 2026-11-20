@@ -376,6 +376,22 @@
                                  0))))
       []))
 
+(defn view-extent-ranges
+  "extent-ranges' file-frame [start-line line-count] pairs of the
+   extents a view read (:src :view): the temporary rope the load line
+   draws over the built one. A view stretch merged with a built one
+   counts as built."
+  [ed path]
+  (or ($ (into []
+               (keep (fn [{:keys [file-start extent]}]
+                       (when (= :view (:src extent))
+                         [file-start (file-lines-of extent)])))
+               (extent-table (get-in @(:atom (:store ed)) [:extents path] {})
+                             (or (get-in @(:atom (:store ed))
+                                         [:loading path :line-delta])
+                                 0))))
+      []))
+
 (defn scanning-map
   "The scans in flight, as plain data: {path {:loaded n :total
    n}} — bytes scanned, of the file's bytes."
@@ -559,7 +575,8 @@
                              :start-stream (:start-stream pe)
                              :stream-chars (+ (:stream-chars pe) (:stream-chars e))
                              :file-lines (+ (file-lines-of pe) (:file-lines e))
-                             :file-chars (+ (file-chars-of pe) (:file-chars e))}])
+                             :file-chars (+ (file-chars-of pe) (:file-chars e))
+                             :src (if (= (:src pe) (:src e)) (:src e) :build)}])
                          [exts (+ a dlines) e])
             ;; and with the one starting where e ends
             exts (if nrow
@@ -572,7 +589,8 @@
                              :start-stream (:start-stream e)
                              :stream-chars (+ (:stream-chars e) (:stream-chars ne))
                              :file-lines (+ (:file-lines e) (file-lines-of ne))
-                             :file-chars (+ (:file-chars e) (file-chars-of ne))}))
+                             :file-chars (+ (:file-chars e) (file-chars-of ne))
+                             :src (if (= (:src e) (:src ne)) (:src e) :build)}))
                    (assoc exts k e))]
         (assoc-in app [:extents path] exts)))))
 
@@ -606,7 +624,11 @@
                                 :lines (count lines)
                                 :start-char (:start (first lines))
                                 :start-stream stream-start
-                                :stream-chars (- stream-end stream-start)})))))))
+                                :stream-chars (- stream-end stream-start)
+                                ;; read for a view: the temporary
+                                ;; rope's, drawn as such on the
+                                ;; load line
+                                :src :view})))))))
 
 (defn note-extent-doc!
   "Land a prebuilt extent: e is the full extent map (see
@@ -895,7 +917,8 @@
                            :lines (count lines)
                            :start-char (:start (first lines))
                            :start-stream (:stream-start w)
-                           :stream-chars (- (:stream-end w) (:stream-start w))}))))
+                           :stream-chars (- (:stream-end w) (:stream-start w))
+                           :src :build}))))
                    (Thread/sleep 250)))
                (catch #?(:cljs :default :default Throwable) t
                  (binding [*out* *err*]
@@ -1036,6 +1059,7 @@
                                    {:doc doc
                                     :chars (text/chars doc)
                                     :lines cnt
+                                    :src :build
                                     :start-char (+ tchar head-off)
                                     :start-stream (:stream-start w)
                                     ;; a gap running to the
@@ -1240,6 +1264,31 @@
                (start-load! ed path id)))
            true)
        false)))
+
+#?(:clj
+   (defn resume-loads!
+     "At boot: every buffer the store holds partial — a process that
+      died or was closed mid-load — goes on loading in the same mode,
+      where it stood: its scan restarts and its materialization
+      resumes (the rope and the extents already built are kept), when
+      its file is unchanged in size. A file whose size changed is left
+      for its next open, which restarts it from the head. Answers the
+      paths resumed. (Before this a restored partial tab sat with no
+      load and no scan until its file was opened again by hand.)"
+     [ed]
+     (let [entries (or ($ (into {} (map (fn [[p l]] [p (:total-bytes l)]))
+                               (get @(:atom (:store ed)) :loading)))
+                       {})]
+       (into []
+             (keep (fn [[p total]]
+                     (when (and (string? p)
+                                (not (materializing? p))
+                                (.exists (java.io.File. ^String p))
+                                (= total (text/file-length p)))
+                       (start-scan! p)
+                       (materialize! ed p)
+                       p)))
+             entries))))
 
 (defn line-of
   "The line holding char offset in path's buffer: counted in the
