@@ -7,3 +7,4 @@
 /run/
 target/
 web/out/
+/.jolt/

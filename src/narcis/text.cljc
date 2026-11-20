@@ -758,6 +758,132 @@
                        (recur sb (:carry rd) (:pend? rd)
                               (+ bytes (:bytes rd)))))))))))))
 
+;; Reading by byte. While a big file loads, the page addresses it by
+;; byte — the one coordinate exact from the first moment — and a
+;; window read by byte needs no line count at all: seek, back up to
+;; the start of the line, read. Its line numbers and character
+;; offsets are exact where the scan has passed (counted from the
+;; scan's chunk table, at most one chunk read), and extrapolated
+;; from the scanned prefix's averages where it has not, flagged
+;; :approx?. (The line route counted every break from the scan's end
+;; to the wanted byte instead: 245 s for a window 30% into a 13.9 GB
+;; file mid-scan.)
+
+#?(:clj
+   (defn- read-bytes-at
+     "n bytes of the file at path from byte offset off (fewer at its end)."
+     [path off n]
+     (with-open [in (java.io.FileInputStream. ^String path)]
+       (skip-to in off)
+       (let [buf (byte-array n)]
+         (loop [got 0]
+           (let [k (if (< got n) (.read in buf got (- n got)) -1)]
+             (if (pos? k)
+               (recur (+ got k))
+               (if (= got n) buf (java.util.Arrays/copyOf buf got)))))))))
+
+#?(:clj
+   (defn- scan-position-at-byte
+     "[line doc stream] at byte b — a line start — counted exactly from
+      the scan's chunk table when the scan has passed b, else nil."
+     [path scan b]
+     (when scan
+       (let [{:keys [chunks]} @scan]
+         (loop [cs chunks line 0 byte 0 doc 0 stream 0]
+           (when-let [[cb cbr cp cu] (first cs)]
+             (if (<= (+ byte cb) b)
+               (recur (rest cs) (+ line cbr) (+ byte cb) (+ doc (- cu cp)) (+ stream cu))
+               ;; b is inside this chunk: count the chunk's text
+               ;; from its start to b (b follows a break, so the
+               ;; prefix ends on a whole break)
+               (let [{:keys [breaks pairs units]}
+                     (if (= b byte)
+                       {:breaks 0 :pairs 0 :units 0}
+                       (chunk-stats (String. ^bytes (read-bytes-at path byte (- b byte)) "UTF-8")))]
+                 [(+ line breaks) (+ doc (- units pairs)) (+ stream units)]))))))))
+
+#?(:clj
+   (defn file-window-at-byte
+     "The nlines lines of the file at path ending with the line that
+      holds byte offset b, read by position: {:lines [{:n :start :text
+      :byte}] :start-byte n :end-byte n :stream-start n :stream-end n
+      :approx? b :eof? b}. :byte is each line's first byte (exact);
+      :n and :start (line number, document char offset) are exact
+      when the scan has passed the window, else estimated from the
+      scanned prefix, and :approx? says so. :end-byte is past the
+      last line's break; :eof? says the window reaches the file's end.
+      No break is counted outside the window and at most one chunk
+      of the scan, so it costs the same anywhere in the file, scanned
+      or not."
+     [path scan b nlines]
+     (let [total (file-length path)
+           b (max 0 (min b (dec total)))
+           ;; the end of b's line: past the first \n at or after b,
+           ;; or the file's end
+           line-end (loop [off b]
+                      (let [chunk (read-bytes-at path off 65536)
+                            n (alength ^bytes chunk)
+                            i (loop [i 0] (if (and (< i n) (not= 10 (aget ^bytes chunk i))) (recur (inc i)) i))]
+                        (cond (< i n) (+ off i 1)
+                              (< n 65536) (+ off n)
+                              :else (recur (+ off n)))))
+           ;; back from there until the block holds nlines whole lines
+           [start buf] (loop [span (max 65536 (* nlines 256))]
+                         (let [start (max 0 (- line-end span))
+                               buf (read-bytes-at path start (- line-end start))
+                               breaks (loop [i 0 k 0]
+                                        (if (< i (alength ^bytes buf))
+                                          (recur (inc i) (if (= 10 (aget ^bytes buf i)) (inc k) k))
+                                          k))]
+                           (if (or (zero? start) (> breaks nlines))
+                             [start buf]
+                             (recur (* span 4)))))
+           n (alength ^bytes buf)
+           ;; the line starts in the block: its start when that is the
+           ;; file's, else past its first break (the partial line
+           ;; before it belongs to the territory before)
+           starts (loop [i 0 acc (if (zero? start) [0] [])]
+                    (if (< i n)
+                      (recur (inc i) (if (and (= 10 (aget ^bytes buf i)) (< (inc i) n))
+                                       (conj acc (inc i)) acc))
+                      acc))
+           starts (vec (take-last nlines starts))
+           rows (mapv (fn [k]
+                        (let [s (nth starts k)
+                              e (if (< (inc k) (count starts)) (nth starts (inc k)) n)
+                              nl? (and (> e s) (= 10 (aget ^bytes buf (dec e))))
+                              cr? (and nl? (> (dec e) s) (= 13 (aget ^bytes buf (- e 2))))
+                              te (- e (if nl? 1 0) (if cr? 1 0))]
+                          {:byte (+ start s)
+                           :text (String. ^bytes buf (int s) (int (- te s)) "UTF-8")
+                           :break-units (cond cr? 2 nl? 1 :else 0)}))
+                      (range (count starts)))
+           b0 (:byte (first rows))
+           exact (scan-position-at-byte path scan b0)
+           [line0 doc0 stream0]
+           (or exact
+               (let [{:keys [lines chars bytes]} (when scan @scan)
+                     bytes (or bytes 0)]
+                 (if (pos? bytes)
+                   [(long (* (dec lines) (/ b0 bytes)))
+                    (long (* chars (/ b0 bytes)))
+                    (long (* chars (/ b0 bytes)))]
+                   [(quot b0 100) b0 b0])))
+           [lines _ stream-end]
+           (reduce (fn [[acc doc stream] [k r]]
+                     [(conj acc {:n (+ line0 k) :start doc :text (:text r) :byte (:byte r)})
+                      (+ doc (count (:text r)) 1)
+                      (+ stream (count (:text r)) (:break-units r))])
+                   [[] doc0 stream0]
+                   (map-indexed vector rows))]
+       {:lines lines
+        :start-byte b0
+        :end-byte line-end
+        :stream-start stream0
+        :stream-end stream-end
+        :approx? (nil? exact)
+        :eof? (>= line-end total)})))
+
 #?(:clj
    (defn file-line-of
      "The line holding document character offset in the file at
@@ -840,6 +966,77 @@
                          (if (= :at (first r))
                            (second r)
                            (recur (nth r 1) (nth r 2) (nth r 3)))))))))))))))
+
+#?(:clj
+   (defn line-of-byte
+     "The line holding byte offset in the file at path: the count
+      of the breaks whose last byte lies before the offset's
+      byte. A break belongs to the line it ends, so a byte that
+      is itself a break's last byte stands on the line the break
+      ends; and an offset at or past the file's end stands on
+      the file's last byte, so the end offset answers the last
+      line — never the empty line a trailing break leaves.
+      Counted from the scan's chunk table where it reaches and
+      in bulk past it, on the raw bytes decoded as Latin-1 for
+      the counting only: a break byte is never part of a
+      multi-byte character, so the count is the file's own.
+      The scan is never waited on."
+     [path scan byte-off]
+     (let [total (file-length path)]
+       (if (or (nil? total) (not (pos? total)) (not (pos? byte-off)))
+         0
+         (let [limit (min byte-off (dec total))
+               ;; the table's whole chunks ending at or before
+               ;; the limit, and the byte counting resumes from:
+               ;; a chunk's byte count is the span of its text, so
+               ;; the resume byte is a text boundary — a \r held
+               ;; out of a counted chunk stands at it, uncounted,
+               ;; and is the first byte counted here
+               [line abyte] (loop [cs (if scan (:chunks @scan) [])
+                                   line 0 b 0]
+                              (if-let [[cb cbr _cp _cu] (first cs)]
+                                (if (<= (+ b cb) limit)
+                                  (recur (rest cs) (+ line cbr) (+ b cb))
+                                  [line b])
+                                [line b]))]
+           (if (>= abyte limit)
+             line
+             (with-open [in (java.io.FileInputStream. ^String path)]
+               (skip-to in abyte)
+               (let [buf (byte-array 1048576)]
+                 (loop [line line b abyte prev-cr? false]
+                   (let [n (.read in buf)]
+                     (if (neg? n)
+                       line
+                       (let [final? (>= (+ b n) limit)
+                             k (if final? (- limit b) n)
+                             ;; a trailing \r is held out of the
+                             ;; count: it is counted as the next
+                             ;; piece's prefix, where what follows
+                             ;; it resolves it — or by the peek at
+                             ;; the limit, where it ends the count
+                             trail? (and (pos? k) (= 13 (aget buf (dec k))))
+                             m (if trail? (dec k) k)
+                             s (String. (if prev-cr?
+                                          (let [all (byte-array (inc m))]
+                                            (aset all 0 (byte 13))
+                                            (System/arraycopy buf 0 all 1 m)
+                                            all)
+                                          buf)
+                                        0 (if prev-cr? (inc m) m) "ISO-8859-1")
+                             line (+ line (:breaks (chunk-stats s)))]
+                         (cond
+                           (not final?) (recur line (+ b n) trail?)
+                           ;; the limit's byte resolves the held
+                           ;; \r: when it is a \n the pair completes
+                           ;; there — its break belongs past this
+                           ;; count; anything else (or the file's
+                           ;; end) leaves the \r a break of its own
+                           trail? (let [peek (if (< k n)
+                                               (aget buf k)
+                                               (.read in))]
+                                    (if (= 10 peek) line (inc line)))
+                           :else line)))))))))))))
 
 ;; A find over the file reads it as normalized text a chunk at a
 ;; time, in one pass — the same slice walk narcis.ops runs over a
