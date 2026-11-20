@@ -34,7 +34,14 @@
    one domain and separate domains are within noise: the shared
    domain / swap path is NOT the wall. The loader's measured
    0.43 MB/s/thread with no worker scaling is lost in the loader's
-   shape."
+   shape.
+   The same at the production segment size (64 MB builds, 1 per
+   thread, W = 1 / 3):
+     window       8.46 / 21.88
+     one-domain   2.39 /  5.45
+     domains      2.36 /  5.58
+   Build size does not break it either: a 64 MB build runs at the
+   4 MB rate on one thread and scales ~2.3x on three."
   (:require [eve.alpha :as eve :refer [$]]
             [clojure.string :as str]
             [narcis.text :as text]))
