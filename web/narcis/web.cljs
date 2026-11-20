@@ -487,6 +487,10 @@
         (when (and (<= 0 rel) (< rel (* (count (:lines win)) (line-h))))
           (let [idx (js/Math.floor (/ rel (line-h)))]
             {:line (:n (nth (:lines win) idx))
+             ;; a row read by byte (a loading file) also carries its
+             ;; first byte — exact where its line number may be an
+             ;; estimate, so the byte is what a restore matches
+             :byte (:byte (nth (:lines win) idx))
              :off (- (* idx (line-h)) rel)
              :top (.-scrollTop sc)}))))))
 
@@ -505,17 +509,47 @@
    restore is the scroll fetch's own landing translation: its
    anchor is taken at landing time, from the offset as it then
    stands, so there is nothing stale to protect against."
-  [{:keys [line off top]} force?]
+  [{:keys [line byte off top]} force?]
   (let [win (:win @state)
-        sc (by-id "scroll")]
-    (when (and win sc (seq (:lines win))
+        sc (by-id "scroll")
+        lines (:lines win)
+        ;; the anchor's row in the held window: by its byte when both
+        ;; were read by byte (their line numbers may be estimates
+        ;; that moved between the reads), else by its line number
+        idx (when (seq lines)
+              (if (and byte (:byte (first lines)))
+                (first (keep-indexed (fn [i l] (when (= (:byte l) byte) i)) lines))
+                (when (and (<= (:start-line win) line)
+                           (< line (+ (:start-line win) (count lines))))
+                  (- line (:start-line win)))))]
+    (when (and win sc idx
                (or force?
-                   (<= (js/Math.abs (- (.-scrollTop sc) top)) 1))
-               (<= (:start-line win) line)
-               (< line (+ (:start-line win) (count (:lines win)))))
-      (let [row-top (+ (win-start-px win)
-                       (* (- line (:start-line win)) (line-h)))]
+                   (<= (js/Math.abs (- (.-scrollTop sc) top)) 1)))
+      (let [row-top (+ (win-start-px win) (* idx (line-h)))]
         (set! (.-scrollTop sc) (- row-top off))))))
+
+(defn- view-end-byte
+  "In byte mode, the byte a fetch that keeps the rows on screen
+   anchors on (a byte window ENDS at the line holding its byte): the
+   first byte of the row overscan rows below the viewport's bottom
+   row, or past the held window's end by the window's average row
+   length. nil when the viewport is above the held window, or the
+   window was not read by byte."
+  []
+  (let [win (:win @state)
+        sc (by-id "scroll")
+        lines (:lines win)]
+    (when (and win sc (seq lines) (:byte (first lines)))
+      (let [rel (- (+ (.-scrollTop sc) (.-clientHeight sc)) (win-start-px win))
+            idx (+ (js/Math.floor (/ rel (line-h))) overscan)
+            n (count lines)]
+        (cond
+          (neg? idx) nil
+          (< idx n) (:byte (nth lines idx))
+          :else (let [b0 (:byte (first lines))
+                      bl (:byte (peek lines))
+                      avg (if (> n 1) (/ (- bl b0) (dec n)) 100)]
+                  (js/Math.floor (+ bl (* avg (- idx (dec n)))))))))))
 
 (defn fetch-window!
   "Fetch a window covering line `around`, then re-render. `around` may
@@ -704,7 +738,15 @@
         flip-frac (when flip?
                     (when-let [sc (by-id "scroll")]
                       (let [h (.-scrollHeight sc)]
-                        (when (pos? h) (/ (.-scrollTop sc) h)))))]
+                        (when (pos? h) (/ (.-scrollTop sc) h)))))
+        ;; and the line at the viewport's top, taken in the byte
+        ;; geometry while it still holds: when the held window's
+        ;; line numbers are exact (the scan passed it), the flip
+        ;; puts that very line back where it was instead of
+        ;; re-applying a fraction (a fraction of a scroll space
+        ;; capped at 30M px is ~5 lines a pixel on a 144M-line file)
+        flip-anchor (when (and flip? prev-win (not (:approx prev-win)))
+                      (when-let [a (view-anchor)] (dissoc a :byte)))]
     (-> (get-edn "/api/state")
         (.then (fn [st]
                  (let [active (:active st)
@@ -743,13 +785,18 @@
                      ;; at the captured fraction of the new scroll
                      ;; space: the reader stays at the same place in
                      ;; the file across the flip
-                     (-> (fetch-window! (+ (:start-line (:win @state)) overscan)
-                                        false true)
-                         (.then (fn [_]
-                                  (when-let [sc (by-id "scroll")]
-                                    (set! (.-scrollTop sc)
-                                          (* flip-frac (.-scrollHeight sc))))
-                                  (render!))))
+                     (if flip-anchor
+                       (-> (fetch-window! (:line flip-anchor) false true)
+                           (.then (fn [_]
+                                    (restore-view! flip-anchor true)
+                                    (render!))))
+                       (-> (fetch-window! (+ (:start-line (:win @state)) overscan)
+                                          false true)
+                           (.then (fn [_]
+                                    (when-let [sc (by-id "scroll")]
+                                      (set! (.-scrollTop sc)
+                                            (* flip-frac (.-scrollHeight sc))))
+                                    (render!)))))
                      ;; re-fetch the window the page already holds, at
                      ;; its own start: fetch-window! covers `around`
                      ;; by overscan lines above it, so the around for
@@ -770,7 +817,9 @@
                      ;; byte: the fetch anchors on the viewport's
                      ;; bottom byte, so the window it lands ends at
                      ;; the line the reader's bottom edge is on
-                     (-> (fetch-window! (cond (rendered-top-line)
+                     (-> (fetch-window! (cond (and (byte-mode?) (rendered-top-line))
+                                              {:byte (or (view-end-byte) (bottom-byte))}
+                                              (rendered-top-line)
                                               (+ (:start-line (:win @state)) overscan)
                                               (byte-mode?) {:byte (bottom-byte)}
                                               :else (first-visible))
@@ -2676,7 +2725,10 @@
                    (when (or (< top (+ (:start-line win) 15))
                              (> (+ top (visible-count))
                                 (+ (:start-line win) (count (:lines win)) -15)))
-                     (fetch-window! (+ top (quot (visible-count) 2)) false false))
+                     (fetch-window! (if (byte-mode?)
+                                      {:byte (or (view-end-byte) (bottom-byte))}
+                                      (+ top (quot (visible-count) 2)))
+                                    false false))
                    ;; the viewport is off the held window entirely
                    ;; (a teleport): fetch for the scroll position —
                    ;; a byte while the buffer loads, so the window
