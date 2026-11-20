@@ -932,23 +932,51 @@
      "When path's scan has finished and a tail is parked, note
       it as the extent at the file's last lines: its start
       falls out of the scan's totals less its own counts. The
-      noting itself is assoc-extent's: a tail whose territory
-      a segment already covered is dropped as an overlap, one
-      that touches its predecessor merges with it."
+      tail's span is the file's last stretch, and no segment
+      span reaches it — so the tail must land even where a
+      view's or a worker's extent already covers part of it:
+      it is noted in the gaps between the extents the map
+      holds, each gap's document sliced out of the parked
+      one by reference, its stream span read off a
+      file-window over the same lines. (Noting it whole, as
+      one extent, lost it whole whenever anything overlapped
+      — and with it the only builder of its uncovered
+      stretches: the load stalled with the territory between
+      the last segment and the covering extent unbuilt.)"
      [ed path]
      (let [scan (scan-of path)]
        (when (and scan (:done? @scan) (get @parked-tails path)
                   (partial? ed path))
          (let [t (get @parked-tails path)
                start (- (dec (:lines @scan)) (:breaks t))
-               total-stream (scan-stream-total scan)]
-           (note-extent-doc! ed path start
-                             {:doc (:doc t)
-                              :chars (:chars t)
-                              :lines (:breaks t)
-                              :start-char (- (:chars @scan) (:chars t))
-                              :start-stream (- total-stream (:stream-chars t))
-                              :stream-chars (:stream-chars t)})
+               tchar (- (:chars @scan) (:chars t))
+               gaps (uncovered-ranges (extent-ranges ed path)
+                                      (dec (frontier-line ed path))
+                                      start (:breaks t))]
+           (doseq [[g cnt] gaps]
+             (let [l0 (- g start)
+                   head-off (text/line-start-offset (:doc t) l0)
+                   d1 (if (zero? l0)
+                        (:doc t)
+                        (text/replace (:doc t) 0 head-off ""))
+                   ;; a gap that runs to the tail's end keeps
+                   ;; the doc's last, partial line; a gap that
+                   ;; stops inside the tail is trimmed at its
+                   ;; end line's start
+                   doc (if (= (+ g cnt) (+ start (:breaks t)))
+                         d1
+                         (text/replace d1 (text/line-start-offset d1 cnt)
+                                       (text/chars d1) ""))
+                   w (text/file-window path scan g cnt)]
+               (when (= cnt (count (:lines w)))
+                 (note-extent-doc! ed path g
+                                   {:doc doc
+                                    :chars (text/chars doc)
+                                    :lines cnt
+                                    :start-char (+ tchar head-off)
+                                    :start-stream (:stream-start w)
+                                    :stream-chars (- (:stream-end w)
+                                                     (:stream-start w))}))))
            (swap! parked-tails dissoc path))))))
 
 #?(:clj
