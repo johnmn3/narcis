@@ -588,13 +588,13 @@
       that remain — nothing is read twice."
      [exts nxc s cnt]
      (loop [rs [[(max s nxc) (+ s cnt)]] es exts]
-       (if-let [[es ec] (first es)]
+       (if-let [[xs xc] (first es)]
          (recur (into []
                       (mapcat (fn [[a b]]
-                                (cond (<= (+ es ec) a) [[a b]]
-                                      (>= es b) [[a b]]
-                                      :else (concat (when (< a es) [[a es]])
-                                                    (when (> b (+ es ec)) [[(+ es ec) b]]))))
+                                (cond (<= (+ xs xc) a) [[a b]]
+                                      (>= xs b) [[a b]]
+                                      :else (concat (when (< a xs) [[a xs]])
+                                                    (when (> b (+ xs xc)) [[(+ xs xc) b]]))))
                       rs)
                 (rest es))
          (into [] (comp (filter (fn [[a b]] (> b a)))
