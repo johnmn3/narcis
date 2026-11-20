@@ -83,6 +83,63 @@
     (if (> full max-scroll-px) (/ max-scroll-px full) 1)))
 
 (defn px-per-line [] (* (line-h) (doc-scale)))
+
+;; While the buffer on screen is still loading, the scroll space
+;; is denominated in the file's BYTES — the one quantity exact
+;; from t=0 — not in the skeleton's estimated line count, which
+;; drifts as the scan proceeds and dragged the parked scrollbar
+;; (and every window fetched for the position) across the file.
+;; The window payloads carry the denomination with them
+;; (:total-bytes, and the window's own :start-byte), so the mode
+;; is a property of the window held, and it ends by itself when
+;; the load does: the first whole-buffer window has no
+;; :start-byte, and refresh-state! hands the scroll fraction
+;; over to the line geometry in the same sync.
+(defn loading-entry []
+  (get (:loading @state) (:path @state)))
+
+(defn byte-mode? []
+  (boolean (and (loading-entry) (:start-byte (:win @state)))))
+
+(defn total-bytes []
+  (or (:total-bytes (:win @state))
+      (:total (loading-entry))
+      0))
+
+(defn px-per-byte []
+  (let [tb (total-bytes)]
+    (if (pos? tb) (min (line-h) (/ max-scroll-px tb)) (line-h))))
+
+(defn win-start-px
+  "The held window's block top in scroll space: its start byte
+   at the byte rate while its buffer is loading, its start line
+   at the line rate otherwise. The window's rows stack at the
+   full line height inside the block either way."
+  [win]
+  (if (and (byte-mode?) (:start-byte win))
+    (* (:start-byte win) (px-per-byte))
+    (* (:start-line win) (px-per-line))))
+
+(defn scroll-scale
+  "One unit of the scroll space's denomination, in pixels: the
+   rate fetch-window!'s drift compensation compares across a
+   fetch. In byte mode it never changes during a load, so the
+   compensation stays silent — the space does not drift."
+  []
+  (if (byte-mode?) (px-per-byte) (px-per-line)))
+
+(defn wheel-px-per-line
+  "The compressed rate the wheel's relative regime converts at:
+   in byte mode a byte's slot is px-per-byte and a line is
+   total-bytes/total-lines bytes on average, so a line's slot
+   is the product — the same two-regime feel, denominated in
+   the space the scrollbar actually travels."
+  []
+  (if (byte-mode?)
+    (let [tl (max 1 (or (:total-lines (:win @state)) 1))]
+      (* (px-per-byte) (/ (total-bytes) tl)))
+    (px-per-line)))
+
 (def mono "ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace")
 (defn font [] (str (font-px) "px " mono))
 (def overscan 45)
@@ -124,6 +181,19 @@
     e))
 
 (defn by-id [id] (.getElementById js/document id))
+
+(defn bottom-byte
+  "The file byte at the viewport's bottom edge, in byte mode:
+   the byte the window fetch anchors on. The server ends the
+   fetched window at the line holding it, so the lines on
+   screen are the ones down to the bottom — the file's last
+   line included, when the viewport sits at the end."
+  []
+  (let [sc (by-id "scroll")]
+    (when sc
+      (js/Math.floor (min (total-bytes)
+                          (/ (+ (.-scrollTop sc) (.-clientHeight sc))
+                             (px-per-byte)))))))
 
 (defn css! [e s] (set! (.-cssText (.-style e)) s) e)
 
@@ -319,7 +389,7 @@
   (let [win (:win @state)
         sc (by-id "scroll")]
     (when (and win sc (seq (:lines win)))
-      (let [rel (- (.-scrollTop sc) (* (:start-line win) (px-per-line)))]
+      (let [rel (- (.-scrollTop sc) (win-start-px win))]
         (when (and (<= 0 rel) (< rel (* (count (:lines win)) (line-h))))
           (+ (:start-line win) (js/Math.floor (/ rel (line-h)))))))))
 
@@ -352,7 +422,7 @@
       (set! (.-scrollTop sc)
             (+ (.-scrollTop sc)
                spend
-               (* excess (/ (line-h) (px-per-line))))))))
+               (* excess (/ (line-h) (wheel-px-per-line))))))))
 
 (defn caret-pos
   "[line-idx col line-map] for caret in the current window, or nil."
@@ -380,7 +450,7 @@
   (let [win (:win @state)
         sc (by-id "scroll")]
     (when (and win sc (seq (:lines win)))
-      (let [rel (- (.-scrollTop sc) (* (:start-line win) (px-per-line)))]
+      (let [rel (- (.-scrollTop sc) (win-start-px win))]
         ;; no anchor when the viewport's top is not on a held row
         ;; at all (the window sits wholly above or below it):
         ;; clamping to an edge row would pin that row and mask
@@ -414,7 +484,7 @@
                    (<= (js/Math.abs (- (.-scrollTop sc) top)) 1))
                (<= (:start-line win) line)
                (< line (+ (:start-line win) (count (:lines win)))))
-      (let [row-top (+ (* (:start-line win) (px-per-line))
+      (let [row-top (+ (win-start-px win)
                        (* (- line (:start-line win)) (line-h)))]
         (set! (.-scrollTop sc) (- row-top off))))))
 
@@ -468,13 +538,20 @@
             anchor (when keep-view? (view-anchor))
             pre-top (when keep-view?
                       (when-let [sc (by-id "scroll")] (.-scrollTop sc)))
-            pre-ppl (when keep-view? (px-per-line))]
+            pre-ppl (when keep-view? (scroll-scale))]
         (if path
           (do (swap! state assoc :fetching true)
               (-> (get-edn (str "/api/window?path=" (js/encodeURIComponent path)
-                                (if (= around :caret)
-                                  (str "&caret=" (:caret s))
-                                  (str "&start=" (max 0 (- around overscan))))
+                                (cond (= around :caret)
+                                      (str "&caret=" (:caret s))
+                                      ;; a byte anchor: the load-phase
+                                      ;; geometry's fetch — the server
+                                      ;; ends the window at the line
+                                      ;; holding the byte
+                                      (map? around)
+                                      (str "&byte=" (:byte around))
+                                      :else
+                                      (str "&start=" (max 0 (- around overscan))))
                                 "&count=" cnt))
                   (.then (fn [win]
                            (let [anchor (or anchor (view-anchor))
@@ -496,7 +573,7 @@
                                                                        (:start-line win)))))]
                                ;; no line anchor held and the geometry
                                ;; drifted while the file loads (the
-                               ;; total, hence px-per-line, changed
+                               ;; total, hence the scale, changed
                                ;; under a mid-file reader): scale the
                                ;; offset by the geometry ratio, which
                                ;; keeps the reader at the same file
@@ -508,9 +585,9 @@
                                           (= path (:path @state))
                                           (<= (js/Math.abs
                                                (- (.-scrollTop (by-id "scroll")) pre-top)) 1)
-                                          (not (== pre-ppl (px-per-line))))
+                                          (not (== pre-ppl (scroll-scale))))
                                  (set! (.-scrollTop (by-id "scroll"))
-                                       (* pre-top (/ (px-per-line) pre-ppl))))))
+                                       (* pre-top (/ (scroll-scale) pre-ppl))))))
                            (when-let [w (:want-start @state)]
                              (let [k (:want-keep @state)]
                                (swap! state assoc :want-start nil :want-keep nil)
@@ -526,7 +603,7 @@
         pos (caret-pos win (:caret @state))]
     (when pos
       (let [sc (by-id "scroll")
-            row-top (+ (* (:start-line win) (px-per-line)) (* (first pos) (line-h)))
+            row-top (+ (win-start-px win) (* (first pos) (line-h)))
             top (.-scrollTop sc)
             bottom (+ top (.-clientHeight sc))]
         (cond
@@ -581,7 +658,20 @@
    at the caret."
   []
   (let [prev-path (:path @state)
-        prev-win (:win @state)]
+        prev-win (:win @state)
+        ;; the load handoff: the buffer on screen was loading when
+        ;; this sync began — if the fresh state says it is not any
+        ;; more, the scroll space changes denomination (file bytes
+        ;; to document lines) in this very sync. Capture the scroll
+        ;; fraction off the live DOM now, before anything
+        ;; re-renders, and re-apply it under the new geometry once
+        ;; the window lands, so the reader stays at the same place
+        ;; in the file across the flip
+        flip? (boolean (and prev-path (get (:loading @state) prev-path)))
+        flip-frac (when flip?
+                    (when-let [sc (by-id "scroll")]
+                      (let [h (.-scrollHeight sc)]
+                        (when (pos? h) (/ (.-scrollTop sc) h)))))]
     (-> (get-edn "/api/state")
         (.then (fn [st]
                  (let [active (:active st)
@@ -603,28 +693,48 @@
                  ;; jumped backwards under a reader who was inching
                  ;; forwards (traced in the fetch log, Nov 18)
                  (if (and (= active prev-path) (seq (:lines (:win @state))))
-                   ;; re-fetch the window the page already holds, at
-                   ;; its own start: fetch-window! covers `around`
-                   ;; by overscan lines above it, so the around for
-                   ;; "this very window" is its start plus overscan.
-                   ;; Passing its first line instead ratcheted the
-                   ;; window one overscan earlier on every tick —
-                   ;; the text slid up the page for as long as the
-                   ;; file loaded, and the viewport ended up below
-                   ;; the window altogether, looking at blank space.
-                   ;; But when the viewport is not on the held
-                   ;; window at all (it drifted off it while the
-                   ;; geometry changed under the load, or the user
-                   ;; jumped and no scroll event has landed yet),
-                   ;; the held window is the wrong one to re-fetch:
-                   ;; fetch the scroll position's window instead,
-                   ;; or the page sits white next to a window it
-                   ;; cannot see
-                   (-> (fetch-window! (if (rendered-top-line)
-                                        (+ (:start-line (:win @state)) overscan)
-                                        (first-visible))
-                                      true true)
-                       (.then (fn [_] (render!))))
+                   (if (and flip-frac (= active prev-path))
+                     ;; the load handoff: the scroll space has just
+                     ;; changed denomination under this buffer. No
+                     ;; line anchor — it is denominated in the old
+                     ;; geometry and would fight the fraction. Fetch
+                     ;; the held window's place, then put the offset
+                     ;; at the captured fraction of the new scroll
+                     ;; space: the reader stays at the same place in
+                     ;; the file across the flip
+                     (-> (fetch-window! (+ (:start-line (:win @state)) overscan)
+                                        false true)
+                         (.then (fn [_]
+                                  (when-let [sc (by-id "scroll")]
+                                    (set! (.-scrollTop sc)
+                                          (* flip-frac (.-scrollHeight sc))))
+                                  (render!))))
+                     ;; re-fetch the window the page already holds, at
+                     ;; its own start: fetch-window! covers `around`
+                     ;; by overscan lines above it, so the around for
+                     ;; "this very window" is its start plus overscan.
+                     ;; Passing its first line instead ratcheted the
+                     ;; window one overscan earlier on every tick —
+                     ;; the text slid up the page for as long as the
+                     ;; file loaded, and the viewport ended up below
+                     ;; the window altogether, looking at blank space.
+                     ;; But when the viewport is not on the held
+                     ;; window at all (it drifted off it while the
+                     ;; geometry changed under the load, or the user
+                     ;; jumped and no scroll event has landed yet),
+                     ;; the held window is the wrong one to re-fetch:
+                     ;; fetch the scroll position's window instead,
+                     ;; or the page sits white next to a window it
+                     ;; cannot see. In byte mode the position is a
+                     ;; byte: the fetch anchors on the viewport's
+                     ;; bottom byte, so the window it lands ends at
+                     ;; the line the reader's bottom edge is on
+                     (-> (fetch-window! (cond (rendered-top-line)
+                                              (+ (:start-line (:win @state)) overscan)
+                                              (byte-mode?) {:byte (bottom-byte)}
+                                              :else (first-visible))
+                                        true true)
+                         (.then (fn [_] (render!)))))
                    ;; a new buffer on screen: the window opens at its
                    ;; caret, wherever in the file it sits — not at the
                    ;; top of the file
@@ -679,7 +789,7 @@
             gw (gutter-w (:total-lines win))
             numbers? (:line-numbers s)
             caret-line (when (:focused s) (first (caret-pos win (:caret s))))]
-        (css! box (str "position:absolute;left:0;right:0;top:" (* (:start-line win) (px-per-line)) "px;"))
+        (css! box (str "position:absolute;left:0;right:0;top:" (win-start-px win) "px;"))
         (doseq [[i line] (map-indexed vector (:lines win))]
           (let [line-no (inc (:n line))
                 bp? (contains? (get-in s [:breakpoints (:path s)] #{}) line-no)
@@ -717,7 +827,7 @@
     (when pos
       (let [[i col _line] pos]
         [(+ (gutter-w (:total-lines win)) code-pad-x (* col (:char-w @metrics)))
-         (+ (* (:start-line win) (px-per-line)) (* i (line-h)))]))))
+         (+ (win-start-px win) (* i (line-h)))]))))
 
 (defn render-caret! []
   (let [s @state
@@ -860,7 +970,9 @@
             w (+ gw (* (inc maxlen) (:char-w @metrics)) 40)]
         ;; the gutter's strip runs the pane's whole height, as jonquil's does
         (css! sizer (str "position:relative;min-height:100%;width:" w "px;min-width:100%;height:"
-                         (* (:total-lines win) (px-per-line)) "px;"
+                         (if (byte-mode?)
+                           (* (total-bytes) (px-per-byte))
+                           (* (:total-lines win) (px-per-line))) "px;"
                          "background:linear-gradient(to right,var(--strip) " gw "px,transparent " gw "px);")))
       (css! sizer "position:relative;min-height:100%;"))))
 
@@ -2221,7 +2333,7 @@
     (when win
       (let [line-n (max 0 (min (dec (:total-lines win))
                                (+ (:start-line win)
-                                  (js/Math.floor (/ (- y (* (:start-line win) (px-per-line)))
+                                  (js/Math.floor (/ (- y (win-start-px win))
                                                     (line-h))))))
             gw (gutter-w (:total-lines win))
             col (js/Math.max 0 (js/Math.round (/ (- x gw code-pad-x) (:char-w @metrics))))
@@ -2511,8 +2623,15 @@
                                 (+ (:start-line win) (count (:lines win)) -15)))
                      (fetch-window! (+ top (quot (visible-count) 2)) false false))
                    ;; the viewport is off the held window entirely
-                   ;; (a teleport): fetch for the scroll position
-                   (fetch-window! (first-visible) false false))))))
+                   ;; (a teleport): fetch for the scroll position —
+                   ;; a byte while the buffer loads, so the window
+                   ;; lands ending at the line under the viewport's
+                   ;; bottom edge, the file's last line included
+                   ;; when the jump was to the very end
+                   (fetch-window! (if (byte-mode?)
+                                    {:byte (bottom-byte)}
+                                    (first-visible))
+                                  false false))))))
       (on! sizer "mousedown" on-mousedown)
       (on! js/document "mousemove" on-mousemove)
       (on! js/document "mouseup" on-mouseup)
