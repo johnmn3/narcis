@@ -234,25 +234,24 @@
    extent when one covers it (it is rope already, analysis and
    all), else read out of the file."
   [ed path start count total-lines total-chars]
-  (let [cover (some (fn [[s e]]
-                      (when (and (<= s start)
-                                 (<= (+ start count) (+ s (:lines e))))
-                        [s e]))
-                    (buffer/extents ed path))]
-    (if cover
-      (let [[s e] cover
-            w (view/window (:doc e) {:start (- start s) :count count
-                                     :key [:extent path s (:chars e)]})]
-        {:start-line start
-         :total-lines total-lines
-         :total-chars total-chars
-         :spans-mode (:spans-mode w)
-         :match nil
-         :lines (mapv (fn [l] (-> l
-                                 (update :n + s)
-                                 (update :start + (:start-char e))))
-                      (:lines w))})
-      (file-lines-payload ed path start count total-lines total-chars))))
+  ;; the extent's document is read in place, through read-extent's
+  ;; region: a document taken out of the app atom (buffer/extents)
+  ;; is an unpinned handle the assembly may let go mid-render
+  (or (buffer/read-extent
+       ed path start count
+       (fn [s e]
+         (let [w (view/window (:doc e) {:start (- start s) :count count
+                                        :key [:extent path s (:chars e)]})]
+           {:start-line start
+            :total-lines total-lines
+            :total-chars total-chars
+            :spans-mode (:spans-mode w)
+            :match nil
+            :lines (mapv (fn [l] (-> l
+                                    (update :n + s)
+                                    (update :start + (:start-char e))))
+                         (:lines w))})))
+      (file-lines-payload ed path start count total-lines total-chars)))
 
 (defn- window-payload [ed path start count]
   (let [doc-lines (buffer/read ed path (fn [s] (text/lines (:root s))))

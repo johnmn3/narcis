@@ -629,6 +629,27 @@
             [s e]))
         (extents ed path)))
 
+(defn read-extent
+  "(f s e) over the extent of path whose lines cover [start,
+   start+count) in the document frame — s its start line, e the
+   extent with :doc the document itself — read in place inside a
+   read region, the way read hands out the root: the document is
+   readable only while f runs, and f answers plain data, which
+   read-extent answers; nil when no extent covers the stretch.
+   This is the door for reading an extent's text. extents hands
+   the map out of its region, and an Eve document leaves a region
+   as the slab handle it is (it has no plain form), unpinned and
+   rooted only while the app atom still holds it — the assembly
+   absorbing or merging that extent lets it go, and a read through
+   the old handle then lands on reused blocks (measured:
+   bench/narcis/probe_escape.clj reads another document's lines)."
+  [ed path start count f]
+  ($ (some (fn [[s e]]
+             (when (and (<= s start)
+                        (<= (+ start count) (+ s (:lines e))))
+               (f s e)))
+           (get-in @(:atom (:store ed)) [:extents path]))))
+
 (defn edit-extent!
   "Apply f to the document of path's extent at document-frame
    line s, as ONE swap!: (f edoc) answers {:doc new-doc
