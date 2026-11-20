@@ -399,9 +399,9 @@
 ;; [:extents path] in the app atom: {start-line {:doc d :chars n
 ;; :lines n :start-char n :start-stream n :stream-chars n}} — a
 ;; stretch of the file read out for a view (narcis.launcher's
-;; window), built into a document so the hydration absorbs it by
-;; reference when its frontier reaches it (run-load!) instead of
-;; reading those lines again. Extents never reach the file's last
+;; window), built into a document so the assembly appends it by
+;; reference when the root reaches it, instead of reading those
+;; lines again. Extents never reach the file's last
 ;; line: a stretch short of it always ends on a break, which keeps
 ;; an extent's text uniform (every line with its ending). Positions
 ;; are kept in both units the file is counted in: document
@@ -506,27 +506,34 @@
 
 ;; ---------------------------------------------------------------------------
 ;; parallel segments: worker threads build the file's stretches
-;; ahead of the frontier as extents, so the frontier's swaps
-;; absorb finished document instead of waiting on one reader
+;; as extents, from both ends at once, and an assembler puts
+;; the pieces the root has reached onto the rope
 ;;
-;; A segment is a run of scan chunks, claimed in file order past
-;; the frontier. A worker reads its segment with the same
-;; file-window a view reads with and notes it as an extent
-;; (note-extent!) — worker-built extents are ordinary extents:
-;; the load line shows them, a reopened app keeps them, and
-;; run-load! absorbs them by reference when its frontier
-;; arrives. Claims are host-side bookkeeping against two
-;; workers building the same stretch; the extents themselves
-;; are the durable record. The frontier remains the finisher:
-;; it reads whatever the workers did not reach, in order, and
-;; its absorption keeps the document exact regardless of the
-;; order segments landed in.
+;; A segment is a run of scan chunks. A worker reads its
+;; segment with the same file-window a view reads with and
+;; notes it as an extent — worker-built extents are ordinary
+;; extents: the load line shows them, a reopened app keeps
+;; them. Even workers build from the front, odd workers from
+;; the back, so the file's end is a finished document early;
+;; a separate tail build takes the file's last stretch by
+;; position, before any index reaches it. The assembler
+;; appends every extent the root's standing line has reached,
+;; by reference, in one swap per pass — and when the scan is
+;; done and the root's lines are the scan's, the buffer is
+;; whole. There is no sequential reader: every byte of the
+;; file is read once, by the one worker that builds its
+;; piece, and the document is exact regardless of the order
+;; the pieces landed in. Claims are host-side bookkeeping
+;; against two workers building the same segment; the
+;; extents themselves are the durable record.
 
 (def ^:private segment-chunks
-  "Scan chunks per segment: sixteen 1 MB chunks — big enough
-   that a segment's build dwarfs its bookkeeping, small enough
-   that the frontier is never far from its next absorption."
-  16)
+  "Scan chunks per segment: sixty-four 1 MB chunks. A segment
+   is the unit of work and of noting — one build, one swap —
+   so it is sized to dwarf its bookkeeping: at this size a
+   13 GB file is two hundred segments, not thirteen thousand
+   chunk swaps."
+  64)
 
 (defonce ^:private segment-claims (atom {}))
 
@@ -535,10 +542,10 @@
    scan's chunk table: runs of segment-chunks chunks, starts
    and counts summed from the table's breaks. Only complete
    runs are returned, and never the run holding the file's
-   last line (an extent never reaches it — the frontier takes
-   that stretch). A run with no breaks in it (one line longer
-   than the run) is skipped: there is no line boundary inside
-   it to build at."
+   last line (an extent never reaches it — the tail build
+   takes that stretch, by position). A run with no breaks in
+   it (one line longer than the run) is skipped: there is no
+   line boundary inside it to build at."
   [scan]
   (let [{:keys [chunks done?]} @scan]
     (loop [cs chunks line 0 spans []]
@@ -552,7 +559,9 @@
 
 #?(:clj
    (defn- frontier-line
-     "Path's document's line count: the hydration frontier."
+     "Path's document's line count: where the assembled root
+      stands. (dec of it is the line the root stands at — the
+      root's breaks are its fully consumed lines.)"
      [ed path]
      (or (read ed path (fn [s] (text/lines (:root s)))) 0)))
 
@@ -570,74 +579,106 @@
                nil)))
 
 #?(:clj
+   (defn- uncovered-ranges
+     "The [start count] sub-ranges of [s, s+cnt) that are
+      neither covered by exts (sorted [start count] pairs) nor
+      before line nxc: the pieces of a segment a worker can
+      still build. A segment the root has reached into, or a
+      view already pulled a stretch of, is built in the pieces
+      that remain — nothing is read twice."
+     [exts nxc s cnt]
+     (loop [rs [[(max s nxc) (+ s cnt)]] es exts]
+       (if-let [[es ec] (first es)]
+         (recur (into []
+                      (mapcat (fn [[a b]]
+                                (cond (<= (+ es ec) a) [[a b]]
+                                      (>= es b) [[a b]]
+                                      :else (concat (when (< a es) [[a es]])
+                                                    (when (> b (+ es ec)) [[(+ es ec) b]]))))
+                      rs)
+                (rest es))
+         (into [] (comp (filter (fn [[a b]] (> b a)))
+                        (map (fn [[a b]] [a (- b a)])))
+               rs))))))
+
+#?(:clj
    (defn- run-segment-worker!
-     "One worker of a materialization run: claim the lowest
-      unbuilt segment past the frontier, read it out of the
-      file, build its document on the worker's scratch atom,
-      note it as an extent; repeat. The run ends for the worker
-      when the partial entry leaves or changes id, or when the
-      scan is done and nothing past the frontier is left
-      unbuilt. A worker that fails says so on the server's err
-      and exits — the run degrades to fewer workers, never to
-      a stuck load: the frontier reads whatever is left."
+     "One worker of a materialization run: claim a segment,
+      build the pieces of it nothing has covered, note each as
+      an extent; repeat. Even workers take the lowest unbuilt
+      segment, odd workers the highest — the file fills in
+      from both ends at once, so the end a reader scrolls to
+      is a finished document early and stays one. A segment is
+      claimed by one worker at a time (segment-claims names
+      its owner); a build that slips is retried on a later
+      pass, by whichever worker comes next. The run ends for
+      the worker when the partial entry leaves or changes id.
+      There is no other reader: if every worker stops, the
+      load stops with it — the assembler cannot invent the
+      pieces it is missing."
      [ed path load-id n]
-     (try
-       (let [scratch (segment-scratch ed n)]
-         (loop []
-           (let [entry ($ (get-in @(:atom (:store ed)) [:loading path]))]
-             (when (and entry (= load-id (:id entry)))
+     (let [scratch (segment-scratch ed n)]
+       (loop []
+         (let [run? (try
+                      (let [entry ($ (get-in @(:atom (:store ed)) [:loading path]))]
+                        (and entry (= load-id (:id entry))))
+                      (catch #?(:cljs :default :default Throwable) _ false))]
+           (when run?
+             (try
                (let [scan (scan-of path)
                      spans (when scan (segment-spans scan))
-                     frontier (frontier-line ed path)
-                     claimed (get-in @segment-claims [path :claimed] #{})
+                     nxc (dec (frontier-line ed path))
+                     claims (get @segment-claims path {})
                      exts (extent-ranges ed path)
-                     unbuilt (remove (fn [[s cnt]]
-                                       (or (< s frontier)
-                                           (contains? claimed s)
-                                           (some (fn [[es en]]
-                                                   (and (< es (+ s cnt)) (< s (+ es en))))
-                                                 exts)))
-                                     spans)
-                     pick (first unbuilt)]
-                 (cond
-                   pick
-                   (do (swap! segment-claims update-in [path :claimed] (fnil conj #{}) (first pick))
-                       (let [w (text/file-window path scan (first pick) (second pick))
-                             lines (:lines w)]
-                         (when (and (= load-id ($ (get-in @(:atom (:store ed)) [:loading path :id])))
-                                    (= (clojure.core/count lines) (second pick))
-                                    (not (:eof? w)))
-                           (note-extent-doc!
-                            ed path (first pick)
-                            {:doc (swap! scratch (fn [_] (extent-doc-for lines)))
-                             :chars (reduce + (map (fn [l] (inc (count (:text l)))) lines))
-                             :lines (count lines)
-                             :start-char (:start (first lines))
-                             :start-stream (:stream-start w)
-                             :stream-chars (- (:stream-end w) (:stream-start w))})))
-                       (recur))
-
-                   (and scan (:done? @scan))
-                   nil
-
-                   :else
-                   (do (Thread/sleep 250) (recur))))))))
-       (catch #?(:cljs :default :default Throwable) t
-         (binding [*out* *err*]
-           (println "narcis: segment worker for" path "stopped:" (ex-message t)))))))
+                     ranges (into []
+                                  (mapcat (fn [[s cnt]]
+                                            (let [owner (get claims s)]
+                                              (if (and owner (not= owner n))
+                                                []
+                                                (uncovered-ranges exts nxc s cnt)))))
+                                  spans)
+                     pick (if (even? n) (first ranges) (last ranges))]
+                 (if pick
+                   (let [span-start (loop [ss spans]
+                                      (let [[s cnt] (first ss)]
+                                        (if (and (<= s (first pick))
+                                                 (< (first pick) (+ s cnt)))
+                                          s
+                                          (recur (rest ss)))))]
+                     (swap! segment-claims assoc-in [path span-start] n)
+                     (let [w (text/file-window path scan (first pick) (second pick))
+                           lines (:lines w)]
+                       (when (and (= load-id ($ (get-in @(:atom (:store ed)) [:loading path :id])))
+                                  (= (clojure.core/count lines) (second pick))
+                                  (not (:eof? w)))
+                         (note-extent-doc!
+                          ed path (first pick)
+                          {:doc (swap! scratch (fn [_] (extent-doc-for lines)))
+                           :chars (reduce + (map (fn [l] (inc (count (:text l)))) lines))
+                           :lines (count lines)
+                           :start-char (:start (first lines))
+                           :start-stream (:stream-start w)
+                           :stream-chars (- (:stream-end w) (:stream-start w))}))))
+                   (Thread/sleep 250)))
+               (catch #?(:cljs :default :default Throwable) t
+                 (binding [*out* *err*]
+                   (println "narcis: segment worker" n "for" path
+                            "slipped:" (ex-message t)))
+                 (Thread/sleep 250)))
+             (recur)))))))
 
 #?(:clj
    (defn- segment-worker-count
      "How many segment workers a run spawns: the machine's
-      processors less the frontier's thread, held to [1, 3] —
-      the measured shape (four builders saturated the box the
-      parallel-build probe ran on; more threads than that is
-      contention, not speed). NARCIS_SEGMENT_WORKERS overrides
-      it — the A/B measurement knob (0 loads the old
-      single-threaded way)."
+      processors less one, held to [1, 3] — the measured shape
+      (four builders saturated the box the parallel-build probe
+      ran on; more threads than that is contention, not speed).
+      NARCIS_SEGMENT_WORKERS overrides it — the A/B measurement
+      knob. There is no zero: the workers are the only readers
+      a load has."
      []
      (if-let [v (System/getenv "NARCIS_SEGMENT_WORKERS")]
-       (max 0 (Integer/parseInt v))
+       (max 1 (Integer/parseInt v))
        (try (max 1 (min 3 (dec (.availableProcessors (java.lang.Runtime/getRuntime)))))
             (catch #?(:cljs :default :default Throwable) _ 3)))))
 
@@ -649,156 +690,227 @@
          (.setDaemon true)
          (.start)))))
 
+(defonce ^:private parked-tails (atom {}))
+
+(defn parked-tail-band
+  "Path's parked tail as a byte band [start-byte total-bytes],
+   for the load line: the file's end, built once and unmoving
+   while the rest of the file loads. Nil when no tail is
+   parked for path."
+  [path]
+  (when-let [t (get @parked-tails path)]
+    [(:start-byte t) (text/file-length path)]))
+
 #?(:clj
-   (defn- run-load!
-     "A materialization run: append the tail's chunks to path's
-      document, one swap per chunk, until the file is in or the
-      partial entry leaves the app atom. The reading is done out
-      here (plain IO); the appending is done inside the swap, on
-      the document the buffer holds at that moment — while a buffer
-      materializes its edits are refused (narcis.ops), so nothing
-      else moves its root, and a retried swap re-appends the same
-      piece to the same document. A stopped run (a read failure)
-      clears its entry and says so on the server's err: the buffer
-      stays, holding what arrived."
-     [ed path load-id tail]
-     (let [tail-box (atom tail)
-           absorbed-to (volatile! nil)]
-       (try
-         (loop []
-           (let [entry ($ (get-in @(:atom (:store ed)) [:loading path]))]
-             (when (and entry (= load-id (:id entry)))
-               (let [{:keys [piece loaded-chars done? tail]}
-                     (text/ingest-tail-read @tail-box)]
-                 (reset! tail-box tail)
-                 (swap! (app-atom ed)
-                        (fn [app]
-                          (if (and (get-in app [:buffers path])
-                                   (= load-id (get-in app [:loading path :id])))
-                            (let [b (get-in app [:buffers path])
-                                  root (-root b)
-                                  root' (if piece
-                                          (text/insert root (text/chars root) piece)
-                                          root)
-                                  ;; absorb any extent the frontier has
-                                  ;; reached: its part from the frontier
-                                  ;; line on goes onto the rope by
-                                  ;; reference, and the run's count jumps
-                                  ;; to the extent's end in stream chars
-                                  [root' loaded-chars exts]
-                                  (loop [root root' loaded loaded-chars
-                                         exts (get-in app [:extents path] {})]
-                                    ;; nxc is the line the frontier
-                                    ;; stands at: text/lines counts
-                                    ;; the in-progress tail line too,
-                                    ;; so the fully consumed lines
-                                    ;; are (dec (text/lines root)) and
-                                    ;; line nxc is present at most
-                                    ;; in part. Splicing from the
-                                    ;; raw line count skipped the
-                                    ;; seam line whole whenever the
-                                    ;; frontier stood at its start.
-                                    (let [[s e] (first (sort-by key exts))
-                                          nxc (dec (text/lines root))]
-                                      (if (or (nil? e) (> s nxc))
-                                        [root loaded exts]
-                                        (cond
-                                          ;; the chunks hydrated it already
-                                          (<= (+ s (:lines e)) nxc)
-                                          (recur root loaded (dissoc exts s))
+   (defn- run-tail-build!
+     "Build path's tail — its last segment's worth of bytes —
+      by position (text/file-tail), before any index reaches
+      it, and park it host-side. The assembler notes it as the
+      final extent once the scan knows the file's totals. The
+      end a reader scrolls to is then a finished document from
+      the load's first seconds, and what it holds cannot
+      change: it is the file's own end, read once."
+     [ed path load-id]
+     (try
+       (let [t (text/file-tail path (* segment-chunks 1048576))]
+         (when (and (pos? (count (:text t)))
+                    (= load-id ($ (get-in @(:atom (:store ed)) [:loading path :id]))))
+           (let [doc (swap! (segment-scratch ed "tail")
+                            (fn [_] (text/from-string (:text t))))]
+             (swap! parked-tails assoc path
+                    {:doc doc
+                     :chars (text/chars doc)
+                     :breaks (dec (text/lines doc))
+                     :stream-chars (:units (text/chunk-stats (:text t)))
+                     :start-byte (:start-byte t)}))))
+       (catch #?(:cljs :default :default Throwable) t
+         (binding [*out* *err*]
+           (println "narcis: tail build for" path "stopped:" (ex-message t)))))))
 
-                                          ;; an extent whose start does not
-                                          ;; sit where the file says is stale
-                                          (not= (text/line-start-offset root s)
-                                                (:start-char e))
-                                          (recur root loaded (dissoc exts s))
+#?(:clj
+   (defn- note-parked-tail!
+     "When path's scan has finished and a tail is parked, note
+      it as the extent at the file's last lines: its start
+      falls out of the scan's totals less its own counts. The
+      noting itself is assoc-extent's: a tail whose territory
+      a segment already covered is dropped as an overlap, one
+      that touches its predecessor merges with it."
+     [ed path]
+     (let [scan (scan-of path)]
+       (when (and scan (:done? @scan) (get @parked-tails path)
+                  (partial? ed path))
+         (let [t (get @parked-tails path)
+               start (- (dec (:lines @scan)) (:breaks t))
+               total-stream (reduce + 0 (map (fn [[_ _ _ u]] u)
+                                             (:chunks @scan)))]
+           (note-extent-doc! ed path start
+                             {:doc (:doc t)
+                              :chars (:chars t)
+                              :lines (:breaks t)
+                              :start-char (- (:chars @scan) (:chars t))
+                              :start-stream (- total-stream (:stream-chars t))
+                              :stream-chars (:stream-chars t)})
+           (swap! parked-tails dissoc path))))))
 
-                                          :else
-                                          (let [edoc (:doc e)
-                                                ;; the extent's part from
-                                                ;; the frontier line on,
-                                                ;; as a rope: replacing
-                                                ;; the head away keeps
-                                                ;; the rest by reference
-                                                ;; (a slice-string round
-                                                ;; trip rebuilt it, at
-                                                ;; rebuild prices, inside
-                                                ;; the swap)
-                                                part (if (= nxc s)
-                                                       edoc
-                                                       (text/replace edoc 0
-                                                                     (text/line-start-offset edoc (- nxc s))
-                                                                     ""))
-                                                ;; replace whatever of
-                                                ;; line nxc the chunks
-                                                ;; brought (a partial
-                                                ;; line, or nothing)
-                                                ;; with the extent's
-                                                ;; whole line and rest
-                                                root (text/replace root
-                                                                   (text/line-start-offset root nxc)
-                                                                   (text/chars root) part)
-                                                end (+ (:start-stream e) (:stream-chars e))]
-                                            (vreset! absorbed-to end)
-                                            (recur root end (dissoc exts s)))))))]
-                              (cond-> (assoc-in app [:buffers path]
-                                                (with-state b {:root root'}))
-                                true (assoc-in [:extents path] exts)
-                                done? (update :loading dissoc path)
-                                done? (update :extents dissoc path)
-                                (not done?) (assoc-in [:loading path :loaded-chars] loaded-chars)))
-                            app)))
-                 ;; an absorption moved the run past where the reader
-                 ;; stands: resync it to the extent's end
-                 (when (and (not done?) @absorbed-to (> @absorbed-to loaded-chars))
-                   (text/ingest-tail-close @tail-box)
-                   (reset! tail-box (text/ingest-tail path @absorbed-to)))
-                 (vreset! absorbed-to nil)
-                 (when-not done?
-                   (recur))))))
-         (catch #?(:cljs :default :default Throwable) t
-           (binding [*out* *err*]
-             (println "narcis: load of" path "stopped:" (ex-message t)))
-           (swap! (app-atom ed)
-                  (fn [app]
-                    (if (= load-id (get-in app [:loading path :id]))
-                      (update app :loading dissoc path)
-                      app))))
-         (finally
-           (text/ingest-tail-close @tail-box)
-           (swap! materializing disj path)
-           (swap! segment-claims dissoc path)
-           ;; the entry is gone when the run finished (or the buffer
-           ;; closed under it): the skeleton has served its turn
-           (when-not (partial? ed path)
-             (stop-scan! path)))))))
+#?(:clj
+   (defn- assemble!
+     "One assembly pass over path's extents: append to the
+      root every extent the root's standing line has reached —
+      whole when the root stands at its start, its remainder
+      when the root stands inside it — and drop the ones the
+      root has passed. All of it is one swap, however many
+      pieces are ready, and every append is by reference. When
+      the scan is done and the root's lines are the scan's,
+      the buffer is whole: the loading and extents entries go
+      in the same swap. A pass with nothing to do does not
+      swap at all."
+     [ed path load-id]
+     (let [scan (scan-of path)
+           exts (extents ed path)
+           doc-lines (frontier-line ed path)
+           work? (or (and (seq exts)
+                          (<= (apply min (keys exts)) (dec doc-lines)))
+                     (and scan (:done? @scan)
+                          (= doc-lines (:lines @scan))))]
+       (when work?
+         (swap! (app-atom ed)
+                (fn [app]
+                  (if (and (get-in app [:buffers path])
+                           (= load-id (get-in app [:loading path :id])))
+                    (let [b (get-in app [:buffers path])
+                          [root loaded exts]
+                          (loop [root (-root b)
+                                 loaded (get-in app [:loading path :loaded-chars])
+                                 exts (get-in app [:extents path] {})]
+                            ;; nxc is the line the root stands
+                            ;; at: text/lines counts the
+                            ;; in-progress tail line too, so the
+                            ;; fully consumed lines are
+                            ;; (dec (text/lines root)) and line
+                            ;; nxc is present at most in part.
+                            ;; Splicing from the raw line count
+                            ;; skipped the seam line whole
+                            ;; whenever the root stood at its
+                            ;; start (the parallel loader's
+                            ;; first document diff).
+                            (let [[s e] (first (sort-by key exts))
+                                  nxc (dec (text/lines root))]
+                              (if (or (nil? e) (> s nxc))
+                                [root loaded exts]
+                                (cond
+                                  ;; the root has it already
+                                  (<= (+ s (:lines e)) nxc)
+                                  (recur root loaded (dissoc exts s))
+
+                                  ;; an extent whose start does
+                                  ;; not sit where the file says
+                                  ;; is stale
+                                  (not= (text/line-start-offset root s)
+                                        (:start-char e))
+                                  (recur root loaded (dissoc exts s))
+
+                                  :else
+                                  (let [edoc (:doc e)
+                                        ;; the extent's part from
+                                        ;; the standing line on, as
+                                        ;; a rope: replacing the
+                                        ;; head away keeps the rest
+                                        ;; by reference (a
+                                        ;; slice-string round trip
+                                        ;; rebuilt it, at rebuild
+                                        ;; prices, inside the swap)
+                                        part (if (= nxc s)
+                                               edoc
+                                               (text/replace edoc 0
+                                                             (text/line-start-offset edoc (- nxc s))
+                                                             ""))
+                                        ;; replace whatever of
+                                        ;; line nxc the root holds
+                                        ;; (a partial line, or
+                                        ;; nothing) with the
+                                        ;; extent's whole line and
+                                        ;; rest
+                                        root (text/replace root
+                                                           (text/line-start-offset root nxc)
+                                                           (text/chars root) part)]
+                                    (recur root
+                                           (+ (:start-stream e) (:stream-chars e))
+                                           (dissoc exts s)))))))]
+                      (if (and scan (:done? @scan)
+                               (= (text/lines root) (:lines @scan)))
+                        (-> app
+                            (assoc-in [:buffers path]
+                                      (with-state b {:root root}))
+                            (update :loading dissoc path)
+                            (update :extents dissoc path))
+                        (-> app
+                            (assoc-in [:buffers path]
+                                      (with-state b {:root root}))
+                            (assoc-in [:extents path] exts)
+                            (assoc-in [:loading path :loaded-chars] loaded))))
+                    app)))))))
+
+#?(:clj
+   (defn- run-assembler!
+     "Path's assembly thread: note the parked tail when the
+      scan lands, and keep appending the extents the root has
+      reached until the buffer is whole or the run's entry
+      leaves. It reads nothing — the workers bring the file;
+      this thread only puts finished pieces onto the rope.
+      Its finally owns the run's cleanup: the materializing
+      mark, the claims, the parked tail, and the scan (kept
+      while the buffer stays partial, so a resume reuses it)."
+     [ed path load-id]
+     (try
+       (loop []
+         (let [entry ($ (get-in @(:atom (:store ed)) [:loading path]))]
+           (when (and entry (= load-id (:id entry)))
+             (note-parked-tail! ed path)
+             (assemble! ed path load-id)
+             (Thread/sleep 100)
+             (recur))))
+       (catch #?(:cljs :default :default Throwable) t
+         (binding [*out* *err*]
+           (println "narcis: assembly of" path "stopped:" (ex-message t))))
+       (finally
+         (swap! materializing disj path)
+         (swap! segment-claims dissoc path)
+         (swap! parked-tails dissoc path)
+         (when-not (partial? ed path)
+           (stop-scan! path))))))
 
 #?(:clj
    (defn- start-load!
-     "Spawn path's materialization: the frontier thread, which
-      reads the tail in order and absorbs, and its segment
-      workers, which build ahead of it."
-     [ed path load-id tail]
+     "Spawn path's materialization: segment workers building
+      the file in from both ends, a tail build that takes the
+      file's end by position at once, and the assembler that
+      puts finished pieces onto the rope. There is no
+      sequential reader: every byte of the file is read once,
+      by the one worker that builds its piece."
+     [ed path load-id]
      (start-segment-workers! ed path load-id)
-     (doto (Thread. ^Runnable (fn [] (run-load! ed path load-id tail)))
+     (doto (Thread. ^Runnable (fn [] (run-tail-build! ed path load-id)))
+       (.setDaemon true)
+       (.start))
+     (doto (Thread. ^Runnable (fn [] (run-assembler! ed path load-id)))
        (.setDaemon true)
        (.start))))
 
 #?(:clj
    (defn materialize!
      "Start materializing path's whole document (see the section
-      note): the file's tail appended by a background loader, from
-      where the document stops. Answers true when the buffer is
-      partial — a run already going counts; false when it is whole
-      and there was nothing to start."
+      note): segment workers build the file in from both ends
+      and the assembler puts the pieces onto the rope, until
+      the document is the file. Answers true when the buffer is
+      partial — a run already going counts; false when it is
+      whole and there was nothing to start."
      [ed path]
      (if (partial? ed path)
        (do (when-not (materializing? path)
              (let [entry ($ (get-in @(:atom (:store ed)) [:loading path]))
-                   tail (text/ingest-tail path (:loaded-chars entry))
                    id (claim-partial! ed path (:loaded-chars entry) (:total-bytes entry))]
                (swap! materializing conj path)
-               (start-load! ed path id tail)))
+               (start-load! ed path id)))
            true)
        false)))
 
@@ -858,7 +970,7 @@
        (when-not done?
          (let [id (claim-partial! ed path loaded-chars total-bytes)]
            (swap! materializing conj path)
-           (start-load! ed path id tail)
+           (start-load! ed path id)
            (start-scan! path)))))))
 
 (defn close-buffer! [ed path]

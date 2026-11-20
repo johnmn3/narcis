@@ -703,6 +703,62 @@
         :total-chars total-chars})))
 
 #?(:clj
+   (defn file-tail
+     "The file's last span-bytes bytes as raw text, read by
+      position: {:text s :start-byte n :bytes n}. The text starts
+      on a line boundary: at the file's start when the span
+      reaches it, else just past the first break at or after the
+      span's first byte (a break byte is never part of a
+      multi-byte character, so the alignment is exact) — the
+      partial line the span opens in the middle of belongs to
+      the territory before it. :start-byte is where :text
+      starts; :bytes is the text's span in file bytes. The tail
+      of a file is the one stretch a reader wants before any
+      index exists: it is read here with no scan at all, and
+      what it returns cannot change while the rest of the file
+      is still being read."
+     [path span-bytes]
+     (let [total (file-length path)
+           want (max 0 (- total span-bytes))]
+       (with-open [in (java.io.FileInputStream. ^String path)]
+         (skip-to in want)
+         (let [buf (byte-array 1048576)
+               ;; align: when the span opens mid-file, drop
+               ;; everything through the first break byte
+               start (if (zero? want)
+                       0
+                       (loop [off want]
+                         (let [n (.read in buf)]
+                           (if (neg? n)
+                             off
+                             (let [i (loop [i 0]
+                                       (if (and (< i n) (not= 10 (aget buf i)))
+                                         (recur (inc i))
+                                         i))]
+                               (if (< i n)
+                                 (+ off i 1)
+                                 (recur (+ off n))))))))
+               ;; the alignment loop consumed the stream when it
+               ;; read: reopen at the aligned start and read the
+               ;; text out with the chunk reader (UTF-8 carry and
+               ;; a held \r travel as they do everywhere else)
+           ]
+           (with-open [in2 (java.io.FileInputStream. ^String path)]
+             (skip-to in2 start)
+             (loop [sb (StringBuilder.) carry (byte-array 0) pend? false bytes 0]
+               (let [rd (read-chunk-text in2 buf carry pend?)]
+                 (if (:eof? rd)
+                   (let [s (str (when pend? "\r")
+                                (when (pos? (alength carry))
+                                  (String. carry "UTF-8")))]
+                     {:text (str sb s)
+                      :start-byte start
+                      :bytes (+ bytes (alength carry) (if pend? 1 0))})
+                   (do (.append sb (:text rd))
+                       (recur sb (:carry rd) (:pend? rd)
+                              (+ bytes (:bytes rd)))))))))))))
+
+#?(:clj
    (defn file-line-of
      "The line holding document character offset in the file at
       path, counted from the scan's chunk table (from the file's

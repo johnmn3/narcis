@@ -181,7 +181,20 @@
                                           :extent-bytes (mapv (fn [[s n]]
                                                                 (let [b0 (text/byte-offset-of-line scan s)]
                                                                   [b0 (- (text/byte-offset-of-line scan (+ s n)) b0)]))
-                                                              ranges)})]
+                                                              ranges)})
+                                   ;; the parked tail's band, in
+                                   ;; the same byte geometry: the
+                                   ;; file's end, drawn from the
+                                   ;; moment it is built
+                                   tail-band (buffer/parked-tail-band p)
+                                   geo (cond-> geo
+                                         tail-band
+                                         (update :extent-bytes
+                                                 (fn [bs]
+                                                   (conj (vec bs)
+                                                         [(first tail-band)
+                                                          (- (second tail-band)
+                                                             (first tail-band))]))))]
                                [p (assoc l
                                          :loaded-lines (get doc-lines p 0)
                                          :total-lines (get-in buffers [p :lines] 0)
