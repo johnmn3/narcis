@@ -855,11 +855,11 @@
       the counting only: a break byte is never part of a
       multi-byte character, so the count is the file's own.
       The scan is never waited on."
-     [path scan byte]
+     [path scan byte-off]
      (let [total (file-length path)]
-       (if (or (nil? total) (not (pos? total)) (not (pos? byte)))
+       (if (or (nil? total) (not (pos? total)) (not (pos? byte-off)))
          0
-         (let [limit (min byte (dec total))
+         (let [limit (min byte-off (dec total))
                ;; the table's whole chunks ending at or before
                ;; the limit, and the byte counting resumes from:
                ;; a chunk's byte count is the span of its text, so

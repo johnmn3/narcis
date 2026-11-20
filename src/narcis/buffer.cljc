@@ -526,7 +526,7 @@
       (let [prev (some (fn [{:keys [file-start extent] :as row}]
                          (when (= (+ file-start (file-lines-of extent)) a) row))
                        table)
-            next (some (fn [{:keys [file-start] :as row}]
+            nrow (some (fn [{:keys [file-start] :as row}]
                          (when (= file-start b) row))
                        table)
             ;; e in the document frame: the deltas of the
@@ -562,9 +562,9 @@
                              :file-chars (+ (file-chars-of pe) (:file-chars e))}])
                          [exts (+ a dlines) e])
             ;; and with the one starting where e ends
-            exts (if next
-                   (let [ne (:extent next)]
-                     (assoc (dissoc exts (:key next)) k
+            exts (if nrow
+                   (let [ne (:extent nrow)]
+                     (assoc (dissoc exts (:key nrow)) k
                             {:doc (text/replace (:doc e) (:chars e) (:chars e) (:doc ne))
                              :chars (+ (:chars e) (:chars ne))
                              :lines (+ (:lines e) (:lines ne))
