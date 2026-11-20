@@ -10,6 +10,54 @@ cores, 15 GB RAM; Jolt v0.8.28 release binary built from source
 `EVE_RELEASE` unset (or pointed at that same checkout for
 `scripts/jolt-run.sh` probes); fresh store per run. Not the Mac.
 
+## 2026-11-20 (evening): byte reads, and the load model's first part
+
+- **Jumps to the top of a 13.9 GB file: an int overflow.** Byte and
+  char offsets were parsed with `Integer/parseInt`, so every offset
+  past 2 GiB returned HTTP 500 and the page fell back to line 1. A
+  20-minute filmed load showed 17 such jumps. Fixed in 3a8bd93 (parse
+  as long).
+- **Reading by byte (498b8cf, c794414).** Once the 500 was fixed, a
+  deep window during the scan took 245 s, because the server counted
+  every line before the byte. `text/file-window-at-byte` now seeks to
+  the byte instead.
+  - Speed and accuracy: the same windows take 0.01–0.02 s, and every
+    returned line matches the file's bytes. Line numbers are estimates
+    until the scan passes them, then exact.
+  - The page now fetches and keeps its place by byte while a file is
+    loading.
+  - 13.9 GB, 20 minutes filmed: 0 jumps to the head (17 before). All
+    1,482 fetches returned 200: median 0.1 s, 95th percentile 0.2 s,
+    one outlier at 28.7 s. Settled frames: 530 full, 0 partly white,
+    12 blank; the longest blank stretch was 0.3 s.
+  - 2 GB filmed to completion: loading frames 326 full / 0 partly
+    white / 1 blank; after the load 29 / 0 / 0. The switch at the end
+    kept the view at the file's end. A switch with the view mid-file
+    has not been tested.
+- **The load model, first part (1734649):**
+  - read-only while loading;
+  - resume at boot (`buffer/resume-loads!`);
+  - the load line in two colors, amber for stretches read for a view
+    and blue for built ones;
+  - a blue line along the bottom while a read has been out over
+    150 ms.
+
+  Gates: corpus 255 tests, the same 8 Jolt-version debugger failures
+  and nothing else; page gate 44/44; editor e2e 38/38.
+
+  Kill-and-reopen test: a 60 MB load was killed with `kill -9` after
+  60 s, then relaunched without `--file`. The log showed
+  `load-resumed`, and the load finished exact (3,800,001 lines,
+  first/middle/last lines OK) 160 s after the relaunch.
+
+  Filmed on 13.9 GB: the file's last page was on screen within the
+  first minutes, and both colors appear on the load line. The reading
+  line was not caught in a frame: every read took 0.6 s or less, and
+  frames are 2 s apart.
+- **Open in the model:** the built rope is still assembled into the
+  buffer from the top, which the reader no longer sees because views
+  read the file. A strict build-separately-then-switch is not built.
+
 ## 2026-11-20 (afternoon): the white page while scrolling a loading file
 
 - **Reproduced in the real page.** Headless Chromium, wheel scrolling
