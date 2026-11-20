@@ -558,6 +558,15 @@
                   (not (or (= path "/api/console") (= path "/api/window") (= path "/api/state"))))
           (println "NARCIS-S0 served" path "->" status)))))))
 
+#?(:clj
+   (defn- port-free?
+     "True when nothing is listening on 127.0.0.1:port — bound and
+      released at once, the address serve! listens on."
+     [port]
+     (try (.close (ServerSocket. port 50 (InetAddress/getByName "127.0.0.1")))
+          true
+          (catch Throwable _ false))))
+
 #?(:clj (defn serve! [ctx port serve-secs]
   (with-open [server (ServerSocket. port 50 (InetAddress/getByName "127.0.0.1"))]
     (.setSoTimeout server 500)
@@ -583,6 +592,18 @@
               m))
         dir (get m :dir "data")
         port (Integer/parseInt (get m :port "8377"))
+        ;; first, before the store is opened or the browser is: is the
+        ;; port free? A Narcis already running there would otherwise
+        ;; be the one the browser opens — its own session and code —
+        ;; while this launch dies a second later on the bind (measured:
+        ;; a second launch on a busy port seeded its store, opened the
+        ;; browser onto the first server, then threw BindException)
+        _ (when-not (port-free? port)
+            (println (str "NARCIS: port " port " is already in use — another Narcis is"
+                          " probably still running there. Stop it first (on macOS or Linux,"
+                          " `lsof -nP -iTCP:" port " -sTCP:LISTEN` shows its PID), or launch"
+                          " on another port with --port."))
+            (System/exit 1))
         serve-secs (Integer/parseInt (get m :serve-secs "0"))
         web-dir (get m :web-dir "web")
         st (store/open-store {:dir dir :name store/store-name})
