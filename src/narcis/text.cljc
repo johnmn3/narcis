@@ -501,22 +501,20 @@
           (loop [i 0 line line pairs 0 units 0 prev-cr? prev-cr?]
                 (if (== line target)
                     {:byte-idx i :pairs pairs :units units}
-                    (if (< i n)
-                        (let [b (aget buf i)]
-                             (cond
-                              prev-cr?
-                              (if (== b 10)
-                                  (recur (inc i) (inc line) (inc pairs) (+ units 2) false)
-                                  (recur i (inc line) pairs (inc units) false))
-                              (== b 10) (recur (inc i) (inc line) pairs (inc units) false)
-                              (== b 13) (recur (inc i) line pairs units true)
-                              (pos? b) (recur (inc i) line pairs (inc units) false)
-                              :else (recur (inc i) line pairs
-                                           (+ units (cond (== (bit-and b 0xC0) 0x80) 0
-                                                          (<= 0xF0 (bit-and b 0xFF) 0xF7) 2
-                                                          :else 1))
-                                           false)))
-                        nil)))))
+                    (when (< i n) (let [b (aget buf i)]
+                                       (cond
+                                        prev-cr?
+                                        (if (== b 10)
+                                            (recur (inc i) (inc line) (inc pairs) (+ units 2) false)
+                                            (recur i (inc line) pairs (inc units) false))
+                                        (== b 10) (recur (inc i) (inc line) pairs (inc units) false)
+                                        (== b 13) (recur (inc i) line pairs units true)
+                                        (pos? b) (recur (inc i) line pairs (inc units) false)
+                                        :else (recur (inc i) line pairs
+                                                     (+ units (cond (== (bit-and b 0xC0) 0x80) 0
+                                                                    (<= 0xF0 (bit-and b 0xFF) 0xF7) 2
+                                                                    :else 1))
+                                                     false))))))))
 
 #?(:clj
    (defn file-window

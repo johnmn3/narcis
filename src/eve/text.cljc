@@ -131,7 +131,7 @@
        ([text target] (append-text text target 0 FAR))
        ([text target from to]
         (let [n (count text)]
-             (loop [i 0 pos 0 first? true target (transient (into [] target))]
+             (loop [i 0 pos 0 first? true target (transient (vec target))]
                    (if (and (< i n) (<= pos to))
                        (let [l (nth text i)
                              end (+ pos (ln-len l))]
@@ -495,7 +495,7 @@
                                                     (recur (+ i BRANCH) (conj! acc (s/make-leaf part (lines-len part)))))
                                                (persistent! acc)))]
                              {::leaves leaves
-                              ::pending (into [] (subvec lines full k))
+                              ::pending (vec (subvec lines full k))
                               ::carry (peek pieces)
                               ::done (reduce (fn [m l] (+ m (count l) 1)) (::done b) (pop pieces))
                               ::cr? cr?}))))))

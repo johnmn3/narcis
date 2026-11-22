@@ -17,15 +17,13 @@
 (defn- oracle
        "Text-oracle result of op-fn on (text, caret, sel): {:text :caret}."
        [text caret sel op-fn]
-       (let [r (op-fn (snap text caret sel))]
-            (when r {:text (edit/apply-edits text (:edits r)) :caret (:caret r)})))
+       (when-let [r (op-fn (snap text caret sel))] {:text (edit/apply-edits text (:edits r)) :caret (:caret r)}))
 
 (defn- via-doc
        [s caret sel op-fn scope]
        (test-util/with-heap-domain
         (fn []
-            (let [r (edit/run-op (text/from-string s) caret sel op-fn scope)]
-                 (when r {:text (text/to-string (:doc r)) :caret (:caret r)})))))
+            (when-let [r (edit/run-op (text/from-string s) caret sel op-fn scope)] {:text (text/to-string (:doc r)) :caret (:caret r)}))))
 
 (def cases
   ;; [text caret sel op-fn label]

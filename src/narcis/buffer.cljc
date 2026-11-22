@@ -870,54 +870,51 @@
           [ed path load-id n]
           (let [scratch (segment-scratch ed n)]
                (loop []
-                     (let [run? (try
-                                 (let [entry ($ (get-in @(:atom (:store ed)) [:loading path]))]
-                                      (and entry (= load-id (:id entry))))
-                                 (catch #?(:cljs :default :default Throwable) _ false))]
-                          (when run?
-                                (try
-                                 (let [scan (scan-of path)
-                                       spans (when scan (segment-spans scan))
-                                       nxc (dec (frontier-line ed path))
-                                       claims (get @segment-claims path {})
-                                       exts (build-ranges ed path)
-                                       ranges (into []
-                                                    (mapcat (fn [[s cnt]]
-                                                                (let [owner (get claims s)]
-                                                                     (if (and owner (not= owner n))
-                                                                         []
-                                                                         (uncovered-ranges exts nxc s cnt)))))
-                                                    spans)
-                                       pick (if (even? n) (first ranges) (last ranges))]
-                                      (if pick
-                                          (let [span-start (loop [ss spans]
-                                                                 (let [[s cnt] (first ss)]
-                                                                      (if (and (<= s (first pick))
-                                                                               (< (first pick) (+ s cnt)))
-                                                                          s
-                                                                          (recur (rest ss)))))]
-                                               (swap! segment-claims assoc-in [path span-start] n)
-                                               (let [w (text/file-window path scan (first pick) (second pick))
-                                                     lines (:lines w)]
-                                                    (when (and (= load-id ($ (get-in @(:atom (:store ed)) [:loading path :id])))
-                                                               (= (clojure.core/count lines) (second pick))
-                                                               (not (:eof? w)))
-                                                          (note-build-doc!
-                                                           ed path (first pick)
-                                                           {:doc (swap! scratch (fn [_] (extent-doc-for lines)))
-                                                            :chars (reduce + (map (fn [l] (inc (count (:text l)))) lines))
-                                                            :lines (count lines)
-                                                            :start-char (:start (first lines))
-                                                            :start-stream (:stream-start w)
-                                                            :stream-chars (- (:stream-end w) (:stream-start w))
-                                                            :src :build}))))
-                                          (Thread/sleep 250)))
-                                 (catch #?(:cljs :default :default Throwable) t
-                                        (binding [*out* *err*]
-                                                 (println "narcis: segment worker" n "for" path
-                                                          "slipped:" (ex-message t)))
-                                        (Thread/sleep 250)))
-                                (recur)))))))
+                     (when (try
+                            (let [entry ($ (get-in @(:atom (:store ed)) [:loading path]))]
+                                 (and entry (= load-id (:id entry))))
+                            (catch #?(:cljs :default :default Throwable) _ false)) (try
+                                                                                    (let [scan (scan-of path)
+                                                                                          spans (when scan (segment-spans scan))
+                                                                                          nxc (dec (frontier-line ed path))
+                                                                                          claims (get @segment-claims path {})
+                                                                                          exts (build-ranges ed path)
+                                                                                          ranges (into []
+                                                                                                       (mapcat (fn [[s cnt]]
+                                                                                                                   (let [owner (get claims s)]
+                                                                                                                        (if (and owner (not= owner n))
+                                                                                                                            []
+                                                                                                                            (uncovered-ranges exts nxc s cnt)))))
+                                                                                                       spans)
+                                                                                          pick (if (even? n) (first ranges) (last ranges))]
+                                                                                         (if pick
+                                                                                             (let [span-start (loop [ss spans]
+                                                                                                                    (let [[s cnt] (first ss)]
+                                                                                                                         (if (and (<= s (first pick))
+                                                                                                                                  (< (first pick) (+ s cnt)))
+                                                                                                                             s
+                                                                                                                             (recur (rest ss)))))]
+                                                                                                  (swap! segment-claims assoc-in [path span-start] n)
+                                                                                                  (let [w (text/file-window path scan (first pick) (second pick))
+                                                                                                        lines (:lines w)]
+                                                                                                       (when (and (= load-id ($ (get-in @(:atom (:store ed)) [:loading path :id])))
+                                                                                                                  (= (clojure.core/count lines) (second pick))
+                                                                                                                  (not (:eof? w)))
+                                                                                                             (note-build-doc!
+                                                                                                              ed path (first pick)
+                                                                                                              {:doc (swap! scratch (fn [_] (extent-doc-for lines)))
+                                                                                                               :chars (reduce + (map (fn [l] (inc (count (:text l)))) lines))
+                                                                                                               :lines (count lines)
+                                                                                                               :start-char (:start (first lines))
+                                                                                                               :start-stream (:stream-start w)
+                                                                                                               :stream-chars (- (:stream-end w) (:stream-start w))
+                                                                                                               :src :build}))))
+                                                                                             (Thread/sleep 250)))
+                                                                                    (catch #?(:cljs :default :default Throwable) t
+                                                                                           (binding [*out* *err*]
+                                                                                                    (println "narcis: segment worker" n "for" path
+                                                                                                             "slipped:" (ex-message t)))
+                                                                                           (Thread/sleep 250))) (recur))))))
 
 #?(:clj
    (defn- segment-worker-count

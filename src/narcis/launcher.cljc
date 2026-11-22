@@ -114,26 +114,24 @@
                          (str/split qs #"&")))))
 
 #?(:clj (defn- read-request [^BufferedReader in]
-               (let [request-line (.readLine in)]
-                    (when request-line
-                          (let [headers (loop [m {}]
-                                              (let [line (.readLine in)]
-                                                   (if (or (nil? line) (str/blank? line))
-                                                       m
-                                                       (let [[k v] (str/split line #": " 2)]
-                                                            (recur (assoc m (str/lower-case k) v))))))
-                                len (when-let [cl (get headers "content-length")]
-                                              (Integer/parseInt (str/trim cl)))
-                                body (when len
-                                           (let [buf (char-array len)]
-                                                (loop [off 0]
-                                                      (when (< off len)
-                                                            (let [n (.read in buf off (- len off))]
-                                                                 (when (pos? n) (recur (+ off n))))))
-                                                (String. buf)))]
-                               {:method (first (str/split request-line #" +"))
-                                :target (second (str/split request-line #" +"))
-                                :body body})))))
+               (when-let [request-line (.readLine in)] (let [headers (loop [m {}]
+                                                                           (let [line (.readLine in)]
+                                                                                (if (or (nil? line) (str/blank? line))
+                                                                                    m
+                                                                                    (let [[k v] (str/split line #": " 2)]
+                                                                                         (recur (assoc m (str/lower-case k) v))))))
+                                                             len (when-let [cl (get headers "content-length")]
+                                                                           (Integer/parseInt (str/trim cl)))
+                                                             body (when len
+                                                                        (let [buf (char-array len)]
+                                                                             (loop [off 0]
+                                                                                   (when (< off len)
+                                                                                         (let [n (.read in buf off (- len off))]
+                                                                                              (when (pos? n) (recur (+ off n))))))
+                                                                             (String. buf)))]
+                                                            {:method (first (str/split request-line #" +"))
+                                                             :target (second (str/split request-line #" +"))
+                                                             :body body}))))
 
 #?(:clj (defn- respond! [^OutputStream out status body content-type]
                (let [bytes (.getBytes ^String body "UTF-8")

@@ -64,8 +64,7 @@
 (defn- try-eve-open [opts]
        (try
         (require 'narcis.store-eve)
-        (let [open-fn (resolve 'narcis.store-eve/open)]
-             (when open-fn (open-fn opts)))
+        (when-let [open-fn (resolve 'narcis.store-eve/open)] (open-fn opts))
         (catch #?(:cljs :default :default Throwable) t
                {:eve-error (str (class-name t) ": " (ex-message t))})))
 

@@ -8,12 +8,12 @@
 (deftest tokenize-test
          (testing "Tokenizing comments"
                   (let [tokens (syntax/tokenize "; a simple comment\n(def x 1)")]
-                       (is (= :comment (first (first tokens))))
+                       (is (= :comment (ffirst tokens)))
                        (is (= [0 18] [(nth (first tokens) 1) (nth (first tokens) 2)]))))
 
          (testing "Tokenizing strings and regexes"
                   (let [tokens (syntax/tokenize "\"hello \\\"world\\\"\" #\"\\d+\"")]
-                       (is (= :string (first (first tokens))))
+                       (is (= :string (ffirst tokens)))
                        (is (= :regex (first (second tokens))))))
 
          (testing "Tokenizing characters"

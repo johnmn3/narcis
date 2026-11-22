@@ -331,38 +331,34 @@
    Returns `{:symbol str, :start int, :end int, :line int, :kind keyword}` or nil."
       [^String text sym-name & [pos]]
       (when (and (string? text) (not (str/blank? sym-name)))
-            (let [tokens (vec (filter #(not= (first %) :comment) (tokenize text)))
+            (let [tokens (filterv #(not= (first %) :comment) (tokenize text))
                   n (count tokens)]
       ;; 1. Search top-level def* forms
                  (or
                   (loop [i 0]
-                        (if (< i n)
-                            (let [[tok-type s _] (nth tokens i)]
-                                 (if (and (= tok-type :bracket) (= (.charAt text s) \())
-                                     (if (< (inc i) n)
-                                         (let [[_ next-s next-e] (nth tokens (inc i))
-                                               sym-form (.substring text next-s next-e)]
-                                              (if (def-forms sym-form)
+                        (when (< i n) (let [[tok-type s _] (nth tokens i)]
+                                           (if (and (= tok-type :bracket) (= (.charAt text s) \())
+                                               (if (< (inc i) n)
+                                                   (let [[_ next-s next-e] (nth tokens (inc i))
+                                                         sym-form (.substring text next-s next-e)]
+                                                        (if (def-forms sym-form)
                       ;; Scan forward past metadata to find defined symbol
-                                                  (let [def-target (loop [j (+ i 2)]
-                                                                         (when (< j n)
-                                                                               (let [[t-type ts te] (nth tokens j)]
-                                                                                    (cond
-                                                                                     (= t-type :metatag) (recur (inc j))
-                                                                                     (= t-type :symbol) (when (= (.substring text ts te) sym-name)
-                                                                                                              {:symbol sym-name
-                                                                                                               :start ts
-                                                                                                               :end te
-                                                                                                               :line (line-number-at-offset text ts)
-                                                                                                               :kind :def})
-                                                                                     :else nil))))]
-                                                       (if def-target
-                                                           def-target
-                                                           (recur (inc i))))
-                                                  (recur (inc i))))
-                                         (recur (inc i)))
-                                     (recur (inc i))))
-                            nil))
+                                                            (let [def-target (loop [j (+ i 2)]
+                                                                                   (when (< j n)
+                                                                                         (let [[t-type ts te] (nth tokens j)]
+                                                                                              (cond
+                                                                                               (= t-type :metatag) (recur (inc j))
+                                                                                               (= t-type :symbol) (when (= (.substring text ts te) sym-name)
+                                                                                                                        {:symbol sym-name
+                                                                                                                         :start ts
+                                                                                                                         :end te
+                                                                                                                         :line (line-number-at-offset text ts)
+                                                                                                                         :kind :def})
+                                                                                               :else nil))))]
+                                                                 (or def-target (recur (inc i))))
+                                                            (recur (inc i))))
+                                                   (recur (inc i)))
+                                               (recur (inc i))))))
         ;; 2. Search local bindings if pos is provided
                   (when (number? pos)
                         (let [prior-tokens (filter (fn [[_ s _]] (< s pos)) tokens)]
@@ -484,7 +480,7 @@
       (when (and (string? text) def-target (= (:kind def-target) :def))
             (try
              (let [target-start (:start def-target)
-                   tokens (vec (filter #(not= (first %) :comment) (tokenize text)))
+                   tokens (filterv #(not= (first %) :comment) (tokenize text))
                    n (count tokens)
                    bracket-info (compute-brackets text)
                    matches (:matches bracket-info)
@@ -607,27 +603,24 @@
         ;; 2. Clojure special forms (def, if, do, recur, try, quote, var, set!, etc.)
                       (or (special-forms sym-name) (special-forms (str sym)))
                       #_{:clj-kondo/ignore [:unresolved-symbol]}
-                      (let [spec-info (try
-                                       (require 'clojure.repl)
-                                       (when-let [spec-fn (ns-resolve 'clojure.repl 'special-doc)]
-                                                 (@spec-fn sym))
-                                       (catch Exception _ nil))]
-                           (if spec-info
-                               (let [forms (:forms spec-info)
-                                     arglists (cond
-                                               (seq forms) (str/join " " (map str forms))
-                                               (:arglists spec-info) (str (:arglists spec-info))
-                                               :else nil)]
-                                    {:status :found
-                                     :symbol sym-name
-                                     :name (str (or (:name spec-info) sym-name))
-                                     :special-form true
-                                     :arglists arglists
-                                     :doc (:doc spec-info)})
-                               {:status :found
-                                :symbol sym-name
-                                :name sym-name
-                                :special-form true}))
+                      (if-let [spec-info (try
+                                          (require 'clojure.repl)
+                                          (when-let [spec-fn (ns-resolve 'clojure.repl 'special-doc)]
+                                                    (@spec-fn sym))
+                                          (catch Exception _ nil))] (let [forms (:forms spec-info)
+                                                                          arglists (cond
+                                                                                    (seq forms) (str/join " " (map str forms))
+                                                                                    (:arglists spec-info) (str (:arglists spec-info))
+                                                                                    :else nil)]
+                                                                         {:status :found
+                                                                          :symbol sym-name
+                                                                          :name (str (or (:name spec-info) sym-name))
+                                                                          :special-form true
+                                                                          :arglists arglists
+                                                                          :doc (:doc spec-info)}) {:status :found
+                                                                                                   :symbol sym-name
+                                                                                                   :name sym-name
+                                                                                                   :special-form true})
 
         ;; 3. Buffer definition
                       :else
@@ -706,9 +699,7 @@
                                        symbol])
                                   (vals deduped)))
             by-char (group-by (fn [{:keys [symbol]}]
-                                  (if (pos? (count symbol))
-                                      (Character/toLowerCase ^Character (.charAt ^String symbol 0))
-                                      nil))
+                                  (when (pos? (count symbol)) (Character/toLowerCase ^Character (.charAt ^String symbol 0))))
                               all-vec)]
            {:all all-vec
             :by-char by-char})))
@@ -887,10 +878,7 @@
 
          ;; Runtime namespace definitions
              runtime-user (try
-                           (let [curr-ns (or *ns* (find-ns 'user))]
-                                (if curr-ns
-                                    (set (map name (keys (ns-publics curr-ns))))
-                                    #{}))
+                           (if-let [curr-ns (or *ns* (find-ns 'user))] (set (map name (keys (ns-publics curr-ns)))) #{})
                            (catch Exception _ #{}))
 
          ;; Combine user symbols
@@ -1074,26 +1062,18 @@
                                               (not= line-idx (:line top)))
                                          (:col top)
                                          (case (:type top)
-                                               :vector (if (:first-child-col top)
-                                                           (:first-child-col top)
-                                                           (+ (:col top) 2))
-                                               :map (if (:first-child-col top)
-                                                        (:first-child-col top)
-                                                        (+ (:col top) 2))
+                                               :vector or
+                                               :map or
                                                :list (cond
                                                       (body-form? (:operator top))
                                                       (+ (:col top) 2)
 
                                                       (contains? #{"->" "->>" "as->" "cond->" "cond->>" "some->" "some->>"}
                                                                  (:operator top))
-                                                      (if (:first-arg-col top)
-                                                          (:first-arg-col top)
-                                                          (+ (:col top) 2))
+                                                      or
 
                                                       :else
-                                                      (if (:first-arg-col top)
-                                                          (:first-arg-col top)
-                                                          (+ (:col top) 2)))))))
+                                                      or)))))
                                old-indent (or first-non-ws 0)
                                delta (if (= line-indent :verbatim) 0 (- line-indent old-indent))]
                               (recur (inc line-idx)

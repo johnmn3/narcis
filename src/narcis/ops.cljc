@@ -104,7 +104,7 @@
              sel (when (and (sequential? sel) (= 2 (count sel))
                             (< (first sel) (second sel)))
                        sel)
-             [a b] (if sel sel [caret caret])
+             [a b] (or sel [caret caret])
              cover (when (and (integer? a) (integer? b))
                          (buffer/covering-extent ed path a b))]
             (if-not cover
@@ -137,15 +137,10 @@
        [ed path msg why f]
        (if (buffer/partial? ed path)
            (extent-edit-op ed path msg why f)
-           (let [applied (buffer/edit! ed path
-                                       (fn [doc cursor sel key]
-                                           (let [[caret sel] (at doc msg cursor sel)]
-                                                (f doc caret sel (delay (region doc key caret))))))]
-                (if applied
-        ;; an op may hand the page something beside the new state: :copy is
-        ;; text for the clipboard (Kill Form, Copy Form)
-                    (merge (result ed path) (select-keys applied [:copy]))
-                    {:ok false :error why}))))
+           (if-let [applied (buffer/edit! ed path
+                                          (fn [doc cursor sel key]
+                                              (let [[caret sel] (at doc msg cursor sel)]
+                                                   (f doc caret sel (delay (region doc key caret))))))] (merge (result ed path) (select-keys applied [:copy])) {:ok false :error why})))
 
 (defn- insert-at
        "The plain insert of s at caret, replacing sel when there is one."
