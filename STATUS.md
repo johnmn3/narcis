@@ -26,10 +26,17 @@ Charter: ~/workspace/syntax-formalization/PLAN.md. Templates are coordinator-own
 - Unresolved cluster root-caused (detail in CENSUS working notes): eve/deftype type/field/factory symbols (kondo has no Eve macro config; Eve ships no clj-kondo exports), host-interop symbols in reader-conditional branches, eve/* vars (kondo cache reflects Eve's JVM classpath, narcis compiles against Eve's jolt roots — the known Eve deps-shape gap).
 
 ## Step 3 — format pass
-- Baseline gate (`jolt app:test`, EVE_RELEASE = the pinned Eve checkout) launched BEFORE formatting, detached, log /tmp/narcis-gate-baseline.log — in flight, mid-suite at last check (TEST-SUMMARY prints only at the end).
+- Baseline gate (`jolt app:test`, EVE_RELEASE = the pinned Eve checkout) BEFORE formatting: **GREEN — 256 tests, 1726 assertions, 0 failures, 0 errors** (log /tmp/narcis-gate-baseline.log).
+- Format pass committed pure (b8c971f, 51 files).
+- First formatted-tree gate attempt (copy in /tmp + campaign running concurrently) is NOT a verdict: 1 timing-threshold FAIL (100 autocomplete queries 328ms vs a 250ms budget, under load) + 9 app-test ERRORs ("store is on the file arm — host cannot run Eve") + the process died mid-log. Root cause measured afterwards: **/tmp was 100% full** (512MB tmpfs; the suites' TMPDIR stores from repeated runs) — the Eve slab store cannot write, so the seam falls back to the file arm. Cleaned to 8% and re-running solo from a worktree at b8c971f: log /tmp/narcis-gate-fmt2.log.
 
 ## Named exceptions (suppressions / disables, each with its reason)
-(none yet)
+- syntax.cljc ×7 `#_{:clj-kondo/ignore [:unused-value]}` (commit b9b55be): transient vector/set mutation statements and one `set!` — measured benign on clj+cljs (discarded conj!/pop! on transient vectors retain 29/30 after a pop on both; set conj! 20/20 both; set! is a statement form). The same linter class caught a REAL defect at two sibling sites (next section) — the ignores are only where the probe proves the discarded return is the same object.
+
+## Defects found by the campaign (re-derived before any fix)
+- **D1 — bracket matches lost past 8 pairs on CLJS** (FIXED, b9b55be). compute-brackets* discarded assoc! returns on a (transient {}) inside a doseq; array-map promotion drops the rest. Probes at pin: CLJ 8/20, CLJS 8/20, jolt 20/20 — jolt's mutating assoc! is why the jolt-only corpus never saw it; the browser build would drop bracket matches past the first 8 pairs in any real file. Fix: volatile-boxed transient + vswap!.
+
+## Step 3 — format pass (cont.)
 
 ## Integrated-pipeline trial (step 6, per steer)
 (not yet)
