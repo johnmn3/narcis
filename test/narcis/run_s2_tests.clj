@@ -10,7 +10,7 @@
               [narcis.upstream-syntax-test]))
 
 (defn -main [& _]
-      (let [{:keys [test pass fail error] :as m}
+      (let [{:keys [fail error] :as m}
             (t/run-tests 'narcis.syntax-test 'narcis.upstream-syntax-test
                          'narcis.edit-test 'narcis.edit-doc-test)]
            (println "TEST-SUMMARY" m)

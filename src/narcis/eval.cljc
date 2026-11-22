@@ -16,8 +16,9 @@
 (defn- cause-of [t] #?(:clj (.getCause ^Throwable t) :cljs (.-cause t)))
 (defn- class-name [v] #?(:clj (.getName (class v)) :cljs (.-name (type v))))
 (defn- current-thread [] #?(:clj (Thread/currentThread) :cljs nil))
-(defn- interrupt-thread! [t]
-       #?(:clj (try (.interrupt ^Thread t) (catch :default _ nil)) :cljs nil))
+#?(:clj (defn- interrupt-thread! [t]
+               (try (.interrupt ^Thread t) (catch :default _ nil)))
+   :cljs (defn- interrupt-thread! [_t] nil))
 (defn- clear-interrupt! [] #?(:clj (Thread/interrupted) :cljs nil))
 (defn- new-lock [] #?(:clj (Object.) :cljs (js-obj)))
 #?(:clj

@@ -465,20 +465,7 @@
                                ;; end of file: flush what is held
                                ;; (a \r the file ends on is a
                                ;; whole break of its own)
-                                                           (let [s (when (or pend? (pos? (alength carry)))
-                                                                         (str (when pend? "\r")
-                                                                              (when (pos? (alength carry))
-                                                                                    (String. carry "UTF-8"))))
-                                                                 {:keys [breaks pairs units]}
-                                                                 (if s
-                                                                     (chunk-stats s)
-                                                                     {:breaks 0 :pairs 0 :units 0})
-                                                                 line (+ line breaks)
-                                                                 chars (+ chars units (- pairs))
-                                                                 stream (+ stream units)
-                                                                 bytes (+ bytes (alength carry) (if pend? 1 0))]
-                                                                (swap! st assoc :lines (inc line) :chars chars
-                                                                       :bytes bytes :chunks chunks :done? true))
+                                                           (let [s (when (or pend? (pos? (alength carry))) (str (when pend? "\r") (when (pos? (alength carry)) (String. carry "UTF-8")))) {:keys [breaks pairs units]} (if s (chunk-stats s) {:breaks 0 :pairs 0 :units 0}) line (+ line breaks) chars (+ chars units (- pairs)) bytes (+ bytes (alength carry) (if pend? 1 0))] (swap! st assoc :lines (inc line) :chars chars :bytes bytes :chunks chunks :done? true))
                                                            (let [{:keys [breaks pairs units]} (chunk-stats text)
                                                                  line (+ line breaks)
                                                                  chars (+ chars units (- pairs))
@@ -894,9 +881,9 @@
       are counted in bulk, as in file-window; only the chunk
       holding the offset is walked."
          [path scan offset]
-         (let [[il ib ic isc] (if scan
-                                  (chunk-anchor-by-char (:chunks @scan) offset)
-                                  [0 0 0 0])]
+         (let [[il ib ic _isc] (if scan
+                                   (chunk-anchor-by-char (:chunks @scan) offset)
+                                   [0 0 0 0])]
               (with-open [in (java.io.FileInputStream. ^String path)]
                          (skip-to in ib)
                          (let [buf (byte-array 1048576)

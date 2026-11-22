@@ -46,11 +46,14 @@
        (defn- queue-offer! [q x] (.offer q x))
        (defn- queue-poll [q] (.poll q))))
 (defn- current-thread [] #?(:clj (Thread/currentThread) :cljs nil))
-(defn- await-reply
-       "A paused program's answer to a break-eval!, waited for up to 5 s."
-       [p]
-       #?(:clj (deref p 5000 {:error "The paused program did not answer."})
-          :cljs {:error "The paused program did not answer."}))
+#?(:clj (defn- await-reply
+               "A paused program's answer to a break-eval!, waited for up to 5 s."
+               [p]
+               (deref p 5000 {:error "The paused program did not answer."}))
+   :cljs (defn- await-reply
+                "A paused program's answer to a break-eval!, waited for up to 5 s."
+                [_p]
+                {:error "The paused program did not answer."}))
 
 (def max-chars
      "The transcript keeps about this many characters; older entries go."

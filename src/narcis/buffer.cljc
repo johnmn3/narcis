@@ -1372,7 +1372,7 @@
                      (open-file! ed path {:head head}))))
 
         :else
-        (let [{:keys [pieces eol loaded-chars total-bytes done? tail]}
+        (let [{:keys [pieces eol loaded-chars total-bytes done?]}
               (text/ingest-open path (when head {:head head}))
               gen (rev ed)]
        ;; the head's document is built inside the swap, where
@@ -1387,12 +1387,11 @@
                ;; the background build, which takes A's pieces only
                ;; in the load's one merge). Its complete lines, read
                ;; with their stream positions as a view's are
-                             k (or (read ed path (fn [s] (dec (text/lines (:root s))))) 0)
-                             hw (when (pos? k)
-                                      #?(:clj (text/file-window path (atom {:chunks [] :done? false}) 0 k)
-                                         :cljs nil))]
-                            #?(:clj (when (and hw (= k (count (:lines hw))) (not (:eof? hw)))
-                                          (note-extent! ed path (:lines hw) (:stream-start hw) (:stream-end hw))))
+                             k (or (read ed path (fn [s] (dec (text/lines (:root s))))) 0)]
+                            #?(:clj (when (pos? k)
+                                          (let [hw (text/file-window path (atom {:chunks [] :done? false}) 0 k)]
+                                               (when (and hw (= k (count (:lines hw))) (not (:eof? hw)))
+                                                     (note-extent! ed path (:lines hw) (:stream-start hw) (:stream-end hw))))))
                             (swap! materializing conj path)
                             (start-load! ed path id)
                             (start-scan! path)))))))
