@@ -28,15 +28,18 @@ Charter: ~/workspace/syntax-formalization/PLAN.md. Templates are coordinator-own
 ## Step 3 — format pass
 - Baseline gate (`jolt app:test`, EVE_RELEASE = the pinned Eve checkout) BEFORE formatting: **GREEN — 256 tests, 1726 assertions, 0 failures, 0 errors** (log /tmp/narcis-gate-baseline.log).
 - Format pass committed pure (b8c971f, 51 files).
-- First formatted-tree gate attempt (copy in /tmp + campaign running concurrently) is NOT a verdict: 1 timing-threshold FAIL (100 autocomplete queries 328ms vs a 250ms budget, under load) + 9 app-test ERRORs ("store is on the file arm — host cannot run Eve") + the process died mid-log. Root cause measured afterwards: **/tmp was 100% full** (512MB tmpfs; the suites' TMPDIR stores from repeated runs) — the Eve slab store cannot write, so the seam falls back to the file arm. Cleaned to 8% and re-running solo from a worktree at b8c971f: log /tmp/narcis-gate-fmt2.log.
+- First formatted-tree gate attempt (copy in /tmp + campaign running concurrently) is NOT a verdict: 1 timing-threshold FAIL (100 autocomplete queries 328ms vs a 250ms budget, under load) + 9 app-test ERRORs ("store is on the file arm — host cannot run Eve") + the process died mid-log. Root cause measured afterwards: **/tmp was 100% full** (512MB tmpfs; the suites' TMPDIR stores from repeated runs) — the Eve slab store cannot write, so the seam falls back to the file arm. Cleaned to 8% and re-ran solo from a worktree at b8c971f: **GREEN — TEST-SUMMARY {:test 256, :pass 1726, :fail 0, :error 0}**, identical to baseline (log /tmp/narcis-gate-fmt2.log). Format pass verified.
+
+## Fix campaign — classes closed
+- unused-import (1) `6d8fd37`; constant-condition (1) `4fa8777`; redefined-var (3 reports / 2 sites) `1bcf064`; unused-namespace (3) `b659110`; redundant-primitive-coercion (2) `3823f6a`; unused-value (8) `b9b55be` (incl. defect D1); unused-binding (9) `45f105f` + `3d0deaa`.
+- Pipeline discipline held throughout: clj-replace (whole forms) → clj-paren-repair → clj-kondo per file; `cljfmt check` agreed with repair output on every edited file so far. Binding-vector/destructure edits that are not whole forms were surgical text edits followed by repair + kondo (the steer's pipeline covers whole-form edits).
+- Mishap banked: commit `9436f9d` deleted a binding line together with the vector's closing bracket; parinfer re-nested the body wrongly and it was committed before the kondo delta was read. Restored from `45f105f`, redone as an extraction (`3d0deaa`), structure verified by parse + diff before commit. Lesson recorded for RETRO: after any repair pass, read the kondo delta AND the diff before committing — repair follows indentation, so a bracket slip becomes a silent re-nesting.
 
 ## Named exceptions (suppressions / disables, each with its reason)
 - syntax.cljc ×7 `#_{:clj-kondo/ignore [:unused-value]}` (commit b9b55be): transient vector/set mutation statements and one `set!` — measured benign on clj+cljs (discarded conj!/pop! on transient vectors retain 29/30 after a pop on both; set conj! 20/20 both; set! is a statement form). The same linter class caught a REAL defect at two sibling sites (next section) — the ignores are only where the probe proves the discarded return is the same object.
 
 ## Defects found by the campaign (re-derived before any fix)
 - **D1 — bracket matches lost past 8 pairs on CLJS** (FIXED, b9b55be). compute-brackets* discarded assoc! returns on a (transient {}) inside a doseq; array-map promotion drops the rest. Probes at pin: CLJ 8/20, CLJS 8/20, jolt 20/20 — jolt's mutating assoc! is why the jolt-only corpus never saw it; the browser build would drop bracket matches past the first 8 pairs in any real file. Fix: volatile-boxed transient + vswap!.
-
-## Step 3 — format pass (cont.)
 
 ## Integrated-pipeline trial (step 6, per steer)
 (not yet)
