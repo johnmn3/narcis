@@ -138,24 +138,24 @@
 ;; ---------------------------------------------------------------------------
 ;; the file door
 
-(defn- first-eol
-       "The first line ending in s (\"\\r\\n\", \"\\r\" or \"\\n\"), or nil. A
+#?(:clj (defn- first-eol
+               "The first line ending in s (\"\\r\\n\", \"\\r\" or \"\\n\"), or nil. A
    \\r that ends s is not decided here: the next piece may start with
    its \\n."
-       [^String s]
-       (let [n (count s)]
-            (loop [i 0]
-                  (when (< i n)
-                        (let [c (.charAt s i)]
-                             (cond (= c \newline) "\n"
-                                   (= c \return) (cond (= (inc i) n) nil
-                                                       (= (.charAt s (inc i)) \newline) "\r\n"
-                                                       :else "\r")
-                                   :else (recur (inc i))))))))
+               [^String s]
+               (let [n (count s)]
+                    (loop [i 0]
+                          (when (< i n)
+                                (let [c (.charAt s i)]
+                                     (cond (= c \newline) "\n"
+                                           (= c \return) (cond (= (inc i) n) nil
+                                                               (= (.charAt s (inc i)) \newline) "\r\n"
+                                                               :else "\r")
+                                           :else (recur (inc i)))))))))
 
-(def ^:private chunk-chars
-     "Characters read from a file at a time: about 1 MB."
-     1048576)
+#?(:clj (def ^:private chunk-chars
+             "Characters read from a file at a time: about 1 MB."
+             1048576))
 
 #?(:clj
    (defn ingest-reader
@@ -205,10 +205,10 @@
 ;; measured in. The document the two phases build is ingest-file's
 ;; document: same builder, same break handling, same seams.
 
-(def ^:private head-chars
-     "How much text a progressive head aims to hold before the open
+#?(:clj (def ^:private head-chars
+             "How much text a progressive head aims to hold before the open
    returns: enough for the first screens, small enough to be quick."
-     65536)
+             65536))
 
 #?(:clj
    (defn file-length

@@ -238,9 +238,9 @@
             (not (str/includes? (name sym) "."))
             (not (special-symbol? sym))))
 
-(def ^:private OUT-MAX
+#?(:clj (def ^:private OUT-MAX
   ;; a choice: what a frame form prints is kept in memory until it returns
-     10000)
+             10000))
 
 (defn make-token
       "A fresh interrupt token for eval-in-frame's :token."
@@ -397,14 +397,14 @@
                        (reject-eval! m)
                        (recur))))
 
-(defn- serve-eval!
-       "Answers one {:eval [i code reply]} request, evaluated on this thread with
+#?(:clj (defn- serve-eval!
+               "Answers one {:eval [i code reply]} request, evaluated on this thread with
   frame i's locals bound; other requests are ignored."
-       [m t frames]
-       (when-let [[i code reply] (:eval m)]
-                 (let [r (try (eval-in-frame t i code {:frames-fn (fn [_] frames)})
-                              (catch :default e {:error (title e)}))]
-                      (try (reply r) (catch :default _ nil)))))
+               [m t frames]
+               (when-let [[i code reply] (:eval m)]
+                         (let [r (try (eval-in-frame t i code {:frames-fn (fn [_] frames)})
+                                      (catch :default e {:error (title e)}))]
+                              (try (reply r) (catch :default _ nil))))))
 
 #?(:clj
    (defn- serve!
