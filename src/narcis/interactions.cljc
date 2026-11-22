@@ -65,6 +65,7 @@
       [st]
       (swap! (:atom st) update :console
              (fn [v] (or v {:entries [] :dropped 0 :ns "user"})))
+      #_{:clj-kondo/ignore [:unresolved-symbol]}
       (let [con {:ctx (eval/make-eval-context)
                  :store st
                  :pending (pending-queue)
@@ -230,6 +231,7 @@
    makes what it needs."
        [con]
        (doseq [n (conj @(:owned con) 'user)]
+              #_{:clj-kondo/ignore [:unresolved-symbol]}
               (when (find-ns n) (remove-ns n)))
        (reset! (:owned con) #{})
        (reset! (:ns con) 'user))
@@ -443,6 +445,7 @@
    eval-in-frame's {:text :out} or {:error s}."
       [con error-id frame code]
       (if @(:pause con)
+          #_{:clj-kondo/ignore [:unresolved-symbol]}
           (let [p (promise)]
                (debugger/break-eval! (:break con) frame code (fn [r] (deliver p r)))
                (await-reply p))

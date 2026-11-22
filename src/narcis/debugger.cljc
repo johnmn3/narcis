@@ -21,6 +21,7 @@
      nil)
 
 (defn- real-frames-fn []
+       #_{:clj-kondo/ignore [:unresolved-symbol]}
        (try (requiring-resolve 'jolt.debug/frames) (catch :default _ nil)))
 
 (defn frames-fn
@@ -36,6 +37,7 @@
 
 (def ^:private UNREALIZED "<lazy seq, not realized>")
 
+#_{:clj-kondo/ignore [:unresolved-symbol]}
 (defn- unrealized?
        "True for a lazy seq nothing has realized yet: printing it would run the
   program's own code (a (map save! rows) saving rows again), off the eval
@@ -118,6 +120,7 @@
      (str "No frames: Jolt ran out of stack or memory and kept none. "
           "With debug mode on, deep recursion that doesn't use recur ends this way."))
 
+#_{:clj-kondo/ignore [:unresolved-symbol]}
 (defn- out-of-stack? [e]
        (contains? #{"OutOfMemoryError" "StackOverflowError"} (.getSimpleName (class e))))
 
@@ -321,6 +324,7 @@
   Nothing unwinds or resumes; the forms' own side effects happen."
       [e i code {:keys [frames-fn token]}]
       (if-let [fr (when frames-fn (get (vec (frames-fn e)) i))]
+              #_{:clj-kondo/ignore [:unresolved-symbol]}
               (let [syms (->> (keys (:locals fr)) (filter param?) sort vec)
                     target (or (find-ns (label-ns (str (:fn fr)))) (the-ns 'user))
                     sb (new-capture)
@@ -454,6 +458,7 @@
        "Publishes the claimed pause of thread on t with frames and data d."
        [{:keys [queue paused]} t frames d]
        (drain! queue)
+       #_{:clj-kondo/ignore [:unresolved-namespace]}
        (reset! paused {:error t :frames frames :data d :continued (atom false)
                        :thread (Thread/currentThread)}))
 
@@ -736,6 +741,7 @@
   buffer before its first Run) is resolved in user, with :ns-found? false:
   what its :refer brings in can't be known then."
       [ns-name syms]
+      #_{:clj-kondo/ignore [:unresolved-symbol]}
       (let [found (some-> ns-name str symbol find-ns)
             n (or found (the-ns 'user))]
            {:heads (into {} (map (fn [s]

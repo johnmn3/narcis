@@ -24,6 +24,7 @@
   2026-11-03). The test oracle for every op, and what a front-end without
   native edits would do."
       [^String text edits]
+      #_{:clj-kondo/ignore [:unresolved-symbol]}
       (let [sb (StringBuilder.)
             end (reduce (fn [from [s e r]]
                             (.append sb text from s)

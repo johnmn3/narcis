@@ -22,6 +22,7 @@
 (defn- resolve-ns
        "The namespace named ns-sym, or `user` when it no longer exists."
        [ns-sym]
+       #_{:clj-kondo/ignore [:unresolved-symbol]}
        (or (find-ns ns-sym) (the-ns 'user)))
 
 (defn clear-doc-cache!
@@ -34,6 +35,7 @@
        "[ok? doc] for sym-name looked up with ns-sym's namespace as *ns*; [false
   nil] when the lookup throws."
        [{:keys [ns-sym sym-name text pos]}]
+       #_{:clj-kondo/ignore [:unresolved-symbol]}
        (try [true (binding [*ns* (resolve-ns ns-sym)]
                            (syntax/get-symbol-doc sym-name text pos))]
             (catch Exception _ [false nil])))

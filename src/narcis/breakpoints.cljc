@@ -88,6 +88,7 @@
        (and (= :atom (kind text node))
             (let [s (atom-text text node)
                   s (if (str/starts-with? s "@") (subs s 1) s)]
+                 #_{:clj-kondo/ignore [:unresolved-namespace]}
                  (and (seq s)
                       (not (contains? not-symbols s))
                       (not (contains? #{\: \" \\ \# \' \` \^ \~ \@} (first s)))
@@ -562,6 +563,7 @@
 
 (defn- within? [outer x] (and (<= (:start outer) (:start x)) (< (:start x) (:end outer))))
 
+#_{:clj-kondo/ignore [:unresolved-symbol]}
 (defn- instrument-range
        "instrument for one range, from prepare's p."
        [text lines {:keys [start end tab] :or {start 0}} {:keys [all first-on units defining]}]

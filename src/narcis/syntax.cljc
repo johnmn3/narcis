@@ -475,6 +475,7 @@
                               (do #_{:clj-kondo/ignore [:unused-value]} (conj! results [idx (+ idx qlen)])
                                   (recur (+ idx qlen)))))))))
 
+#_{:clj-kondo/ignore [:unresolved-symbol]}
 (defn extract-buffer-def-meta
       "Inspects `text` around `def-target` (from `find-definition`) to extract
    docstring and parameter list (arglists) if available.
@@ -605,6 +606,7 @@
 
         ;; 2. Clojure special forms (def, if, do, recur, try, quote, var, set!, etc.)
                       (or (special-forms sym-name) (special-forms (str sym)))
+                      #_{:clj-kondo/ignore [:unresolved-symbol]}
                       (let [spec-info (try
                                        (require 'clojure.repl)
                                        (when-let [spec-fn (ns-resolve 'clojure.repl 'special-doc)]
@@ -690,6 +692,7 @@
      "Precomputes all static candidate maps for special forms and clojure.core builtins,
    deduplicated with priority :special > :builtin, and bucketed by lowercase initial character."
      (delay
+      #_{:clj-kondo/ignore [:unresolved-namespace]}
       (let [specials (map (fn [s] {:symbol s :category :special}) special-forms)
             builtins (map (fn [s] {:symbol s :category :builtin}) @all-core-builtins)
             deduped (reduce (fn [m c]

@@ -195,6 +195,7 @@
   leading space, else stop here. old, before (old's text up to caret),
   caret and col (its column) describe the caret's place in old."
        [{:keys [old new before caret col i]}]
+       #_{:clj-kondo/ignore [:unresolved-namespace]}
        (let [line-start (inc (or (str/last-index-of (subs new 0 i) "\n") -1))
              blank-before? (str/blank? (subs before (- caret col)))
              at-code? (and (< caret (count old))

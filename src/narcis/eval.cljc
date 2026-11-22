@@ -254,6 +254,7 @@
       ;; the flag for its callbacks, so Stop leaves it alone.
       (when (and (= :running status) (not finishing))
         (reset! stop-requested true)
+        #_{:clj-kondo/ignore [:unresolved-namespace]}
         (jolt.host/interrupt! token)
         (when thread (interrupt-thread! thread))
         (queue-offer! queue ::eof)

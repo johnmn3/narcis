@@ -432,6 +432,7 @@
 (deftest stop-leaves-a-finishing-worker-alone
          (let [ctx (sut/make-eval-context)
                flag (atom false)]
+              #_{:clj-kondo/ignore [:unresolved-namespace]}
               (reset! (:running-state ctx) {:status :running :finishing true
                                             :token (jolt.host/make-interrupt)
                                             :done (promise) :stop-requested flag})

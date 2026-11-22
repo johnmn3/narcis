@@ -816,6 +816,7 @@
      (or (read ed path (fn [s] (text/lines (:root s)))) 0)))
 
 #?(:clj
+   #_{:clj-kondo/ignore [:unresolved-var]}
    (defn- segment-scratch
      "Worker n's scratch atom in the store's domain: the swap on
       it is the domain context its segment documents are built

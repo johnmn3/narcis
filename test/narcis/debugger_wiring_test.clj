@@ -3,7 +3,8 @@
    jolt.debug (the released Jolt has none) every debugger answer is
    its not-available one and a Run with breakpoints still runs; the
    frames of a real error are the note that names jolt.debug."
-    (:require [clojure.test :as t :refer [deftest is testing]]
+    (:require [clojure.string]
+              [clojure.test :as t :refer [deftest is testing]]
               [narcis.interactions :as interactions]
               [narcis.store :as store]))
 

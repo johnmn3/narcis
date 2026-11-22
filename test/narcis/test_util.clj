@@ -12,6 +12,7 @@
    Eve itself.)"
     (:require [eve.alpha :as eve]))
 
+#_{:clj-kondo/ignore [:unresolved-var]}
 (def ^:private doc-domain
   ;; One in-process domain for standalone documents, sized for
   ;; editor-scale trees (a line is a block of its own: a million

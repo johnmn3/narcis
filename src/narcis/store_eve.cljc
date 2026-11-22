@@ -36,8 +36,10 @@
              (-cur [_] cur)
              (-hist [_] hist))
 
+#_{:clj-kondo/ignore [:unresolved-var]}
 (defn- arr-len [a] (if (nil? a) 0 (eve/alength a)))
 
+#_{:clj-kondo/ignore [:unresolved-var]}
 (defn- arr-push [a v]
        (let [n (arr-len a)
              b (eve/make-array (inc n))]
@@ -45,6 +47,7 @@
             (eve/aset b n v)
             b))
 
+#_{:clj-kondo/ignore [:unresolved-var]}
 (defn- arr-vec [a]
        (if (nil? a) [] (vec (eve/array-seq a))))
 
@@ -52,6 +55,7 @@
      "The app atom's first value: every slot empty."
      {:buffers {} :editor nil :console nil :versions {}})
 
+#_{:clj-kondo/ignore [:unresolved-var]}
 (defn open [{:keys [dir name]}]
       (let [base (str dir "/" name)]
     ;; A regular Eve disk domain at base, with Eve's defaults —
@@ -87,6 +91,7 @@
       ($ (let [v (get-in @(:atom store) [:versions buffer-name])]
               (if (nil? v) 0 (inc (arr-len (-hist v)))))))
 
+#_{:clj-kondo/ignore [:unresolved-var]}
 (defn close! [{:keys [base]}]
       (eve/close-atom-domain! (eve/persistent-atom-domain base))
       nil)
