@@ -1381,20 +1381,20 @@
                     (fn [_] (->BufferState (text/from-pieces pieces) 0 nil nil nil eol 0 0 gen 0 0)))
              (swap! (app-atom ed) update :editor (fn [s] (add-tab s path)))
              (when-not done?
-                       (let [id (claim-partial! ed path loaded-chars total-bytes)
+                       (let [id (claim-partial! ed path loaded-chars total-bytes)]
                ;; the head is buffer A's first piece: the reader can
                ;; edit it while the file loads (the root is buffer B,
                ;; the background build, which takes A's pieces only
                ;; in the load's one merge). Its complete lines, read
                ;; with their stream positions as a view's are
-                             k (or (read ed path (fn [s] (dec (text/lines (:root s))))) 0)]
-                            #?(:clj (when (pos? k)
-                                          (let [hw (text/file-window path (atom {:chunks [] :done? false}) 0 k)]
-                                               (when (and hw (= k (count (:lines hw))) (not (:eof? hw)))
-                                                     (note-extent! ed path (:lines hw) (:stream-start hw) (:stream-end hw))))))
-                            (swap! materializing conj path)
-                            (start-load! ed path id)
-                            (start-scan! path)))))))
+                            #?(:clj (let [k (or (read ed path (fn [s] (dec (text/lines (:root s))))) 0)])))
+                       (when (pos? k)
+                             (let [hw (text/file-window path (atom {:chunks [] :done? false}) 0 k)]
+                                  (when (and hw (= k (count (:lines hw))) (not (:eof? hw)))
+                                        (note-extent! ed path (:lines hw) (:stream-start hw) (:stream-end hw))
+                                        (swap! materializing conj path)
+                                        (start-load! ed path id)
+                                        (start-scan! path)))))))))
 
 (defn close-buffer! [ed path]
       (stop-scan! path)
