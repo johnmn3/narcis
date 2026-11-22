@@ -942,15 +942,6 @@
                  (str/starts-with? op "when-")
                  (str/starts-with? op "if-"))))
 
-;; NAMED EXCEPTION (syntax campaign, STATUS.md): lint/identical-branches
-;; is disabled for this one defn. Its inner cond's last two clauses both
-;; yield the bare symbol `or` (the indent engine's operator marker, a
-;; value jolt accepts in this position). Merging them under `or` as the
-;; rule suggests makes jolt's `case` expansion fail with "Can't take
-;; value of a macro: #'clojure.core/or" — measured at the gate
-;; (2026-11-22, the merged tree failed to load; the original shape has
-;; passed every gate). The two clauses stay unmerged.
-#_{:splint/disable [lint/identical-branches]}
 (defn compute-line-indentations
       "Calculates the target indentation (in spaces) for each line of `text`.
    Returns a vector of integers or `:verbatim` (for lines within multiline strings)."
@@ -1053,10 +1044,7 @@
                                                                                                                                           (if (and (= first-char (:close-char top))
                                                                                                                                                    (not= line-idx (:line top)))
                                                                                                                                               (:col top)
-                                                                                                                                              (case (:type top)
-                                                                                                                                                    :vector or
-                                                                                                                                                    :map or
-                                                                                                                                                    :list (cond (body-form? (:operator top)) (+ (:col top) 2) (contains? #{"->" "->>" "as->" "cond->" "cond->>" "some->" "some->>"} (:operator top)) or :else or)))))
+                                                                                                                                              (case (:type top) (:vector :map) (or (:first-child-col top) (+ (:col top) 2)) :list (cond (body-form? (:operator top)) (+ (:col top) 2) :else (or (:first-arg-col top) (+ (:col top) 2)))))))
                                old-indent (or first-non-ws 0)
                                delta (if (= line-indent :verbatim) 0 (- line-indent old-indent))]
                               (recur (inc line-idx)
