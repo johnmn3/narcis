@@ -379,10 +379,7 @@
   a known head without a shape holds none."
        [text {:keys [kids] :as node} opts]
        (let [k (head-kind text node opts)]
-            (cond
-             (= :macro k) nil
-             (= :call k) (if (head-symbol text node) (exprs (rest kids)) (exprs kids))
-             :else (when-let [f (parts-by-name (second k))] (f text (rest kids))))))
+            (condp = k :macro nil :call (if (head-symbol text node) (exprs (rest kids)) (exprs kids)) (when-let [f (parts-by-name (second k))] (f text (rest kids))))))
 
 (defn- pausable?
        "True when node, in an evaluated position, can hold a breakpoint: a list

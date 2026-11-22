@@ -122,7 +122,7 @@
                                                 whole (aget m 0)
                                                 end (+ start (count whole))]
                                                #_{:clj-kondo/ignore [:unused-value]} (conj! results [(token-type (mapv (fn [i] (let [v (aget m i)]
-                                                                                                                                    (if (undefined? v) nil v)))
+                                                                                                                                    (when-not (undefined? v) v)))
                                                                                                                        (range 1 10)))
                                                                                                      start end])
                                                (recur (if (pos? (count whole)) end (inc end))))
@@ -502,7 +502,7 @@
                                                               (cond
                                                                (= tok :metatag) (recur (dec k))
                                                                (def-forms (.substring text s e))
-                                                               (when (> k 0)
+                                                               (when (pos? k)
                                                                      (let [[prev-tok ps _] (nth tokens (dec k))]
                                                                           (when (and (= prev-tok :bracket) (= (.charAt text ps) \())
                                                                                 {:form (.substring text s e)
@@ -928,22 +928,20 @@
                                      static-pool)
              combined (concat matching-user-vec (persistent! matching-static))]
 
-            (if (not has-prefix?)
-                (if (empty? matching-user-vec)
-                    (:all @static-candidates)
-                    (let [sorted-user (vec (sort-by (fn [{:keys [symbol]}]
-                                                        [(str/lower-case symbol) symbol])
-                                                    matching-user-vec))]
-                         (into sorted-user
-                               (remove #(contains? user-syms-set (:symbol %))
-                                       (:all @static-candidates)))))
-                (vec
-                 (sort-by (fn [{:keys [symbol category]}]
-                              [(if (str/starts-with? symbol prefix) 0 1)
-                               (case category :user 0 :special 1 :builtin 2 3)
-                               (str/lower-case symbol)
-                               symbol])
-                          combined))))))
+            (if-not has-prefix? (if (empty? matching-user-vec)
+                                    (:all @static-candidates)
+                                    (let [sorted-user (vec (sort-by (fn [{:keys [symbol]}]
+                                                                        [(str/lower-case symbol) symbol])
+                                                                    matching-user-vec))]
+                                         (into sorted-user
+                                               (remove #(contains? user-syms-set (:symbol %))
+                                                       (:all @static-candidates))))) (vec
+                                                                                      (sort-by (fn [{:keys [symbol category]}]
+                                                                                                   [(if (str/starts-with? symbol prefix) 0 1)
+                                                                                                    (case category :user 0 :special 1 :builtin 2 3)
+                                                                                                    (str/lower-case symbol)
+                                                                                                    symbol])
+                                                                                               combined))))))
 
 ;; --- Clojure Code Formatter ---
 

@@ -205,7 +205,7 @@
 
              (and (> cl min-chunk) (or (> cur-lines min-chunk) (zero? cur-lines)))
              (let [st (flush-chunk st)]
-                  (assoc st :chunked (conj (:chunked st) child)))
+                  (update st :chunked conj child))
 
              (and (p-leaf? child) (pos? cur-lines)
                   (p-leaf? (peek cur))

@@ -855,22 +855,20 @@
                                                                    (java.io.ByteArrayInputStream. buf 0 (:n rd)))
                                                                   (java.io.ByteArrayInputStream. buf 0 (:n rd)))
                                                               in)
-                                                             pos line])))))]
-                              (let [[in pos line] head]
-                                   (if (nil? in)
-                                       line
-                                       (let [rdr (java.io.InputStreamReader. in "UTF-8")
-                                             cbuf (char-array 65536)]
-                                            (loop [pos pos line line pending-cr? false]
-                                                  (let [n (.read rdr cbuf)]
-                                                       (if (neg? n)
+                                                             pos line]))))) [in pos line] head] (if (nil? in)
+                                                                                                    line
+                                                                                                    (let [rdr (java.io.InputStreamReader. in "UTF-8")
+                                                                                                          cbuf (char-array 65536)]
+                                                                                                         (loop [pos pos line line pending-cr? false]
+                                                                                                               (let [n (.read rdr cbuf)]
+                                                                                                                    (if (neg? n)
                        ;; an offset at the very end is on the last
                        ;; line; a trailing held \r was a break, so
                        ;; one line more
-                                                           (if pending-cr? (inc line) line)
-                                                           (let [r (loop [i 0 pos pos line line pending-cr? pending-cr?]
-                                                                         (if (< i n)
-                                                                             (let [c (aget cbuf i)
+                                                                                                                        (if pending-cr? (inc line) line)
+                                                                                                                        (let [r (loop [i 0 pos pos line line pending-cr? pending-cr?]
+                                                                                                                                      (if (< i n)
+                                                                                                                                          (let [c (aget cbuf i)
                                          ;; a held \r resolves against
                                          ;; this char: half of a pair
                                          ;; when this is \n (counted by
@@ -878,25 +876,25 @@
                                          ;; otherwise — and only then
                                          ;; does the line turn, before
                                          ;; this char is placed
-                                                                                   line (if (and pending-cr? (not= c \newline))
-                                                                                            (inc line)
-                                                                                            line)
-                                                                                   pair? (and pending-cr? (= c \newline))]
-                                                                                  (cond
+                                                                                                                                                line (if (and pending-cr? (not= c \newline))
+                                                                                                                                                         (inc line)
+                                                                                                                                                         line)
+                                                                                                                                                pair? (and pending-cr? (= c \newline))]
+                                                                                                                                               (cond
                                        ;; the \n of a \r\n pair holds
                                        ;; no document position of
                                        ;; its own, but the pair is
                                        ;; one break: the line turns
                                        ;; here
-                                                                                   pair? (recur (inc i) pos (inc line) false)
-                                                                                   (= pos offset) [:at line]
-                                                                                   :else (recur (inc i) (inc pos)
-                                                                                                (if (= c \newline) (inc line) line)
-                                                                                                (= c \return))))
-                                                                             [:more pos line pending-cr?]))]
-                                                                (if (= :at (first r))
-                                                                    (second r)
-                                                                    (recur (nth r 1) (nth r 2) (nth r 3)))))))))))))))
+                                                                                                                                                pair? (recur (inc i) pos (inc line) false)
+                                                                                                                                                (= pos offset) [:at line]
+                                                                                                                                                :else (recur (inc i) (inc pos)
+                                                                                                                                                             (if (= c \newline) (inc line) line)
+                                                                                                                                                             (= c \return))))
+                                                                                                                                          [:more pos line pending-cr?]))]
+                                                                                                                             (if (= :at (first r))
+                                                                                                                                 (second r)
+                                                                                                                                 (recur (nth r 1) (nth r 2) (nth r 3))))))))))))))
 
 #?(:clj
    (defn line-of-byte

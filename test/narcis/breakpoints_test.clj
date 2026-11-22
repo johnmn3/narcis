@@ -14,7 +14,7 @@
 ;; false, so the tests that need real frames take their skipped path.
 (when-not (try (require 'jolt.debug) true (catch Throwable _ false))
           (let [v (intern (create-ns 'jolt.debug) 'with-break-handler
-                          (fn [_&form _&env handler & body] `(try ~@body (catch Throwable t# (do (~handler t# []) (throw t#))))))]
+                          (fn [_&form _&env handler & body] `(try (let [res# (do ~@body)] res#) (catch Throwable t# (do (~handler t# []) (throw t#))))))]
                (alter-meta! v assoc :macro true)))
 
 (defn- heads

@@ -24,7 +24,7 @@
 
 (deftest symbol-doc-special-form-test
          (let [result (docs/symbol-doc 'narcis.docs-test.sandbox "if" nil nil)]
-              (is (= true (:special-form result)))))
+              (is (true? (:special-form result)))))
 
 (deftest candidates-test
          (setup-sandbox)
