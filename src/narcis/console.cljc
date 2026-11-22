@@ -1,34 +1,34 @@
 (ns narcis.console
-  "Pure decisions for the Interactions console: what Return does, how much
+    "Pure decisions for the Interactions console: what Return does, how much
   old output to trim, how a result is shown, and a friendlier message for an
   unclosed bracket. The GTK console owns the text; these functions only
   decide."
-  (:require [clojure.string :as str]
-            [narcis.eval :as eval]
-            [narcis.syntax :as syntax]
-            [narcis.theme :as theme]))
+    (:require [clojure.string :as str]
+              [narcis.eval :as eval]
+              [narcis.syntax :as syntax]
+              [narcis.theme :as theme]))
 
 (def styles
   ;; Each console kind's bold/italic flags (upstream ui.clj console attrs at
   ;; 41c56b8). Colours come from the active theme (narcis.theme). The
   ;; declaration order matters: jonquil.gtk.console-view adds one tag per
   ;; key in this order, and GTK's tag priority follows it.
-  {:out    {}
-   :err    {}
-   :prompt {:bold true}
-   :result {:bold true}
-   :error  {}
-   :system {:italic true}})
+     {:out    {}
+      :err    {}
+      :prompt {:bold true}
+      :result {:bold true}
+      :error  {}
+      :system {:italic true}})
 
 (defn style
-  "The style map for console kind k under theme t (a narcis.theme map):
+      "The style map for console kind k under theme t (a narcis.theme map):
   :fg from the theme, :bold/:italic from the kind. nil for an unknown k."
-  [t k]
-  (when-let [flags (get styles k)]
-    (assoc flags :fg (theme/console-color t k))))
+      [t k]
+      (when-let [flags (get styles k)]
+                (assoc flags :fg (theme/console-color t k))))
 
 (defn input-action
-  "What Return in the console input does. Shift+Return always inserts a
+      "What Return in the console input does. Shift+Return always inserts a
   newline. While the program waits on read-line, the input goes to stdin.
   While a program runs without waiting, the input is held (:busy). Blank
   input does nothing, unbalanced input gets a newline so multi-line forms
@@ -38,30 +38,30 @@
   and was typed for that program, not for Clojure. Return on that exact text
   answers :leftover (a hint, no evaluation); once it is edited, or Return
   has been pressed again, it is ordinary input."
-  [{:keys [input waiting? evaluating? shift? leftover]}]
-  (cond
-    shift? :newline
-    waiting? :send-stdin
-    evaluating? :busy
-    (and leftover (= input leftover)) :leftover
-    (str/blank? input) :noop
-    (seq (:unmatched (syntax/compute-brackets input))) :newline
-    :else :eval))
+      [{:keys [input waiting? evaluating? shift? leftover]}]
+      (cond
+       shift? :newline
+       waiting? :send-stdin
+       evaluating? :busy
+       (and leftover (= input leftover)) :leftover
+       (str/blank? input) :noop
+       (seq (:unmatched (syntax/compute-brackets input))) :newline
+       :else :eval))
 
 (defn trim-length
-  "How many characters to delete from the front of text so it is at most
+      "How many characters to delete from the front of text so it is at most
   max-chars long, cutting after a newline where one exists in the part that
   must go. 0 when nothing needs trimming."
-  [text max-chars]
-  (let [n (count text)]
-    (if (<= n max-chars)
-      0
-      (let [must (- n max-chars)
-            nl (str/index-of text "\n" (dec must))]
-        (if nl (inc nl) must)))))
+      [text max-chars]
+      (let [n (count text)]
+           (if (<= n max-chars)
+               0
+               (let [must (- n max-chars)
+                     nl (str/index-of text "\n" (dec must))]
+                    (if nl (inc nl) must)))))
 
 (defn clear-last-range
-  "The [start end) span Cmd/Ctrl+Shift+L (CIDER's C-c C-o) should delete
+      "The [start end) span Cmd/Ctrl+Shift+L (CIDER's C-c C-o) should delete
   from the console buffer -- start is the last-entry-start mark's offset,
   or nil when there's no active one (none has begun yet, a previous
   Shift+L already cleared it, a full Cmd+L ran since, or the output-cap
@@ -69,34 +69,34 @@
   callers decide which). end is out-end's current offset. nil (nothing to
   clear) for a nil start, or when start is already at or past end -- the
   entry has nothing left in it, so there's no span to delete."
-  [start end]
-  (when (and start (< start end))
-    [start end]))
+      [start end]
+      (when (and start (< start end))
+            [start end]))
 
 (defn error-text
-  "An :error result's message: :error-text when an out-of-process runtime
+      "An :error result's message: :error-text when an out-of-process runtime
   sent text, else narcis.eval/format-error of the in-process :error."
-  [{:keys [error error-text]}]
-  (or error-text (eval/format-error error)))
+      [{:keys [error error-text]}]
+      (or error-text (eval/format-error error)))
 
 (defn result-line
-  "[kind text] for an engine result, ready to append to the console. A
+      "[kind text] for an engine result, ready to append to the console. A
   :notice result (the attach evaluator's quiet load summary and its
   not-running sentence) is a :system line holding its own :text."
-  [{:keys [status printed text] :as result}]
-  (case status
-    :ok [:result (str "=> " printed "\n")]
-    :error [:error (str (error-text result) "\n")]
-    :interrupted [:system "; interrupted\n"]
-    :notice [:system (str text "\n")]))
+      [{:keys [status printed text] :as result}]
+      (case status
+            :ok [:result (str "=> " printed "\n")]
+            :error [:error (str (error-text result) "\n")]
+            :interrupted [:system "; interrupted\n"]
+            :notice [:system (str text "\n")]))
 
 (defn unclosed-bracket-message
-  "For a buffer with an opening bracket that is never closed, a sentence
+      "For a buffer with an opening bracket that is never closed, a sentence
   naming the first such bracket and its line. nil when every opener is
   closed."
-  [text]
-  (let [{:keys [unmatched]} (syntax/compute-brackets text)
-        opens (sort (filter (fn [p] (#{\( \[ \{} (nth text p))) unmatched))]
-    (when-let [p (first opens)]
-      (str "The " (nth text p) " on line "
-           (syntax/line-number-at-offset text p) " is never closed."))))
+      [text]
+      (let [{:keys [unmatched]} (syntax/compute-brackets text)
+            opens (sort (filter (fn [p] (#{\( \[ \{} (nth text p))) unmatched))]
+           (when-let [p (first opens)]
+                     (str "The " (nth text p) " on line "
+                          (syntax/line-number-at-offset text p) " is never closed."))))
