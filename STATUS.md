@@ -55,7 +55,12 @@ Charter: ~/workspace/syntax-formalization/PLAN.md. Templates are coordinator-own
 
 ## Integrated-pipeline trial (step 6, per steer)
 
-(not yet)
+Pipeline: clj-replace → clj-paren-repair → fleet `cljfmt fix` → clj-kondo, dogfooded for every whole-form edit in the campaign.
+
+- (a) clj-replace exit codes: 0 on every well-formed match (dozens of edits; e.g. the compute-line-indentations case fix in 149b8f0 — exit 0, 1 node). Exit 4 exercised in vivo: the four duplicate if-same-truthy forms in syntax.cljc are textually identical, so clj-replace refused the ambiguous match and the file was left untouched until the sites were handled another way (see the corruption note below — the workaround chosen then was itself the campaign's one bad tool, now replaced by strict node transforms). Wrong-text calls also fail closed (no match, no write).
+- (b) repair output vs `cljfmt fix` output: on pristine files (buffer, syntax, eval) and on a representative post-edit file (syntax, after a clj-replace rewrite of line-number-at-offset) the outputs are byte-identical. BUT in the f12be49 batch, repair left 8 files whose bytes differed from fleet `cljfmt fix` — clojure-mcp-light 0.2.2 formats internally with cljfmt 0.15.5, the fleet pins 0.16.6, and the two diverge on edited, indent-heavy regions of this codebase. Disagreement recorded; mitigation adopted mid-campaign and proposed for the templates (RETRO item 2): the fleet `cljfmt fix` is always the final format step.
+- (c) Second repair pass: byte no-op in every measurement (3 pristine files + the post-edit file).
+- (d) Kondo before/after: the tree was at 0 errors / 0 warnings before the fix campaign's kondo classes closed and returned to 0/0 after every subsequent commit; per-file kondo was run after each pipeline edit batch. Two cascades were caught exactly this way (apply-str's missing requires; nav's orphaned binding).
 
 ## Splint campaign — classes closed (census 153 -> 0 pending final recount)
 
@@ -65,3 +70,29 @@ Charter: ~/workspace/syntax-formalization/PLAN.md. Templates are coordinator-own
 - eq-zero (14) + fn-wrapper (13) `cec2599`; apply-str (28) `c510e16` + require cascade fix `bd81678` (3 files used clojure.string/join without requiring clojure.string — a linter's fully-qualified suggestion is not require-free); prefer-clj-string (22) `24a0cc6`; prefer-method-values (26) `9ffa4db` (each target's class verified from its construction; splint's suggestion prints a literal CLASS placeholder); format-drift cleanup `38f5698`.
 - Splint autocorrect reliability (measured, for RETRO): per-file autocorrect verifiably worked for assoc-fn, eq-true, into-literal, first-first. It SILENTLY SKIPS identical-branches (reports 0 warnings, changes nothing), batch directory runs report errors while applying partially, and its re-parse dies with [splint/parsing-error] on files its own report mode reads fine (syntax.cljc, console_test.clj — map-literal complaints). Every autocorrect in this campaign was verified by diff + report-mode recount; the rest were done with strict rewrite-clj transforms using splint's printed suggestions.
 - PIPELINE FINDING (also in f12be49): clj-paren-repair's internal cljfmt is 0.15.5, the fleet's is 0.16.6; on indent-heavy files their outputs DIVERGE (8 files drifted during the singles batch). Pipeline order as run since: clj-replace -> clj-paren-repair -> fleet `cljfmt fix` -> clj-kondo. The trial section below carries the measurements.
+
+## Corruption found and corrected (149b8f0) — read this before the identical-branches line above
+
+The f9a14b9 small-classes batch used a one-off replace-all script for the four duplicate if-same-truthy forms in compute-line-indentations; it wrote the bare token `or` where splint's `(or test else)` suggestion belonged (`:vector or`, `:map or`, two inner-cond values). Jolt's analyzer rejects a macro name as a value; clj-kondo does not flag it, splint counted the sites as fixed, and no gate ran between f9a14b9 and the splint campaign's end — so the corruption was invisible to every lint. The first gate at the splint-final tree failed to load syntax.cljc; the identical-branches "exception" in db2621a was a misdiagnosis built on the corrupted text and is WITHDRAWN. Bisected by 1-second jolt load probes (7ee9437 file loads, tip didn't; defn swap reproduced it; annotation exonerated), the four sites were fixed with the real forms in 149b8f0, the case branches combined as `(:vector :map)`, and the subsumed cond clause dropped. The other if-same-truthy sites (ops, def-target) were verified against the f9a14b9 diff to have taken the correct `(or …)` form. Lesson: a lint-clean tree is not a compiling tree — gate after every batch, and a bespoke text-replacement script is not the pipeline.
+
+## Gates on (step 6)
+
+- `.githooks/pre-commit` (d8ea9e4): cljfmt check + clj-kondo on staged Clojure files; enable with `git config core.hooksPath .githooks` (instructions in the hook header). Proof-run: a zero-indent staged file fails the hook (exit 1, cljfmt); a formatted, valid file passes (exit 0); a ns/path mismatch is blocked by kondo.
+- CI: this repo has NO CI home (no .github/ or other CI config at the base tip) — nothing was invented. The gates are `bb lint`, the pre-commit hook, and `jolt app:test`.
+
+## Docs (step 7)
+
+- dprint 0.65.0; pinned `dprint.json` at the repo root, plugin line exactly: `npm:@dprint/markdown@0.29.0` (resolved by `dprint config add markdown`), includes `**/*.md`. Docs format pass is its own commit (6bf2ec8); `dprint check` exits 0. RETRO.md (14b8313) is written to the same pin.
+
+## Exit verification (branch tip)
+
+- `bb lint` exit 0 (kondo 0/0, splint 0, carve clean, fmt check clean), run with the bb-mcp PATH shim first on PATH (the splint leg shells `bb splint`; bb 1.3.190 cannot run Splint 1.25.0 — RETRO item 4).
+- `jolt app:test` at 149b8f0 (EVE_RELEASE = the pinned Eve checkout): **TEST-SUMMARY {:test 256, :pass 1726, :fail 0, :error 0}** — identical counts to the pre-campaign baseline; the autocomplete timing test passed this run. Log: /tmp/narcis-gate-v2.log. (One mid-run assist: the suite's own temp stores filled /tmp to 89%; the oldest completed-scenario store dirs were deleted to protect the run, which then finished clean — the /tmp hazard is environmental, not a code signal.)
+- `bb fmt` run twice at the tip: second run a no-op (no file changed by either run).
+- Census → zero accounting:
+  - clj-kondo 135 (72 errors / 61 warnings / 2 info) → 0 / 0 / 0. Every class fixed in code except the named exceptions in the section above (7 eve/* unresolved-var forms, 13+6 host-symbol sites, 7 transient-statement unused-value sites, the `:lint-as` deftype entry) — each with its reason.
+  - Splint 153 → 0. Fixed in code: 145. Named exception: catch-throwable ×8 (2 files, per-form disables, reason at the top of both files). The identical-branches "exception" was withdrawn (corruption, above); the class closed in code.
+  - Carve 31 → 0 reported: 14 dead public vars + 8 cascade helpers deleted (zero-reference verified repo-wide), 15 kept in `.carve/ignore` with reasons (store-eve resolve-facade API ×6, vendored eve.text API ×9).
+  - cljfmt 51/52 unformatted → 0 (fleet check clean).
+  - Defect D1 fixed (bracket matches past 8 pairs on CLJS).
+- RETRO.md banked (14b8313): 6 proposed template changes, 4 guidance items, 3 keep-with-evidence items.
