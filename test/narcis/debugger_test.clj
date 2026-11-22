@@ -243,7 +243,7 @@
               (is (= [{:name "x" :text "21"} {:name "y" :text "42"}] (:locals (first (:frames d)))))
               (is (= {:out "" :text "63"} (ask brk 0 "(+ x y)")))
               (testing "the form runs on the paused thread"
-                       (is (= (pr-str (.getName ^Thread @thread)) (:text (ask brk 0 "(.getName (Thread/currentThread))")))))
+                       (is (= (pr-str (Thread/.getName ^Thread @thread)) (:text (ask brk 0 "(.getName (Thread/currentThread))")))))
               (testing "a form that throws is answered and the pause holds"
                        (is (= "ArithmeticException: Divide by zero" (:error (ask brk 0 "(/ x 0)"))))
                        (is (= {:out "" :text "21"} (ask brk 0 "x"))))
@@ -261,7 +261,7 @@
 (deftest break-interrupt-ends-the-pause-test
          (let [{:keys [brk fut paused resumed thread]} (start-break (fn [] (/ 1 0)))]
               (is (some? (deref paused 3000 nil)))
-              (.interrupt ^Thread @thread)
+              (Thread/.interrupt ^Thread @thread)
               (is (instance? InterruptedException (deref fut 3000 :blocked)))
               (is (= [{:continued? false}] @resumed))
               (is (false? (debugger/continue! brk)))))
@@ -276,9 +276,9 @@
   ;; Stop interrupts a body blocked in .take: the InterruptedException
   ;; escapes it, and that must end the evaluation, not pause it
          (let [q (java.util.concurrent.LinkedBlockingQueue.)
-               {:keys [fut paused resumed thread]} (start-break (fn [] (.take q)))]
+               {:keys [fut paused resumed thread]} (start-break (fn [] (java.util.concurrent.LinkedBlockingQueue/.take q)))]
               (Thread/sleep 200)
-              (.interrupt ^Thread @thread)
+              (Thread/.interrupt ^Thread @thread)
               (is (instance? InterruptedException (deref fut 3000 :blocked)))
               (is (not (realized? paused)))
               (is (= [] @resumed))))

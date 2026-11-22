@@ -161,7 +161,7 @@
         ;; 5: (count items) argument
                             (is (= 5 (count occs)))
                             (doseq [[s e] occs]
-                                   (is (= "items" (.substring code s e))))))
+                                   (is (= "items" (String/.substring code s e))))))
 
               (testing "Keyword with same name is not treated as symbol"
                        (let [occs (syntax/find-symbol-occurrences code ":items")]
@@ -201,7 +201,7 @@
                             (is (= :def (:kind res)))))
 
               (testing "Local binding inside let"
-                       (let [ratio-usage-pos (.indexOf code "ratio)))")
+                       (let [ratio-usage-pos (String/.indexOf code "ratio)))")
                              res (syntax/find-definition code "ratio" ratio-usage-pos)]
                             (is (some? res))
                             (is (= "ratio" (:symbol res)))
@@ -287,7 +287,7 @@
                        (is (= :found (:status doc-info)))
                        (is (= "clojure.core" (:ns doc-info)))
                        (is (string? (:arglists doc-info)))
-                       (is (clojure.string/includes? (:doc doc-info) "Returns a lazy sequence" ))))
+                       (is (clojure.string/includes? (:doc doc-info) "Returns a lazy sequence"))))
 
          (testing "Lookup macro doc"
                   (let [doc-info (syntax/get-symbol-doc "defn")]
@@ -307,7 +307,7 @@
                        (is (= :found (:status def-doc)))
                        (is (true? (:special-form def-doc)))
                        (is (string? (:doc def-doc)))
-                       (is (clojure.string/includes? (:arglists def-doc) "def" ))
+                       (is (clojure.string/includes? (:arglists def-doc) "def"))
                        (is (= :found (:status if-doc)))
                        (is (true? (:special-form if-doc)))
                        (is (string? (:doc if-doc)))))
@@ -356,28 +356,28 @@
                         unknown-doc (syntax/get-symbol-doc "unknown-sym")]
       ;; map
                        (let [fmt (syntax/format-autocomplete-doc map-doc {:symbol "map" :category :builtin})]
-                            (is (clojure.string/includes? fmt "clojure.core/map" ))
-                            (is (clojure.string/includes? fmt "([f]" ))
-                            (is (clojure.string/includes? fmt "Returns a lazy sequence" )))
+                            (is (clojure.string/includes? fmt "clojure.core/map"))
+                            (is (clojure.string/includes? fmt "([f]"))
+                            (is (clojure.string/includes? fmt "Returns a lazy sequence")))
       ;; let
                        (let [fmt (syntax/format-autocomplete-doc let-doc {:symbol "let" :category :special})]
-                            (is (clojure.string/includes? fmt "let  [special form]" ))
-                            (is (clojure.string/includes? fmt "let" ))
-                            (is (clojure.string/includes? fmt "bindings" )))
+                            (is (clojure.string/includes? fmt "let  [special form]"))
+                            (is (clojure.string/includes? fmt "let"))
+                            (is (clojure.string/includes? fmt "bindings")))
       ;; buffer with doc
                        (let [fmt (syntax/format-autocomplete-doc buf-doc {:symbol "my-helper" :category :user})]
-                            (is (clojure.string/includes? fmt "my-helper  [buffer def, line 1]" ))
-                            (is (clojure.string/includes? fmt "([a b])" ))
-                            (is (clojure.string/includes? fmt "Does helper work" )))
+                            (is (clojure.string/includes? fmt "my-helper  [buffer def, line 1]"))
+                            (is (clojure.string/includes? fmt "([a b])"))
+                            (is (clojure.string/includes? fmt "Does helper work")))
       ;; buffer without doc
                        (let [fmt (syntax/format-autocomplete-doc buf-no-doc {:symbol "no-doc-fn" :category :user})]
-                            (is (clojure.string/includes? fmt "no-doc-fn  [buffer def, line 1]" ))
-                            (is (clojure.string/includes? fmt "([x])" ))
-                            (is (clojure.string/includes? fmt "(No documentation string)" )))
+                            (is (clojure.string/includes? fmt "no-doc-fn  [buffer def, line 1]"))
+                            (is (clojure.string/includes? fmt "([x])"))
+                            (is (clojure.string/includes? fmt "(No documentation string)")))
       ;; unknown
                        (let [fmt (syntax/format-autocomplete-doc unknown-doc {:symbol "unknown-sym" :category :user})]
-                            (is (clojure.string/includes? fmt "unknown-sym" ))
-                            (is (clojure.string/includes? fmt "(No documentation found)" ))))))
+                            (is (clojure.string/includes? fmt "unknown-sym"))
+                            (is (clojure.string/includes? fmt "(No documentation found)"))))))
 
 (deftest format-code-test
          (testing "Format unindented defn and let"
@@ -458,8 +458,8 @@
                                          "(defn b []\n"
                                          "2)\n")
           ;; Select only (defn b [] \n 2)
-                        start-offset (.indexOf unformatted "(defn b")
-                        end-offset (.length unformatted)
+                        start-offset (String/.indexOf unformatted "(defn b")
+                        end-offset (String/.length unformatted)
                         formatted (syntax/format-selection-text unformatted start-offset end-offset)
                         expected (str "(defn a []\n"
                                       "1)\n"
@@ -505,7 +505,7 @@
 
          (testing "Extracts prefix inside complex buffer"
                   (let [text "(defn foo [x]\n  (map"
-                        pos (.length text)
+                        pos (String/.length text)
                         info (syntax/get-symbol-prefix-at-pos text pos)]
                        (is (= "map" (:prefix info)))
                        (is (= (- pos 3) (:start info)))

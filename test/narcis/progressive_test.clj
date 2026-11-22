@@ -26,7 +26,7 @@
        (let [f (io/file (str (or (System/getenv "TMPDIR") (System/getProperty "java.io.tmpdir"))
                              "/narcis-prog-file-" (System/nanoTime) ".txt"))]
             (spit f content)
-            (.getCanonicalPath f)))
+            (java.io.File/.getCanonicalPath f)))
 
 (defn- numbered [lines]
        (clojure.string/join (map (fn [i] (str "line-" i " lorem ipsum dolor sit amet\n")) (range lines))))
@@ -82,7 +82,7 @@
     ;; past everything a view has read (buffer A holds only the head
     ;; so far) an edit has nothing to land in
                 (let [res (ops/apply-op ed {:op :type-char :path path :ch "y"
-                                            :caret (.indexOf content "line-30000")})]
+                                            :caret (String/.indexOf content "line-30000")})]
                      (t/is (not (:ok res)))
                      (t/is (true? (:preparing res)) "an edit past every piece of A is refused"))
                 (let [res (ops/apply-op ed {:op :save :path path})]
@@ -150,7 +150,7 @@
                                             :sel [(dec end) (+ end 3)] :text "X"})]
                      (t/is (:preparing res) "a straddle of an extent's edge is refused"))
                 (let [gap (some (fn [ln]
-                                    (let [off (.indexOf content (str "line-" ln))]
+                                    (let [off (String/.indexOf content (str "line-" ln))]
                                          (when (nil? (buffer/covering-extent ed path off off))
                                                off)))
                                 [31000 32000 33000 34000])
@@ -161,7 +161,7 @@
                      (t/is (:preparing res) "a caret outside every extent is refused"))
     ;; an edit inside the first extent goes through, and a
     ;; line added there rekeys the later extent in the same swap
-                (let [off (.indexOf content "line-30010")]
+                (let [off (String/.indexOf content "line-30010")]
                      (t/is (:ok (ops/apply-op ed {:op :insert-text :path path
                                                   :caret off :text "EDITED "}))
                            "the covered edit answers ok while partial"))
@@ -174,8 +174,8 @@
                       "the later extent is rekeyed by the split's line delta")
                 (t/is (not (contains? (buffer/extents ed path) 35000)))
                 (t/is (await-whole ed path) "the hydration finishes")
-                (let [off1 (.indexOf content "line-30010")
-                      off2 (.indexOf content "line-30020")
+                (let [off1 (String/.indexOf content "line-30010")
+                      off2 (String/.indexOf content "line-30020")
                       expected (str (subs content 0 off1) "EDITED "
                                     (subs content off1 off2) "\n"
                                     (subs content off2))]

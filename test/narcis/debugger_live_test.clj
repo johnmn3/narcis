@@ -13,9 +13,9 @@
 
 (defn- temp-dir []
        (let [f (java.io.File/createTempFile "narcis-debug-live" "")]
-            (.delete f)
-            (.mkdirs f)
-            (.getPath f)))
+            (java.io.File/.delete f)
+            (java.io.File/.mkdirs f)
+            (java.io.File/.getPath f)))
 
 (defn- open-con []
        (interactions/open (store/open-store {:dir (temp-dir) :name store/store-name})))

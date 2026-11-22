@@ -96,7 +96,7 @@
 (t/deftest bracket-match-in-payload
            (let [;; offset of the (defn add ... opening paren is 15; its match is
         ;; the close of (+ x y)) line's second paren
-                 open (.indexOf fixture "(defn")
+                 open (String/.indexOf fixture "(defn")
                  [win _] (window-of fixture {:start 0 :count 100 :caret open})
                  [a b] (:match win)]
                 (t/is (some? (:match win)))

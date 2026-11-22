@@ -351,10 +351,10 @@
 (deftest stop-clears-interrupt-before-blocking-oncomplete
          (let [ctx (sut/make-eval-context)
                q (java.util.concurrent.LinkedBlockingQueue.)]
-              (sut/eval-async ctx "(loop [] (recur))" {:on-complete (fn [r] (.put q r))})
+              (sut/eval-async ctx "(loop [] (recur))" {:on-complete (fn [r] (java.util.concurrent.LinkedBlockingQueue/.put q r))})
               (Thread/sleep 100)
               (sut/stop-eval! ctx)
-              (let [item (.poll q 3000 java.util.concurrent.TimeUnit/MILLISECONDS)]
+              (let [item (java.util.concurrent.LinkedBlockingQueue/.poll q 3000 java.util.concurrent.TimeUnit/MILLISECONDS)]
                    (is (some? item) "on-complete's blocking .put must still deliver after Stop")
                    (is (= :interrupted (:status item))))))
 
@@ -362,12 +362,12 @@
          (testing "1-arg write with a char array"
                   (let [out (atom [])
                         w (sut/create-writer (fn [s] (swap! out conj s)))]
-                       (.write w (char-array "hi"))
+                       (java.io.Writer/.write w (char-array "hi"))
                        (is (= "hi" (clojure.string/join @out)))))
          (testing "3-arg write with a char array slice"
                   (let [out (atom [])
                         w (sut/create-writer (fn [s] (swap! out conj s)))]
-                       (.write w (char-array "hello") 1 3)
+                       (java.io.Writer/.write w (char-array "hello") 1 3)
                        (is (= "ell" (clojure.string/join @out)))))
          (testing "through eval-async, *out* is bound to the capture writer"
                   (let [[r out] (run-sync (sut/make-eval-context) "(.write *out* (char-array \"hi\\n\"))")]
