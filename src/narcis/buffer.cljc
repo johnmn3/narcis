@@ -1340,6 +1340,20 @@
            (or line
                (text/file-line-of path (scan-of path) offset))))
 
+#?(:clj (defn- note-head-extent!
+               "The head is buffer A's first piece: the reader can edit
+  it while the file loads (the root is buffer B, the background
+  build, which takes A's pieces only in the load's one merge).
+  Its complete lines, read with their stream positions as a
+  view's are: note the extent the materialized head covers."
+               [ed path]
+               (let [k (or (read ed path (fn [s] (dec (text/lines (:root s))))) 0)]
+                    (when (pos? k)
+                          (let [hw (text/file-window path (atom {:chunks [] :done? false}) 0 k)]
+                               (when (and hw (= k (count (:lines hw))) (not (:eof? hw)))
+                                     (note-extent! ed path (:lines hw) (:stream-start hw) (:stream-end hw)))))))
+   :cljs (defn- note-head-extent! [_ed _path] nil))
+
 (defn open-file!
       "Open a file from disk: its head (about 64 KB) is read
    synchronously and becomes the buffer, open and viewable at
@@ -1382,19 +1396,10 @@
              (swap! (app-atom ed) update :editor (fn [s] (add-tab s path)))
              (when-not done?
                        (let [id (claim-partial! ed path loaded-chars total-bytes)]
-               ;; the head is buffer A's first piece: the reader can
-               ;; edit it while the file loads (the root is buffer B,
-               ;; the background build, which takes A's pieces only
-               ;; in the load's one merge). Its complete lines, read
-               ;; with their stream positions as a view's are
-                            #?(:clj (let [k (or (read ed path (fn [s] (dec (text/lines (:root s))))) 0)])))
-                       (when (pos? k)
-                             (let [hw (text/file-window path (atom {:chunks [] :done? false}) 0 k)]
-                                  (when (and hw (= k (count (:lines hw))) (not (:eof? hw)))
-                                        (note-extent! ed path (:lines hw) (:stream-start hw) (:stream-end hw))
-                                        (swap! materializing conj path)
-                                        (start-load! ed path id)
-                                        (start-scan! path)))))))))
+                            (note-head-extent! ed path)
+                            (swap! materializing conj path)
+                            (start-load! ed path id)
+                            (start-scan! path)))))))
 
 (defn close-buffer! [ed path]
       (stop-scan! path)
