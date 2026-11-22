@@ -1,0 +1,28 @@
+# narcis — syntax/formalization-1 lane STATUS
+
+Branch: `syntax/formalization-1` from origin/main `2a0c9eeec8dac1b81e6076184ed5cec69a948603` (ls-remote verified at step 0).
+Charter: ~/workspace/syntax-formalization/PLAN.md. Templates are coordinator-owned; this lane proposes changes in RETRO.md, never forks them.
+
+## Tools (installed this lane, all pinned)
+- clj-kondo **v2026.10.26** — GitHub release zip → ~/.local/bin/clj-kondo. Exact pinned version exists; verified `clj-kondo --version`.
+- cljfmt **0.16.6** (git tag 0.16.6, sha baab5008) — bbin's git install derives the wrong main ns (`weavejester.cljfmt`; the real CLI main is `cljfmt.main`) and bakes /root paths, so ~/.local/bin/cljfmt is a hand-rolled launcher pinning the same tag/sha, --deps-root at the durable gitlibs copy, CLJ_CONFIG pinned. Maven deps curl-seeded into /home/hatch/m2repo (tools.cli 1.2.245, tools.reader 1.5.2, diffutils 1.3.0, text-diff 0.1.0, rewrite-clj 1.2.50, clojure 1.11.4 + spec/core.specs).
+- carve **v0.3.5** (latest tag) — bbin install + shim path repaired to the durable gitlibs copy. Smoke-tested: reports unused vars file:line:col.
+- clojure-mcp-light **v0.2.2** (sha d341c239) — bbin installed the shims, but the tool CANNOT run under this box's pinned bb v1.3.190: its bundled timbre has no `set-config!` (probed: `(contains? (ns-publics 'taoensso.timbre) 'set-config!)` → false), which clojure-mcp-light.hook calls at load (hook.clj:584); the Maven timbre cannot shadow bb's bundled one (proven by trial). Fix: side-by-side **bb-mcp = babashka v1.13.230** at ~/.local/bin/bb-mcp (probe: set-config! → true); only the mcp-light launchers exec it. The box's `bb` stays v1.3.190. clj-paren-repair smoke-tested: fixed a missing-paren file, exit 0.
+- Splint **1.25.0** — wired as the repo's `bb splint` task (:extra-deps pin); artifacts curl-seeded into /home/hatch/m2repo (splint, data.json, clojure 1.12.5, tools.cli 1.4.256, rewrite-clj 1.2.55, ordered, fipp, edamame, camel-snake-kebab + transitives).
+- Java: ~/.local/bin/java was a dead symlink (JRE wiped). Restored Temurin **21.0.13.1+2** into ~/.local/jre21 (the symlink's target).
+- Box quirk (affects every bbin install here): exec runs as root and bb resolves user.home from the passwd entry → /root, which is ephemeral. All bbin shims were path-repaired to durable /home/hatch/.gitlibs copies.
+
+## Step 1 — templates in place (in progress)
+- .cljfmt.edn, .clj-kondo/config.edn, .splint.edn copied byte-identical from the fleet templates (diff-verified).
+- bb.edn: fleet tasks merged (splint pin task, lint-kondo, lint-splint, carve-report, fmt-check, fmt, lint); existing :requires/:init and narcis/app:run/app:test tasks preserved verbatim.
+- Note: the fleet template's `lint` task covers kondo+splint+carve+fmt-check; the PLAN's uniform-interface text also names a dprint check in `bb lint`. Template followed verbatim (templates are coordinator-owned); discrepancy flagged for RETRO.
+- clj-kondo cache generation over the full classpath (incl. Eve git dep a14775a7) running detached; log /tmp/kondo-cachegen.log.
+
+## Census
+(not yet — cache first)
+
+## Named exceptions (suppressions / disables, each with its reason)
+(none yet)
+
+## Integrated-pipeline trial (step 6, per steer)
+(not yet)
