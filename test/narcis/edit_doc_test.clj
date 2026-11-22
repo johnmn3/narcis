@@ -27,20 +27,20 @@
 
 (def cases
   ;; [text caret sel op-fn label]
-     [["(defn f [x]" 11 nil (fn [s] (edit/smart-enter s)) "smart-enter indent"]
-      ["  (foo))" 8 nil (fn [s] (edit/smart-enter s)) "smart-enter dedent"]
-      ["()" 1 nil (fn [s] (edit/smart-enter s)) "smart-enter between pair"]
+     [["(defn f [x]" 11 nil edit/smart-enter "smart-enter indent"]
+      ["  (foo))" 8 nil edit/smart-enter "smart-enter dedent"]
+      ["()" 1 nil edit/smart-enter "smart-enter between pair"]
       ["()" 1 nil (fn [s] (edit/smart-enter s {:between-pair? false})) "smart-enter pair off"]
-      ["(a b)" 1 nil (fn [s] (edit/indent s)) "indent caret"]
-      ["(a\nb)" 0 [0 5] (fn [s] (edit/indent s)) "indent selection"]
-      ["  (a\n  b)" 0 [0 9] (fn [s] (edit/unindent s)) "unindent selection"]
-      ["(a b)\n(c d)" 0 nil (fn [s] (edit/toggle-comment s)) "comment line"]
-      ["; (a b)" 0 nil (fn [s] (edit/toggle-comment s)) "uncomment line"]
+      ["(a b)" 1 nil edit/indent "indent caret"]
+      ["(a\nb)" 0 [0 5] edit/indent "indent selection"]
+      ["  (a\n  b)" 0 [0 9] edit/unindent "unindent selection"]
+      ["(a b)\n(c d)" 0 nil edit/toggle-comment "comment line"]
+      ["; (a b)" 0 nil edit/toggle-comment "uncomment line"]
       ["(foo bar)" 4 nil (fn [s] (edit/insert-open s \()) "insert-open wraps symbol"]
       ["()" 1 nil (fn [s] (edit/insert-close s \))) "insert-close steps over"]
-      ["()" 1 nil (fn [s] (edit/backspace-pair s)) "backspace pair"]
+      ["()" 1 nil edit/backspace-pair "backspace pair"]
       ["(defn foo [] (foo))" 6 nil (fn [s] (edit/rename s "bar")) "rename"]
-      ["(a [b] c)" 3 nil (fn [s] (edit/smart-enter s)) "smart-enter nested"]])
+      ["(a [b] c)" 3 nil edit/smart-enter "smart-enter nested"]])
 
 (deftest doc-layer-matches-oracle-test
          (doseq [[text caret sel op-fn label] cases]
@@ -75,7 +75,7 @@
                                           r (edit/smart-enter-doc doc (edit/region-of doc) caret nil)]
                                          (when r (text/to-string (:doc r))))))
                         r out
-                        expected (:text (oracle text caret nil (fn [s] (edit/smart-enter s))))]
+                        expected (:text (oracle text caret nil edit/smart-enter))]
                        (is (some? r))
                        (is (.startsWith out "(defn a [] 1)\n"))
                        (is (= expected out)))))
@@ -89,7 +89,7 @@
                         text "(defn f [x]\n  (+ x 1))"]
                        (buf/open-buffer! ed path text)
                        (let [caret (dec (count text))
-                             expected (:text (oracle text caret nil (fn [s] (edit/smart-enter s))))]
+                             expected (:text (oracle text caret nil edit/smart-enter))]
         ;; the op runs inside the buffer atom's swap: one swap, one undo step
                             (buf/edit! ed path (fn [doc _ _ _]
                                                    (edit/smart-enter-doc doc (edit/region-of doc) caret nil)))

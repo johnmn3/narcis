@@ -121,7 +121,7 @@
               (is (= "<lazy seq, not realized>" (debugger/value-text lazy)))
               (is (= "[1 <lazy seq, not realized>]" (debugger/value-text [1 lazy])))
               (is (= "{:xs <lazy seq, not realized>}" (debugger/value-text {:xs lazy})))
-              (is (= 0 @calls) "opening the panel ran none of the program's code")
+              (is (zero? @calls) "opening the panel ran none of the program's code")
               (doall lazy)
               (is (= "(1 2 3)" (debugger/value-text lazy)) "a realized one prints")))
 

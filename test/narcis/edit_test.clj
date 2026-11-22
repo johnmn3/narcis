@@ -110,14 +110,14 @@
                   (let [text "  😀(foo)"
                         r (edit/unindent (snap text 0))]
                        (is (= "😀(foo)" (edit/apply-edits text (:edits r))))
-                       (is (= 0 (:caret r)))
+                       (is (zero? (:caret r)))
                        (is (nil? (:sel r)))))
 
          (testing "single-line, no selection: removes a leading tab"
                   (let [text "\t(println \"hello\")"
                         r (edit/unindent (snap text 0))]
                        (is (= "(println \"hello\")" (edit/apply-edits text (:edits r))))
-                       (is (= 0 (:caret r)))))
+                       (is (zero? (:caret r)))))
 
          (testing "single-line, no leading whitespace: does not apply"
                   (is (nil? (edit/unindent (snap "(println \"hello\")" 0)))))
@@ -215,7 +215,7 @@
                   (let [text "[]"
                         r (edit/backspace-pair (snap text 1))]
                        (is (= "" (edit/apply-edits text (:edits r))))
-                       (is (= 0 (:caret r)))
+                       (is (zero? (:caret r)))
                        (is (nil? (:sel r)))))
 
          (testing "an empty pair after an emoji"

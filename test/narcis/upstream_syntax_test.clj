@@ -48,7 +48,7 @@
       ;; Matching indices:
       ;; 0 '(' matches 24 ')'
                        (is (= 24 (get matches 0)))
-                       (is (= 0 (get matches 24)))
+                       (is (zero? (get matches 24)))
       ;; 8 '[' matches 10 ']'
                        (is (= 10 (get matches 8)))
                        (is (= 8 (get matches 10)))
@@ -520,7 +520,7 @@
                        (is (= "" (:prefix info2)))
                        (is (= 1 (:start info2)))
                        (is (= "" (:prefix info3)))
-                       (is (= 0 (:start info3)))))
+                       (is (zero? (:start info3)))))
 
          (testing "Prefix with Clojure identifier symbols (+, -, ?, !, /, .)"
                   (let [info-plus (syntax/get-symbol-prefix-at-pos "(+" 2)

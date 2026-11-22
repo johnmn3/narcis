@@ -100,7 +100,7 @@
              from (max 0 from)
              to (min n to)]
             (cond
-             (and (== from 0) (== to n)) l
+             (and (zero? from) (== to n)) l
              (>= from to) ""
              :else (subs (ln-str l) from to))))
 
@@ -159,7 +159,7 @@
 (defn- p-nlines [p] (if (map? p) (count (::lines p)) (s/-nlines p)))
 (defn- p-leaf? [p] (or (map? p) (s/-leaf? p)))
 (defn- p-lines [p] (if (map? p) (::lines p) (leaf-lines p)))
-(defn- empty-line? [p] (and (== 0 (p-len p)) (== 1 (p-nlines p))))
+(defn- empty-line? [p] (and (zero? (p-len p)) (== 1 (p-nlines p))))
 
 (defn- materialize [p] (if (map? p) (s/make-leaf (::lines p) (::len p)) p))
 

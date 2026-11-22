@@ -379,7 +379,7 @@
                                          [(+ (first (:sel res)) base) (+ (second (:sel res)) base)])))))))
 
 (defn smart-enter-doc
-      ([doc region caret sel] (run-op doc region caret sel (fn [s] (smart-enter s)) :form))
+      ([doc region caret sel] (run-op doc region caret sel smart-enter :form))
       ([doc region caret sel opts] (run-op doc region caret sel (fn [s] (smart-enter s opts)) :form)))
 
 (defn indent-doc [doc region caret sel] (run-op doc region caret sel indent :form))

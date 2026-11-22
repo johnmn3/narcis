@@ -32,8 +32,8 @@
                   (is (= :eval (console/input-action {:input "(str \"😀\" 1)"})))))
 
 (deftest trim-length-test
-         (is (= 0 (console/trim-length "abc" 10)))
-         (is (= 0 (console/trim-length "" 0)))
+         (is (zero? (console/trim-length "abc" 10)))
+         (is (zero? (console/trim-length "" 0)))
          (testing "cuts after the newline inside the part that must go"
                   (is (= 4 (console/trim-length "aaa\nbbb\nccc" 9))))
          (testing "no newline: cut exactly"

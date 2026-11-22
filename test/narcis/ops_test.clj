@@ -44,7 +44,7 @@
                 (let [res (ops/apply-op ed {:op :forward-sexp :path path})]
                      (t/is (= (count "(defn f [x]\n  (+ x 1))") (:caret res))))
                 (let [res (ops/apply-op ed {:op :backward-sexp :path path})]
-                     (t/is (= 0 (:caret res))))
+                     (t/is (zero? (:caret res))))
     ;; undo walks back through the whole session to the empty buffer
                 (loop [n 0]
                       (when (buffer/undo! ed path) (recur (inc n))))

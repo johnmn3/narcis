@@ -46,7 +46,7 @@
                        (is (= (str/index-of new "inc") (c/carry-caret old new (str/index-of old "inc"))) "before inc")
                        (is (= (+ 2 (str/index-of new "inc")) (c/carry-caret old new (+ 2 (str/index-of old "inc")))) "inside inc")
                        (is (= (count new) (c/carry-caret old new (count old))) "at the end"))
-              (is (= 0 (c/carry-caret old new 0)))
+              (is (zero? (c/carry-caret old new 0)))
               (testing "in the indentation it stays on its own line"
                        (let [line3 (inc (str/last-index-of new "\n"))]
                             (is (= (+ 4 line3) (c/carry-caret old new (inc (str/last-index-of old "\n"))))

@@ -61,7 +61,7 @@
                 (t/is (= {} (buffer/loading-map ed)))
                 (t/is (= content (buffer/buffer-text ed path))
                       "the hydrated document is the file, whole")
-                (t/is (= 0 (buffer/undo-depth ed path))
+                (t/is (zero? (buffer/undo-depth ed path))
                       "the hydration leaves no undo steps")))
 
 (t/deftest crlf-seams-match-the-whole-text
@@ -187,7 +187,7 @@
                  content (numbered 40000)
                  path (temp-file content)]
                 (buffer/open-file! ed path {:head 2048})
-                (t/is (= 0 (buffer/line-of ed path 0)))
+                (t/is (zero? (buffer/line-of ed path 0)))
                 (t/is (= 1 (buffer/line-of ed path (inc (str/index-of content "\n")))))
                 (t/is (await-scan path))
     ;; past the frontier the line is counted in the file, by its index
