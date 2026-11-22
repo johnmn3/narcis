@@ -41,6 +41,7 @@
 
    The editor requires the store's Eve arm: open-editor says so when
    handed a file store."
+    (:refer-clojure :exclude [read])
     (:require [eve.alpha :as eve :refer [$]]
               [narcis.text :as text]))
 

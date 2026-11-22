@@ -25,6 +25,7 @@
 
    This is Jolt's evaluator: narcis.eval drives jolt.host's interrupt
    token, which is what lets Stop end a loop that never blocks."
+    (:refer-clojure :exclude [run!])
     (:require [clojure.string :as str]
               [eve.alpha :as eve :refer [$]]
               [narcis.breakpoints :as bp]
