@@ -294,17 +294,11 @@
                                                                                           (re-matches #"^[()\[\]{}@'~`^#, ]*$" intervening)
                                                                                           (or (<= dist 1)
                                                                                               (re-find #"[()\[\]{}@'~`^#,]" intervening)))
-                                                                                     (let [score (cond
-                                                  ;; Opening delimiters and reader prefixes bind forward to next symbol
-                                                                                                  (and (< pos s) (#{\( \[ \{ \@ \' \~ \^ \` \#} ch))
-                                                                                                  (- dist 0.5)
-
-                                                  ;; Closing delimiters bind backward to preceding symbol
-                                                                                                  (and (> pos e) (or (#{\) \] \}} ch)
-                                                                                                                     (#{\) \] \}} prev-ch)))
-                                                                                                  (- dist 0.5)
-
-                                                                                                  :else (double dist))]
+                                                                                     ;; Opening delimiters and reader prefixes bind
+                                                                                     ;; forward to next symbol; closing delimiters
+                                                                                     ;; bind backward to preceding symbol
+                                                                                     (let [score (cond (or (and (< pos s) (#{\( \[ \{ \@ \' \~ \^ \` \#} ch)) (and (> pos e) (or (#{\) \] \}} ch)
+                                                                                                                                                                                 (#{\) \] \}} prev-ch)))) (- dist 0.5) :else (double dist))]
                                                                                           {:tok [tok-type s e] :score score :dist dist}))))))
                                                            sym-tokens)]
                                                     (when-let [best (first (sort-by :score candidates))]
@@ -645,13 +639,7 @@
                (str sym "\n\n(No documentation found)"))
           (let [{:keys [status ns name arglists doc line special-form macro?]} doc-info
                 sym-name (or name symbol (:symbol doc-info) "")
-                header (cond
-                        special-form (str sym-name "  [special form]")
-                        (= category :special) (str sym-name "  [special form]")
-                        macro? (str (if ns (str ns "/" sym-name) sym-name) "  [macro]")
-                        (= status :buffer-def) (str sym-name "  [buffer def" (if line (str ", line " line) "") "]")
-                        ns (str ns "/" sym-name)
-                        :else sym-name)]
+                header (cond (or special-form (= category :special)) (str sym-name "  [special form]") macro? (str (if ns (str ns "/" sym-name) sym-name) "  [macro]") (= status :buffer-def) (str sym-name "  [buffer def" (if line (str ", line " line) "") "]") ns (str ns "/" sym-name) :else sym-name)]
                (str header
                     (when (and arglists (not (str/blank? arglists)))
                           (str "\n" arglists))
@@ -1051,29 +1039,16 @@
                                                (recur (inc ti) st)))))
                 ;; Calculate indentation for line-idx
                                line-indent
-                               (cond
-                                (multiline-string-lines line-idx) :verbatim
-                                (nil? first-non-ws) 0
-                                (empty? new-stack) 0
-                                :else
-                                (let [first-char (.charAt line first-non-ws)
-                                      top (peek new-stack)]
-                                     (if (and (= first-char (:close-char top))
-                                              (not= line-idx (:line top)))
-                                         (:col top)
-                                         (case (:type top)
-                                               :vector or
-                                               :map or
-                                               :list (cond
-                                                      (body-form? (:operator top))
-                                                      (+ (:col top) 2)
-
-                                                      (contains? #{"->" "->>" "as->" "cond->" "cond->>" "some->" "some->>"}
-                                                                 (:operator top))
-                                                      or
-
-                                                      :else
-                                                      or)))))
+                               (cond (multiline-string-lines line-idx) :verbatim (or (nil? first-non-ws) (empty? new-stack)) 0 :else (let [first-char (.charAt line first-non-ws)
+                                                                                                                                           top (peek new-stack)]
+                                                                                                                                          (if (and (= first-char (:close-char top))
+                                                                                                                                                   (not= line-idx (:line top)))
+                                                                                                                                              (:col top)
+                                                                                                                                              (case (:type top)
+                                                                                                                                                    :vector or
+                                                                                                                                                    :map or
+                                                                                                                                                    :list (cond (body-form? (:operator top)) (+ (:col top) 2) (or (contains? #{"->" "->>" "as->" "cond->" "cond->>" "some->" "some->>"}
+                                                                                                                                                                                                                             (:operator top)) :else) or)))))
                                old-indent (or first-non-ws 0)
                                delta (if (= line-indent :verbatim) 0 (- line-indent old-indent))]
                               (recur (inc line-idx)

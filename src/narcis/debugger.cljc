@@ -262,10 +262,7 @@
   thread's (an InterruptedException from a blocking call)."
        [t]
        (loop [c t]
-             (cond (nil? c) false
-                   (:jolt/interrupted (ex-data c)) true
-                   #?(:clj (instance? InterruptedException c) :cljs false) true
-                   :else (recur (cause-of c)))))
+             (cond (nil? c) false (or (:jolt/interrupted (ex-data c)) #?(:clj (instance? InterruptedException c) :cljs false)) true :else (recur (cause-of c)))))
 
 #?(:clj (defn- new-capture [] (StringBuilder.)))
 

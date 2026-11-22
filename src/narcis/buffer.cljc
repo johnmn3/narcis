@@ -842,10 +842,8 @@
                 (if-let [[xs xc] (first es)]
                         (recur (into []
                                      (mapcat (fn [[a b]]
-                                                 (cond (<= (+ xs xc) a) [[a b]]
-                                                       (>= xs b) [[a b]]
-                                                       :else (concat (when (< a xs) [[a xs]])
-                                                                     (when (> b (+ xs xc)) [[(+ xs xc) b]])))))
+                                                 (cond (or (<= (+ xs xc) a) (>= xs b)) [[a b]] :else (concat (when (< a xs) [[a xs]])
+                                                                                                             (when (> b (+ xs xc)) [[(+ xs xc) b]])))))
                                      rs)
                                (rest es))
                         (into [] (comp (filter (fn [[a b]] (> b a)))
@@ -1137,20 +1135,11 @@
                                                       nxc (dec (text/lines root))]
                                                      (if (or (nil? e) (> s nxc))
                                                          [root loaded exts dlines dchars]
-                                                         (cond
-                                  ;; the root has it already
-                                                          (<= (+ s (:lines e)) nxc)
-                                                          (recur root loaded (dissoc exts s) dlines dchars)
-
-                                  ;; an extent whose start does
-                                  ;; not sit where the file says
-                                  ;; is stale
-                                                          (not= (text/line-start-offset root s)
-                                                                (:start-char e))
-                                                          (recur root loaded (dissoc exts s) dlines dchars)
-
-                                                          :else
-                                                          (let [edoc (:doc e)
+                                                         ;; stale either way: the root has it
+                                                         ;; already, or its start does not sit
+                                                         ;; where the file says
+                                                         (cond (or (<= (+ s (:lines e)) nxc) (not= (text/line-start-offset root s)
+                                                                                                   (:start-char e))) (recur root loaded (dissoc exts s) dlines dchars) :else (let [edoc (:doc e)
                                         ;; the extent's part from
                                         ;; the standing line on, as
                                         ;; a rope: replacing the
@@ -1159,31 +1148,31 @@
                                         ;; slice-string round trip
                                         ;; rebuilt it, at rebuild
                                         ;; prices, inside the swap)
-                                                                part (if (= nxc s)
-                                                                         edoc
-                                                                         (text/replace edoc 0
-                                                                                       (text/line-start-offset edoc (- nxc s))
-                                                                                       ""))
+                                                                                                                                                                                   part (if (= nxc s)
+                                                                                                                                                                                            edoc
+                                                                                                                                                                                            (text/replace edoc 0
+                                                                                                                                                                                                          (text/line-start-offset edoc (- nxc s))
+                                                                                                                                                                                                          ""))
                                         ;; replace whatever of
                                         ;; line nxc the root holds
                                         ;; (a partial line, or
                                         ;; nothing) with the
                                         ;; extent's whole line and
                                         ;; rest
-                                                                root (text/replace root
-                                                                                   (text/line-start-offset root nxc)
-                                                                                   (text/chars root) part)]
+                                                                                                                                                                                   root (text/replace root
+                                                                                                                                                                                                      (text/line-start-offset root nxc)
+                                                                                                                                                                                                      (text/chars root) part)]
                                     ;; the absorbed extent's
                                     ;; delta joins the entry's
                                     ;; frame account: the root
                                     ;; now carries its edit, and
                                     ;; later notings translate
                                     ;; past it
-                                                               (recur root
-                                                                      (+ (:start-stream e) (:stream-chars e))
-                                                                      (dissoc exts s)
-                                                                      (+ dlines (- (:lines e) (file-lines-of e)))
-                                                                      (+ dchars (- (:chars e) (file-chars-of e)))))))))]
+                                                                                                                                                                                  (recur root
+                                                                                                                                                                                         (+ (:start-stream e) (:stream-chars e))
+                                                                                                                                                                                         (dissoc exts s)
+                                                                                                                                                                                         (+ dlines (- (:lines e) (file-lines-of e)))
+                                                                                                                                                                                         (+ dchars (- (:chars e) (file-chars-of e)))))))))]
                                          (if (and scan (:done? @scan)
                                                   (empty? exts)
                                                   (= loaded total-stream))

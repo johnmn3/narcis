@@ -24,7 +24,7 @@
             tok (first (filter (fn [[_ _ e]] (> e pos)) tokens))]
            (if (nil? tok)
                (count text)
-               (let [[_ s e] tok
+               (let [[_ s _e] tok
                      kind (bracket-kind text tok)]
                     (cond
                      (= kind :open) (if-let [m (get matches s)] (inc m) e)
@@ -45,6 +45,4 @@
                      kind (bracket-kind text tok)]
                     (cond
                      (= kind :close) (if-let [m (get matches s)] m s)
-                     (= kind :open) s
-                     (< pos e) s
                      :else s)))))
