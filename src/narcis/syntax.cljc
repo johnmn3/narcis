@@ -116,7 +116,7 @@
                    (loop [pos 0]
                          (if (>= pos n)
                              (persistent! results)
-                             (do (set! (.-lastIndex re) pos)
+                             (do #_{:clj-kondo/ignore [:unused-value]} (set! (.-lastIndex re) pos)
                                  (if-let [m (.exec re text)]
                                          (let [start (.-index m)
                                                whole (aget m 0)
@@ -162,7 +162,7 @@
           ;; exactly what the Java collections collected
                  stack (transient [])
                  bracket-tokens (transient [])
-                 matches (transient {})
+                 matches (volatile! (transient {}))
                  unmatched (transient #{})]
                 (doseq [[tok-type start end] tokens]
                        (when (= tok-type :bracket)
@@ -170,7 +170,7 @@
                                   (cond
                                    (open->close ch)
                                    (let [depth (count stack)]
-                                        (conj! stack [ch start depth])
+                                        #_{:clj-kondo/ignore [:unused-value]} (conj! stack [ch start depth])
                                         (conj! bracket-tokens [(long start) (long end) depth :open]))
 
                                    (close->open ch)
@@ -178,19 +178,19 @@
                                         (if (and (pos? (count stack))
                                                  (= (first (nth stack (dec (count stack)))) expected-open))
                                             (let [[_ open-pos open-depth] (nth stack (dec (count stack)))]
-                                                 (pop! stack)
-                                                 (conj! bracket-tokens [(long start) (long end) open-depth :close])
-                                                 (assoc! matches (long open-pos) (long start))
-                                                 (assoc! matches (long start) (long open-pos)))
+                                                 #_{:clj-kondo/ignore [:unused-value]} (pop! stack)
+                                                 #_{:clj-kondo/ignore [:unused-value]} (conj! bracket-tokens [(long start) (long end) open-depth :close])
+                                                 (vswap! matches assoc! (long open-pos) (long start))
+                                                 (vswap! matches assoc! (long start) (long open-pos)))
                                             (do
-                                             (conj! unmatched (long start))
+                                             #_{:clj-kondo/ignore [:unused-value]} (conj! unmatched (long start))
                                              (conj! bracket-tokens [(long start) (long end) 0 :unmatched]))))))))
                 (while (pos? (count stack))
                        (let [[_ open-pos _] (nth stack (dec (count stack)))]
-                            (pop! stack)
+                            #_{:clj-kondo/ignore [:unused-value]} (pop! stack)
                             (conj! unmatched (long open-pos))))
                 {:bracket-tokens (persistent! bracket-tokens)
-                 :matches (persistent! matches)
+                 :matches (persistent! @matches)
                  :unmatched (persistent! unmatched)})))
 
 ;; One entry, [text result], for the last text analysed. Matched by identity.
@@ -499,7 +499,7 @@
                      (let [idx (.indexOf hay needle (int from))]
                           (if (neg? idx)
                               (persistent! results)
-                              (do (conj! results [idx (+ idx qlen)])
+                              (do #_{:clj-kondo/ignore [:unused-value]} (conj! results [idx (+ idx qlen)])
                                   (recur (+ idx qlen)))))))))
 
 (defn extract-buffer-def-meta
