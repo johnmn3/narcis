@@ -7,8 +7,7 @@
     (:require [clojure.test :as t]
               [narcis.buffer :as buffer]
               [narcis.ops :as ops]
-              [narcis.store :as store])
-    (:import [java.io File]))
+              [narcis.store :as store]))
 
 (defn- fresh-store []
        (let [dir (str (or (System/getenv "TMPDIR") (System/getProperty "java.io.tmpdir"))
