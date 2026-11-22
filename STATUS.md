@@ -18,8 +18,15 @@ Charter: ~/workspace/syntax-formalization/PLAN.md. Templates are coordinator-own
 - Note: the fleet template's `lint` task covers kondo+splint+carve+fmt-check; the PLAN's uniform-interface text also names a dprint check in `bb lint`. Template followed verbatim (templates are coordinator-owned); discrepancy flagged for RETRO.
 - clj-kondo cache generation over the full classpath (incl. Eve git dep a14775a7) running detached; log /tmp/kondo-cachegen.log.
 
-## Census
-(not yet — cache first)
+## Census — DONE (committed untouched, 90a63c1)
+- clj-kondo: 135 findings (72 errors / 61 warnings / 2 info), 52 files. Largest: unresolved-symbol 49, invalid-arity 23, unused-private-var 19.
+- Splint: 153 warnings, 51 files, 21 rules. Largest: style/apply-str 28, lint/prefer-method-values 26, style/prefer-clj-string 22.
+- Carve: 31 vars reported (triage pending — public API vs dead, verified per var against repo-wide usage before any deletion).
+- cljfmt: 51/52 files unformatted (only src/narcis/menus.edn clean).
+- Unresolved cluster root-caused (detail in CENSUS working notes): eve/deftype type/field/factory symbols (kondo has no Eve macro config; Eve ships no clj-kondo exports), host-interop symbols in reader-conditional branches, eve/* vars (kondo cache reflects Eve's JVM classpath, narcis compiles against Eve's jolt roots — the known Eve deps-shape gap).
+
+## Step 3 — format pass
+- Baseline gate (`jolt app:test`, EVE_RELEASE = the pinned Eve checkout) launched BEFORE formatting, detached, log /tmp/narcis-gate-baseline.log — in flight, mid-suite at last check (TEST-SUMMARY prints only at the end).
 
 ## Named exceptions (suppressions / disables, each with its reason)
 (none yet)
