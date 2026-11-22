@@ -22,8 +22,6 @@
 ;; ---------------------------------------------------------------------------
 ;; reads
 
-(defn text? [x] (t/text? x))
-
 (defn chars
       "Characters in the document, each line break counting one."
       [doc]
@@ -281,60 +279,6 @@
                                             :done? false
                                             :tail {:rdr rdr :pending (if hold? "\r" "") :loaded loaded}})
                                       (recur pieces eol (and (nil? eol) ends-cr?) loaded)))))))))
-
-#?(:clj
-   (defn ingest-tail
-         "A tail state for the file at path, its reader skipped past the
-      first skip stream characters — how an interrupted load resumes:
-      the buffer already holds that much of the file."
-         [path skip]
-         (let [rdr (java.io.FileReader. ^String path)]
-              (loop [left skip]
-                    (when (pos? left)
-                          (let [n (.skip rdr left)]
-                               (when (pos? n)
-                                     (recur (- left n))))))
-              {:rdr rdr :pending "" :loaded skip})))
-
-#?(:clj
-   (defn ingest-tail-close
-         "Close a tail's reader. The tail is spent either way."
-         [tail]
-         (when-let [rdr (:rdr tail)]
-                   (.close ^java.io.Reader rdr))))
-
-#?(:clj
-   (defn ingest-tail-read
-         "Read the next chunk of tail's file: {:piece s-or-nil
-      :loaded-chars n :done? b :tail tail'}. Pure IO and string
-      work — the caller appends :piece to the document, inside its
-      swap. One read (about 1 MB), breaks normalized; a trailing
-      \r waits in the tail for the piece that resolves it. At EOF
-      a held \r is the last piece (it was a line ending, as
-      ingest-reader decides it); past that, :piece is nil and
-      :done? is true."
-         [tail]
-         (let [buf (char-array chunk-chars)
-               n (.read ^java.io.Reader (:rdr tail) buf)]
-              (if (neg? n)
-                  (if (seq (:pending tail))
-                      {:piece (normalize-breaks (:pending tail))
-                       :loaded-chars (+ (:loaded tail) (count (:pending tail)))
-                       :done? true
-                       :tail (assoc tail :pending "" :loaded (+ (:loaded tail) (count (:pending tail))))}
-                      {:piece nil
-                       :loaded-chars (:loaded tail)
-                       :done? true
-                       :tail tail})
-                  (let [s (str (:pending tail) (String. buf 0 n))
-                        hold? (and (pos? (count s))
-                                   (= \return (.charAt s (dec (count s)))))
-                        piece (if hold? (subs s 0 (dec (count s))) s)
-                        loaded (+ (:loaded tail) (count piece))]
-                       {:piece (normalize-breaks piece)
-                        :loaded-chars loaded
-                        :done? false
-                        :tail (assoc tail :pending (if hold? "\r" "") :loaded loaded)})))))
 
 ;; ---------------------------------------------------------------------------
 ;; the skeleton: one scan of the whole file, reads by line

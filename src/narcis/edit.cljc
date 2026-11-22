@@ -387,4 +387,3 @@
 (defn insert-open-doc [doc region caret sel ch] (run-op doc region caret sel (fn [s] (insert-open s ch)) :form))
 (defn insert-close-doc [doc region caret sel ch] (run-op doc region caret sel (fn [s] (insert-close s ch)) :form))
 (defn backspace-pair-doc [doc region caret sel] (run-op doc region caret sel backspace-pair :form))
-(defn rename-doc [doc region caret sel new-name] (run-op doc region caret sel (fn [s] (rename s new-name)) :all))

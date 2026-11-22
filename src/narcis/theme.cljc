@@ -220,11 +220,6 @@
        :rainbow ["#ebbcba" "#9ccfd8" "#c4a7e7" "#f6c177" "#31748f" "#95b1ac" "#908caa"]
        :console {:prompt "#9ccfd8" :result "#f6c177" :system "#6e6a86"}}})
 
-(def theme-names
-     "The palettes, one per entry in themes."
-     [:light :dark :solarized :navy :gruvbox-dark :gruvbox-light :dracula :nord :zenburn :monokai
-      :tokyo-night :catppuccin-mocha :catppuccin-latte :one-dark :kanagawa :rose-pine])
-
 (def choice-names
      "The cycle order Cmd/Ctrl+Shift+M walks. :auto is a choice, not a
   palette: resolve-choice maps it to :light or :dark."
@@ -243,14 +238,6 @@
       "The name a person reads for choice k: \"Gruvbox Dark\" for :gruvbox-dark."
       [k]
       (get labels k (name k)))
-
-(defn palette-entries
-      "The command palette's entries for picking a theme, one per choice in
-  cycle order: {:id [:theme/use k] :doc \"Use theme: Label\" :chords []
-  :source \"theme\"}. The window runs these itself, as it does a layout's."
-      []
-      (mapv (fn [k] {:id [:theme/use k] :doc (str "Use theme: " (label k)) :chords [] :source "theme"})
-            choice-names))
 
 (def default-theme :light)
 
@@ -271,22 +258,6 @@
       "The theme map for k, or the default theme's for an unknown k."
       [k]
       (get themes k (get themes default-theme)))
-
-(defn- index-of
-       "The index of x in xs by equality, or -1 (the portable form of the
-  java.util.List call this file used)."
-       [xs x]
-       (or (first (keep-indexed (fn [j v] (when (= v x) j)) xs)) -1))
-
-(defn next-theme
-      "The choice name after k in choice-names, wrapping. An unknown k starts
-  the cycle from the default theme."
-      [k]
-      (let [i (index-of choice-names k)]
-           (if (neg? i)
-               (nth choice-names (mod (inc (index-of choice-names default-theme))
-                                      (count choice-names)))
-               (nth choice-names (mod (inc i) (count choice-names))))))
 
 (defn token-color
       "The foreground for a jonquil.paint token kind."

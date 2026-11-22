@@ -193,21 +193,6 @@
 (defn tabs [ed] (:tabs (editor-value ed)))
 (defn active [ed] (:active (editor-value ed)))
 
-(defn state
-  "The whole editor state as plain data (see snapshot for each entry)."
-  [ed]
-  (let [ev (editor-value ed)]
-    {:buffers (loop [ps (:tabs ev) acc {}]
-                (if-let [path (first ps)]
-                  (recur (rest ps)
-                         (if-let [b (snapshot ed path)]
-                           (assoc acc path b)
-                           acc))
-                  acc))
-     :tabs (:tabs ev)
-     :active (:active ev)
-     :theme (:theme ev)}))
-
 (defn buffer-text
   "path's whole text (lines joined by \\n). O(chars)."
   [ed path]
@@ -663,14 +648,6 @@
                          overlap? (some (fn [[s x]] (and (< s b) (< a (+ s (:lines x)))))
                                         (get-in app [:build path] {}))]
                      (if overlap? app (assoc-in app [:build path a] e)))))))
-
-(defn note-extent-doc!
-  "Land a prebuilt extent: e is the full extent map (see
-   note-extent!), its :doc built by the caller in the store's
-   domain. The noting swap then does only assoc-extent's
-   surgery, however big the document is."
-  [ed path a e]
-  (swap! (app-atom ed) (fn [app] (assoc-extent app path a e))))
 
 (defn covering-extent
   "The [start-line extent] of path's extents whose document

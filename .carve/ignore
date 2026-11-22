@@ -1,0 +1,26 @@
+;; narcis carve exceptions — vars kept despite no static caller in
+;; src+test, in two groups, each with its reason:
+;;
+;; 1. narcis.store-eve's public fns are the store seam's API,
+;;    reached from narcis.store's facade by
+;;    (resolve 'narcis.store-eve/...) — carve's static analysis
+;;    cannot see resolve-by-symbol uses.
+narcis.store-eve/open
+narcis.store-eve/put!
+narcis.store-eve/current
+narcis.store-eve/version
+narcis.store-eve/version-count
+narcis.store-eve/close!
+;; 2. eve.text is Eve's vendored text engine (src/eve/text.cljc +
+;;    src/eve/text/store.cljc): its public API is kept whole so
+;;    the vendored copy tracks upstream Eve; narcis consumes the
+;;    subset it needs today.
+eve.text/text?
+eve.text/leaf?
+eve.text/text-of
+eve.text/text-append
+eve.text/text-builder-cr?
+eve.text/text-depth
+eve.text/text-children
+eve.text/text-same-node?
+eve.text/text-shares-child?
