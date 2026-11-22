@@ -1,3 +1,10 @@
+;; NAMED EXCEPTION (syntax campaign, STATUS.md): lint/catch-throwable is
+;; disabled for the forms in this file that need it, via the
+;; #_{:splint/disable [lint/catch-throwable]} annotation on each.
+;; These tests exercise the debugger, whose contract is to intercept ANY
+;; throwable, hand it to the handler, and rethrow; the (catch Throwable t t)
+;; helpers capture whatever was thrown for assertions. Narrowing the
+;; catches to Exception would change what is tested.
 (ns narcis.debugger-test
     (:require [clojure.string :as str]
               [clojure.test :as t :refer [deftest is testing]]
@@ -9,6 +16,7 @@
 
 (defn- fake [_] fake-frames)
 
+#_{:splint/disable [lint/catch-throwable]}
 (defn- caught [f] (try (f) nil (catch Throwable e e)))
 
 (def ^:private div-zero (caught #(/ 1 0)))
@@ -200,12 +208,14 @@
 
 ;; --- the break (Break on error) ---------------------------------------------
 
+#_{:splint/disable [lint/catch-throwable]}
 (defn- fake-break
        "jolt.debug/call-with-break-handler's contract over fake-frames: the
   handler runs on the throwing thread, then the throw goes on."
        [handler thunk]
        (try (thunk) (catch Throwable t (handler t fake-frames) (throw t))))
 
+#_{:splint/disable [lint/catch-throwable]}
 (defn- start-break
        "thunk on a future under a break; {:brk :fut :paused :resumed :thread}."
        [thunk]
@@ -301,6 +311,7 @@
                        (debugger/end-stale-pause! brk {:on-resume (fn [how] (swap! resumed conj how))})
                        (is (= 1 (count @resumed))))))
 
+#_{:splint/disable [lint/catch-throwable]}
 (deftest break-throwing-callbacks-test
          (doseq [[label cbs] [[:on-pause {:on-pause (fn [_] (throw (ex-info "op" {})))}]
                               [:on-resume {:on-resume (fn [_] (throw (ex-info "or" {})))}]

@@ -1,3 +1,11 @@
+;; NAMED EXCEPTION (syntax campaign, STATUS.md): lint/catch-throwable is
+;; disabled for the forms in this file that need it, via the
+;; #_{:splint/disable [lint/catch-throwable]} annotation on each.
+;; These tests exercise the debugger's breakpoint machinery, whose contract
+;; is to intercept ANY throwable, hand it to the handler, and rethrow; the
+;; (catch Throwable t t) helpers capture whatever was thrown for
+;; assertions. Narrowing the catches to Exception would change what is
+;; tested.
 (ns narcis.breakpoints-test
     (:require [clojure.string :as str]
               [clojure.test :as t :refer [deftest is testing]]
@@ -12,6 +20,7 @@
 ;; tests exercise (call the handler, rethrow; the form's own catch then
 ;; swallows a breakpoint's throw). debugger/available? still answers
 ;; false, so the tests that need real frames take their skipped path.
+#_{:splint/disable [lint/catch-throwable]}
 (when-not (try (require 'jolt.debug) true (catch Throwable _ false))
           (let [v (intern (create-ns 'jolt.debug) 'with-break-handler
                           (fn [_&form _&env handler & body] `(try (let [res# (do ~@body)] res#) (catch Throwable t# (do (~handler t# []) (throw t#))))))]
@@ -305,6 +314,7 @@
                             (is (= [{:continued? true}] @resumed)))
                        (finally (debugger/disarm-breakpoints! hook) (debugger/set-debug-mode! false))))))
 
+#_{:splint/disable [lint/catch-throwable]}
 (deftest breakpoint-stop-ends-the-evaluation-test
          (if-not (debugger/break-available?)
                  (is true "skipped: this Jolt has no jolt.debug")
@@ -454,6 +464,7 @@
 
 ;; --- one pause at a time, and who ends it -----------------------------------------
 
+#_{:splint/disable [lint/catch-throwable]}
 (deftest an-error-while-a-breakpoint-is-paused-goes-on-test
          (if-not (debugger/break-available?)
                  (is true "skipped: this Jolt has no jolt.debug")
