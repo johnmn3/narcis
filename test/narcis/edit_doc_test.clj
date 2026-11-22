@@ -4,7 +4,8 @@
    the lifted text oracle (jonquil's apply-edits over the op result)
    produces on the same snapshot. Plus :form scoping and a
    narcis.buffer integration walk (op -> one undo step -> undo/redo)."
-    (:require [clojure.test :refer [deftest is testing]]
+    (:require [clojure.string]
+              [clojure.test :refer [deftest is testing]]
               [narcis.buffer :as buf]
               [narcis.edit :as edit]
               [narcis.store :as store]

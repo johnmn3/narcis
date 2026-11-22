@@ -1,5 +1,6 @@
 (ns narcis.console-test
-    (:require [clojure.test :as t :refer [deftest is testing]]
+    (:require [clojure.string]
+              [clojure.test :as t :refer [deftest is testing]]
               [narcis.console :as console]
               [narcis.theme :as theme]))
 
