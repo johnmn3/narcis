@@ -17,20 +17,20 @@ carve v0.3.5.
 
 135 findings: **72 errors, 61 warnings, 2 info**.
 
-| linter | count |
-|---|---|
-| unresolved-symbol | 49 |
-| invalid-arity | 23 |
-| unused-private-var | 19 |
-| unresolved-var | 10 |
-| unused-binding | 9 |
-| unused-value | 8 |
-| unresolved-namespace | 7 |
-| unused-namespace | 3 |
-| redefined-var | 3 |
-| redundant-primitive-coercion | 2 |
-| constant-condition | 1 |
-| unused-import | 1 |
+| linter                       | count |
+| ---------------------------- | ----- |
+| unresolved-symbol            | 49    |
+| invalid-arity                | 23    |
+| unused-private-var           | 19    |
+| unresolved-var               | 10    |
+| unused-binding               | 9     |
+| unused-value                 | 8     |
+| unresolved-namespace         | 7     |
+| unused-namespace             | 3     |
+| redefined-var                | 3     |
+| redundant-primitive-coercion | 2     |
+| constant-condition           | 1     |
+| unused-import                | 1     |
 
 By file (files with zero findings omitted): buffer.cljc 41 ·
 store_eve.cljc 15 · eve/text/store.cljc 15 · syntax.cljc 11 ·
@@ -44,30 +44,30 @@ commands.cljc 1 · app_test.clj 1.
 
 **153 style warnings**, 51 files checked.
 
-| rule | count |
-|---|---|
-| style/apply-str | 28 |
-| lint/prefer-method-values | 26 |
-| style/prefer-clj-string | 22 |
-| style/eq-zero | 14 |
-| lint/fn-wrapper | 13 |
-| lint/identical-branches | 9 |
-| lint/catch-throwable | 8 |
-| lint/if-same-truthy | 6 |
-| lint/let-when | 5 |
-| lint/let-if | 4 |
-| style/filter-vec-filterv | 3 |
-| lint/if-else-nil | 3 |
-| style/first-first | 2 |
-| lint/into-literal | 2 |
-| style/redundant-let | 1 |
-| style/prefer-condp | 1 |
-| style/pos-checks | 1 |
-| style/eq-true | 1 |
-| lint/if-not-both | 1 |
-| lint/if-nil-else | 1 |
-| lint/body-unquote-splicing | 1 |
-| lint/assoc-fn | 1 |
+| rule                       | count |
+| -------------------------- | ----- |
+| style/apply-str            | 28    |
+| lint/prefer-method-values  | 26    |
+| style/prefer-clj-string    | 22    |
+| style/eq-zero              | 14    |
+| lint/fn-wrapper            | 13    |
+| lint/identical-branches    | 9     |
+| lint/catch-throwable       | 8     |
+| lint/if-same-truthy        | 6     |
+| lint/let-when              | 5     |
+| lint/let-if                | 4     |
+| style/filter-vec-filterv   | 3     |
+| lint/if-else-nil           | 3     |
+| style/first-first          | 2     |
+| lint/into-literal          | 2     |
+| style/redundant-let        | 1     |
+| style/prefer-condp         | 1     |
+| style/pos-checks           | 1     |
+| style/eq-true              | 1     |
+| lint/if-not-both           | 1     |
+| lint/if-nil-else           | 1     |
+| lint/body-unquote-splicing | 1     |
+| lint/assoc-fn              | 1     |
 
 ## Carve — report mode over src+test: exit 1
 

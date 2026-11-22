@@ -15,32 +15,32 @@ stands, and each host seam it stands on (a blocking queue, a
 file behind a reader conditional, as that file's own header or the
 seam's comment says. The test files stay `.clj` (they run on Jolt).
 
-| Narcis file | Jonquil source | How |
-|---|---|---|
-| `src/narcis/syntax.cljc` | `src/jonquil/syntax.clj` | Lifted verbatim; delta: the `jonquil.dialect` dependency is inlined as data (the Jolt profile's `:special-forms` / `:builtins` sets — the only two values read from it) |
-| `src/narcis/edit.cljc` | `src/jonquil/edit.clj` | Lifted verbatim apart from the namespace; Narcis's document layer is appended (snapshots from the eve.text document, `:edits` applied to it as one new root) |
-| `test/narcis/syntax_test.clj` | `test/jonquil/syntax_test.clj` | Ported (namespace only) |
-| `test/narcis/upstream_syntax_test.clj` | `test/jonquil/upstream/syntax_test.clj` | Ported (namespace only; DrClojure's tests via Jonquil) |
-| `test/narcis/edit_test.clj` | `test/jonquil/edit_test.clj` | Ported (namespace only; the `apply-edits` oracle is unchanged) |
-| `test/narcis/edit_doc_test.clj` | — | Narcis's own: the same ops driven through the document layer (`narcis.text`), checked against the text oracle |
-| `src/narcis/paint.cljc`, `src/narcis/theme.cljc` | `src/jonquil/paint.clj`, `src/jonquil/theme.clj` | Lifted (S3); their own headers name the deltas |
-| `src/narcis/eval.cljc` | `src/jonquil/eval.clj` | Lifted verbatim apart from the namespace: Run, stdin, output and Stop over Jolt's interrupt token (`jolt.host`) |
-| `test/narcis/eval_test.clj` | `test/jonquil/eval_test.clj` | Ported (namespace only) |
-| `src/narcis/console.cljc` | `src/jonquil/console.clj` | Lifted verbatim apart from the namespaces it requires: what Return does, how a result reads, the console's styles |
-| `test/narcis/console_test.clj` | `test/jonquil/console_test.clj` | Ported (namespace only) |
-| `src/narcis/commands.cljc` | `src/jonquil/commands.clj` | Lifted verbatim apart from the namespaces: Run Selection, Run Form, the bracket check before Run, the formatter's ops, find and replace over a snapshot, zoom steps |
-| `src/narcis/structural.cljc` | `src/jonquil/structural.clj` | Lifted verbatim apart from the namespaces: slurp and barf, raise, splice, wrap, rewrap, drag, transpose, join, split, convolute, kill and copy a form, select and move by form |
-| `test/narcis/structural_test.clj` | `test/jonquil/structural_test.clj` | Ported (namespaces only) |
-| `src/narcis/menus.edn` | `src/jonquil/menus.edn` | Copied unchanged apart from the namespace named in its header comment; `narcis.menus` narrows it to the commands Narcis has |
-| `src/narcis/docs.cljc` | `src/jonquil/docs.clj` | Lifted verbatim apart from the namespace: documentation and completion lookups resolved in the buffer's namespace |
-| `src/narcis/interactions.cljc` | `src/jonquil/session.clj` | Re-expresses Jonquil's session — Run's reset rule and the prompt's namespace rule — over `narcis.eval` and an Eve-atom transcript; the debugger wiring (the break hook, arming, the pause the page serves) is composed here, as Jonquil composes it in its session |
-| `src/narcis/debugger.cljc` | `src/jonquil/debugger.clj` | Lifted apart from the namespaces: the frames and locals of an error or a pause, the breakpoint pause and the stepping machinery, all over the host's `jolt.debug`; the frame filter names Narcis's own harness namespaces first and keeps Jonquil's, so the lifted tests' fake frames filter the same way |
-| `src/narcis/breakpoints.cljc` | `src/jonquil/breakpoints.clj` | Lifted apart from the namespaces: where in a buffer's text a breakpoint form can go, and the instrumentation of a Run (breakpoints and step points as inserted forms) |
-| `src/narcis/changed.cljc` | `src/jonquil/changed.clj` | Lifted apart from the namespaces: which top-level forms changed since they last ran (a `narcis.breakpoints` dependency) |
-| `src/narcis/instrument_lock.cljcc` | `src/jonquil/instrument-lock.clj` | Lifted verbatim apart from the namespace: the lock around the host's instrumentation-mode read-then-set |
-| `test/narcis/debugger_test.clj` | `test/jonquil/debugger_test.clj` | Ported (namespaces only) |
-| `test/narcis/breakpoints_test.clj` | `test/jonquil/breakpoints_test.clj` | Ported (namespaces only), with one test-only delta: where the Jolt running it has no `jolt.debug`, the file stands in the one macro its instrumentation checks expand (`with-break-handler`, catch-all semantics) so the placement corpus still runs, and the live sections take their "not available" path |
-| `test/narcis/debugger_wiring_test.clj`, `test/narcis/debugger_live_test.clj`, `test/page/debugger_e2e.cjs` | — | Narcis's own: the console wiring on a Jolt without `jolt.debug` (arming fails clean, a marked Run still runs), the live pause/step/eval flow on one with it, and the same flow driven through the real page |
+| Narcis file                                                                                                | Jonquil source                                   | How                                                                                                                                                                                                                                                                                                         |
+| ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/narcis/syntax.cljc`                                                                                   | `src/jonquil/syntax.clj`                         | Lifted verbatim; delta: the `jonquil.dialect` dependency is inlined as data (the Jolt profile's `:special-forms` / `:builtins` sets — the only two values read from it)                                                                                                                                     |
+| `src/narcis/edit.cljc`                                                                                     | `src/jonquil/edit.clj`                           | Lifted verbatim apart from the namespace; Narcis's document layer is appended (snapshots from the eve.text document, `:edits` applied to it as one new root)                                                                                                                                                |
+| `test/narcis/syntax_test.clj`                                                                              | `test/jonquil/syntax_test.clj`                   | Ported (namespace only)                                                                                                                                                                                                                                                                                     |
+| `test/narcis/upstream_syntax_test.clj`                                                                     | `test/jonquil/upstream/syntax_test.clj`          | Ported (namespace only; DrClojure's tests via Jonquil)                                                                                                                                                                                                                                                      |
+| `test/narcis/edit_test.clj`                                                                                | `test/jonquil/edit_test.clj`                     | Ported (namespace only; the `apply-edits` oracle is unchanged)                                                                                                                                                                                                                                              |
+| `test/narcis/edit_doc_test.clj`                                                                            | —                                                | Narcis's own: the same ops driven through the document layer (`narcis.text`), checked against the text oracle                                                                                                                                                                                               |
+| `src/narcis/paint.cljc`, `src/narcis/theme.cljc`                                                           | `src/jonquil/paint.clj`, `src/jonquil/theme.clj` | Lifted (S3); their own headers name the deltas                                                                                                                                                                                                                                                              |
+| `src/narcis/eval.cljc`                                                                                     | `src/jonquil/eval.clj`                           | Lifted verbatim apart from the namespace: Run, stdin, output and Stop over Jolt's interrupt token (`jolt.host`)                                                                                                                                                                                             |
+| `test/narcis/eval_test.clj`                                                                                | `test/jonquil/eval_test.clj`                     | Ported (namespace only)                                                                                                                                                                                                                                                                                     |
+| `src/narcis/console.cljc`                                                                                  | `src/jonquil/console.clj`                        | Lifted verbatim apart from the namespaces it requires: what Return does, how a result reads, the console's styles                                                                                                                                                                                           |
+| `test/narcis/console_test.clj`                                                                             | `test/jonquil/console_test.clj`                  | Ported (namespace only)                                                                                                                                                                                                                                                                                     |
+| `src/narcis/commands.cljc`                                                                                 | `src/jonquil/commands.clj`                       | Lifted verbatim apart from the namespaces: Run Selection, Run Form, the bracket check before Run, the formatter's ops, find and replace over a snapshot, zoom steps                                                                                                                                         |
+| `src/narcis/structural.cljc`                                                                               | `src/jonquil/structural.clj`                     | Lifted verbatim apart from the namespaces: slurp and barf, raise, splice, wrap, rewrap, drag, transpose, join, split, convolute, kill and copy a form, select and move by form                                                                                                                              |
+| `test/narcis/structural_test.clj`                                                                          | `test/jonquil/structural_test.clj`               | Ported (namespaces only)                                                                                                                                                                                                                                                                                    |
+| `src/narcis/menus.edn`                                                                                     | `src/jonquil/menus.edn`                          | Copied unchanged apart from the namespace named in its header comment; `narcis.menus` narrows it to the commands Narcis has                                                                                                                                                                                 |
+| `src/narcis/docs.cljc`                                                                                     | `src/jonquil/docs.clj`                           | Lifted verbatim apart from the namespace: documentation and completion lookups resolved in the buffer's namespace                                                                                                                                                                                           |
+| `src/narcis/interactions.cljc`                                                                             | `src/jonquil/session.clj`                        | Re-expresses Jonquil's session — Run's reset rule and the prompt's namespace rule — over `narcis.eval` and an Eve-atom transcript; the debugger wiring (the break hook, arming, the pause the page serves) is composed here, as Jonquil composes it in its session                                          |
+| `src/narcis/debugger.cljc`                                                                                 | `src/jonquil/debugger.clj`                       | Lifted apart from the namespaces: the frames and locals of an error or a pause, the breakpoint pause and the stepping machinery, all over the host's `jolt.debug`; the frame filter names Narcis's own harness namespaces first and keeps Jonquil's, so the lifted tests' fake frames filter the same way   |
+| `src/narcis/breakpoints.cljc`                                                                              | `src/jonquil/breakpoints.clj`                    | Lifted apart from the namespaces: where in a buffer's text a breakpoint form can go, and the instrumentation of a Run (breakpoints and step points as inserted forms)                                                                                                                                       |
+| `src/narcis/changed.cljc`                                                                                  | `src/jonquil/changed.clj`                        | Lifted apart from the namespaces: which top-level forms changed since they last ran (a `narcis.breakpoints` dependency)                                                                                                                                                                                     |
+| `src/narcis/instrument_lock.cljcc`                                                                         | `src/jonquil/instrument-lock.clj`                | Lifted verbatim apart from the namespace: the lock around the host's instrumentation-mode read-then-set                                                                                                                                                                                                     |
+| `test/narcis/debugger_test.clj`                                                                            | `test/jonquil/debugger_test.clj`                 | Ported (namespaces only)                                                                                                                                                                                                                                                                                    |
+| `test/narcis/breakpoints_test.clj`                                                                         | `test/jonquil/breakpoints_test.clj`              | Ported (namespaces only), with one test-only delta: where the Jolt running it has no `jolt.debug`, the file stands in the one macro its instrumentation checks expand (`with-break-handler`, catch-all semantics) so the placement corpus still runs, and the live sections take their "not available" path |
+| `test/narcis/debugger_wiring_test.clj`, `test/narcis/debugger_live_test.clj`, `test/page/debugger_e2e.cjs` | —                                                | Narcis's own: the console wiring on a Jolt without `jolt.debug` (arming fails clean, a marked Run still runs), the live pause/step/eval flow on one with it, and the same flow driven through the real page                                                                                                 |
 
 Everything else — `narcis.buffer`, `narcis.store`, `narcis.text`,
 `narcis.view`, `narcis.nav`, `narcis.ops`, `narcis.launcher` and the
@@ -61,9 +61,9 @@ files are carried here unchanged so the app runs from this clone and an Eve
 checkout alone; its tests, bench and report stay in the library. A change
 to either file is made there and re-copied, never edited here.
 
-| Narcis file | eve-text source | sha256 |
-|---|---|---|
-| `src/eve/text.cljc` | `libs/eve-text/src/eve/text.cljc` | `bef1719dca1299c979e1220b528bb0b1a3e2f87c3c7f7cebe3dc5fc36fd76d1e` |
+| Narcis file               | eve-text source                         | sha256                                                             |
+| ------------------------- | --------------------------------------- | ------------------------------------------------------------------ |
+| `src/eve/text.cljc`       | `libs/eve-text/src/eve/text.cljc`       | `bef1719dca1299c979e1220b528bb0b1a3e2f87c3c7f7cebe3dc5fc36fd76d1e` |
 | `src/eve/text/store.cljc` | `libs/eve-text/src/eve/text/store.cljc` | `eeb3a07a3a2e43683b06565dce652629c1092ce497e9033570649aef4db3c3d9` |
 
 `src/narcis/text.cljc` is Narcis's own: the document read and edited in
@@ -74,24 +74,24 @@ document), and the file door (a file read in through eve.text's builder).
 
 # Upstream: DrClojure-Neo
 
-**Repository:** https://github.com/kimtg/DrClojure-Neo  
+**Repository:** https://github.com/kimtg/DrClojure-Neo \
 **Pinned commit:** [`7056c61`](https://github.com/kimtg/DrClojure-Neo/commit/7056c61e09f8e9ad3c63fc4b1bd9ac35d15ad3ed) (2026-09-28)
 
 ## Lifted code
 
 Jonquil ports the pure core of DrClojure, lifting its lexing, analysis, and completion code.
 
-| Jonquil file | Upstream source | How |
-|---|---|---|
-| `src/jonquil/syntax.clj` | `src/DrClojure/syntax.clj` | Lifted |
-| `test/jonquil/upstream/syntax_test.clj` | `test/DrClojure/syntax_test.clj` | Ported |
-| `src/jonquil/paint.clj` | `src/DrClojure/syntax.clj` | Re-expresses `highlight-doc!` |
-| `src/jonquil/edit.clj` | `src/DrClojure/ui.clj` | Re-expresses handlers |
-| `src/jonquil/console.clj` | `src/DrClojure/ui.clj` | Re-expresses `attr-normal`, `attr-prompt`, `attr-result`, `attr-error`, `attr-system` as hex colours |
-| `src/jonquil/eval.clj` | `src/DrClojure/eval.clj` | Reworks |
-| `test/jonquil/eval_test.clj` | `test/DrClojure/eval_test.clj` | Ports upstream tests, plus new rows |
-| `test/jonquil/paint_test.clj` | `test/DrClojure/syntax_test.clj` | Re-expresses 3 upstream deftests |
-| `test/jonquil/edit_test.clj` | `test/DrClojure/core_test.clj` | Cases derived from upstream |
+| Jonquil file                            | Upstream source                  | How                                                                                                  |
+| --------------------------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `src/jonquil/syntax.clj`                | `src/DrClojure/syntax.clj`       | Lifted                                                                                               |
+| `test/jonquil/upstream/syntax_test.clj` | `test/DrClojure/syntax_test.clj` | Ported                                                                                               |
+| `src/jonquil/paint.clj`                 | `src/DrClojure/syntax.clj`       | Re-expresses `highlight-doc!`                                                                        |
+| `src/jonquil/edit.clj`                  | `src/DrClojure/ui.clj`           | Re-expresses handlers                                                                                |
+| `src/jonquil/console.clj`               | `src/DrClojure/ui.clj`           | Re-expresses `attr-normal`, `attr-prompt`, `attr-result`, `attr-error`, `attr-system` as hex colours |
+| `src/jonquil/eval.clj`                  | `src/DrClojure/eval.clj`         | Reworks                                                                                              |
+| `test/jonquil/eval_test.clj`            | `test/DrClojure/eval_test.clj`   | Ports upstream tests, plus new rows                                                                  |
+| `test/jonquil/paint_test.clj`           | `test/DrClojure/syntax_test.clj` | Re-expresses 3 upstream deftests                                                                     |
+| `test/jonquil/edit_test.clj`            | `test/DrClojure/core_test.clj`   | Cases derived from upstream                                                                          |
 
 ## Code deltas from upstream
 

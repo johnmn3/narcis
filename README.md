@@ -82,24 +82,24 @@ state.
 
 ## Using it
 
-| | |
-|---|---|
-| Run the Definitions | **▶ Run**, F5 or Ctrl/Cmd+R |
-| Stop a running program | **Stop**, or Esc |
-| Breakpoints | click a line's gutter to mark it; Run pauses there |
-| While paused | the Frames panel: Continue F8, Step Over F10, Step Into F11, Step Out Shift+F11, evaluate in the selected frame; **Break on error** in the panel makes a throw pause the same way |
-| Run the form at the caret / the selection or line | Ctrl/Cmd+Enter / Ctrl/Cmd+E |
-| The console's prompt | type, Enter; Shift+Enter or an open bracket continues the input; ↑ ↓ recall |
-| Switch between editor and console | F6 |
-| Complete the word, with its doc beside | Ctrl+Space |
-| Docs for the symbol | Ctrl+Q or Shift+F1 |
-| Structural editing | Edit ▸ Structure shows every command with its chord: Ctrl+Alt+. / Ctrl+Alt+, slurp and barf, Ctrl+Alt+→ / ← move by form, Alt+Shift+→ / ← grow and shrink the selection, Ctrl+Alt+Shift+P / S / C wrap in ( ) [ ] { } |
-| Format the buffer / the selection | Ctrl/Cmd+Shift+F / Ctrl/Cmd+Alt+F |
-| Find | Ctrl/Cmd+F, then Enter / Shift+Enter, Ctrl/Cmd+G |
-| Rename the symbol | F2 |
-| File tree | **≡ Files** or Ctrl/Cmd+Shift+E |
-| Every command by name | Ctrl/Cmd+Shift+P |
-| Themes | View ▸ Theme (Auto follows the system) |
+|                                                   |                                                                                                                                                                                                                       |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Run the Definitions                               | **▶ Run**, F5 or Ctrl/Cmd+R                                                                                                                                                                                           |
+| Stop a running program                            | **Stop**, or Esc                                                                                                                                                                                                      |
+| Breakpoints                                       | click a line's gutter to mark it; Run pauses there                                                                                                                                                                    |
+| While paused                                      | the Frames panel: Continue F8, Step Over F10, Step Into F11, Step Out Shift+F11, evaluate in the selected frame; **Break on error** in the panel makes a throw pause the same way                                     |
+| Run the form at the caret / the selection or line | Ctrl/Cmd+Enter / Ctrl/Cmd+E                                                                                                                                                                                           |
+| The console's prompt                              | type, Enter; Shift+Enter or an open bracket continues the input; ↑ ↓ recall                                                                                                                                           |
+| Switch between editor and console                 | F6                                                                                                                                                                                                                    |
+| Complete the word, with its doc beside            | Ctrl+Space                                                                                                                                                                                                            |
+| Docs for the symbol                               | Ctrl+Q or Shift+F1                                                                                                                                                                                                    |
+| Structural editing                                | Edit ▸ Structure shows every command with its chord: Ctrl+Alt+. / Ctrl+Alt+, slurp and barf, Ctrl+Alt+→ / ← move by form, Alt+Shift+→ / ← grow and shrink the selection, Ctrl+Alt+Shift+P / S / C wrap in ( ) [ ] { } |
+| Format the buffer / the selection                 | Ctrl/Cmd+Shift+F / Ctrl/Cmd+Alt+F                                                                                                                                                                                     |
+| Find                                              | Ctrl/Cmd+F, then Enter / Shift+Enter, Ctrl/Cmd+G                                                                                                                                                                      |
+| Rename the symbol                                 | F2                                                                                                                                                                                                                    |
+| File tree                                         | **≡ Files** or Ctrl/Cmd+Shift+E                                                                                                                                                                                       |
+| Every command by name                             | Ctrl/Cmd+Shift+P                                                                                                                                                                                                      |
+| Themes                                            | View ▸ Theme (Auto follows the system)                                                                                                                                                                                |
 
 Run resets before it evaluates (DrRacket's rule): the namespaces your
 program created are removed and the Definitions are evaluated into a fresh
