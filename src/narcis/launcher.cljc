@@ -436,8 +436,8 @@
                                             (assoc r :ok (not (:error r))))
                           :debug-eval (let [r (interactions/debug-eval! con (:error-id msg) (:frame msg) (or (:code msg) ""))]
                                            (assoc r :ok (not (:error r))))
-                          :debug-continue {:ok (boolean (interactions/continue! con))}
-                          :debug-step {:ok (boolean (interactions/step! con (or (:mode msg) :step)))}
+                          :debug-continue {:ok (interactions/continue! con)}
+                          :debug-step {:ok (interactions/step! con (or (:mode msg) :step))}
                           :debug-toggle-break (let [r (interactions/toggle-break! con)]
                                                    (assoc r :ok (not (:error r))))
                           {:ok false :error (str "unknown console op: " (:op msg))})]
