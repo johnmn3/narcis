@@ -287,7 +287,7 @@
                        (is (= :found (:status doc-info)))
                        (is (= "clojure.core" (:ns doc-info)))
                        (is (string? (:arglists doc-info)))
-                       (is (.contains (:doc doc-info) "Returns a lazy sequence"))))
+                       (is (clojure.string/includes? (:doc doc-info) "Returns a lazy sequence" ))))
 
          (testing "Lookup macro doc"
                   (let [doc-info (syntax/get-symbol-doc "defn")]
@@ -307,7 +307,7 @@
                        (is (= :found (:status def-doc)))
                        (is (true? (:special-form def-doc)))
                        (is (string? (:doc def-doc)))
-                       (is (.contains (:arglists def-doc) "def"))
+                       (is (clojure.string/includes? (:arglists def-doc) "def" ))
                        (is (= :found (:status if-doc)))
                        (is (true? (:special-form if-doc)))
                        (is (string? (:doc if-doc)))))
@@ -356,28 +356,28 @@
                         unknown-doc (syntax/get-symbol-doc "unknown-sym")]
       ;; map
                        (let [fmt (syntax/format-autocomplete-doc map-doc {:symbol "map" :category :builtin})]
-                            (is (.contains fmt "clojure.core/map"))
-                            (is (.contains fmt "([f]"))
-                            (is (.contains fmt "Returns a lazy sequence")))
+                            (is (clojure.string/includes? fmt "clojure.core/map" ))
+                            (is (clojure.string/includes? fmt "([f]" ))
+                            (is (clojure.string/includes? fmt "Returns a lazy sequence" )))
       ;; let
                        (let [fmt (syntax/format-autocomplete-doc let-doc {:symbol "let" :category :special})]
-                            (is (.contains fmt "let  [special form]"))
-                            (is (.contains fmt "let"))
-                            (is (.contains fmt "bindings")))
+                            (is (clojure.string/includes? fmt "let  [special form]" ))
+                            (is (clojure.string/includes? fmt "let" ))
+                            (is (clojure.string/includes? fmt "bindings" )))
       ;; buffer with doc
                        (let [fmt (syntax/format-autocomplete-doc buf-doc {:symbol "my-helper" :category :user})]
-                            (is (.contains fmt "my-helper  [buffer def, line 1]"))
-                            (is (.contains fmt "([a b])"))
-                            (is (.contains fmt "Does helper work")))
+                            (is (clojure.string/includes? fmt "my-helper  [buffer def, line 1]" ))
+                            (is (clojure.string/includes? fmt "([a b])" ))
+                            (is (clojure.string/includes? fmt "Does helper work" )))
       ;; buffer without doc
                        (let [fmt (syntax/format-autocomplete-doc buf-no-doc {:symbol "no-doc-fn" :category :user})]
-                            (is (.contains fmt "no-doc-fn  [buffer def, line 1]"))
-                            (is (.contains fmt "([x])"))
-                            (is (.contains fmt "(No documentation string)")))
+                            (is (clojure.string/includes? fmt "no-doc-fn  [buffer def, line 1]" ))
+                            (is (clojure.string/includes? fmt "([x])" ))
+                            (is (clojure.string/includes? fmt "(No documentation string)" )))
       ;; unknown
                        (let [fmt (syntax/format-autocomplete-doc unknown-doc {:symbol "unknown-sym" :category :user})]
-                            (is (.contains fmt "unknown-sym"))
-                            (is (.contains fmt "(No documentation found)"))))))
+                            (is (clojure.string/includes? fmt "unknown-sym" ))
+                            (is (clojure.string/includes? fmt "(No documentation found)" ))))))
 
 (deftest format-code-test
          (testing "Format unindented defn and let"

@@ -509,8 +509,8 @@
                                    (let [[first-tok fs fe] (first meaningful-tokens)
                                          [doc-str remaining-tokens] (if (= first-tok :string)
                                                                         (let [raw (.substring text fs fe)
-                                                                              cleaned (if (and (.startsWith raw "\"")
-                                                                                               (.endsWith raw "\"")
+                                                                              cleaned (if (and (clojure.string/starts-with? raw "\"" )
+                                                                                               (clojure.string/ends-with? raw "\"" )
                                                                                                (>= (count raw) 2))
                                                                                           (subs raw 1 (dec (count raw)))
                                                                                           raw)]

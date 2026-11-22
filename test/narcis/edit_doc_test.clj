@@ -78,7 +78,7 @@
                         r out
                         expected (:text (oracle text caret nil edit/smart-enter))]
                        (is (some? r))
-                       (is (.startsWith out "(defn a [] 1)\n"))
+                       (is (clojure.string/starts-with? out "(defn a [] 1)\n" ))
                        (is (= expected out)))))
 
 (deftest buffer-integration-test
