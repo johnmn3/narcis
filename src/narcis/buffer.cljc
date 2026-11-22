@@ -1390,8 +1390,8 @@
                              hw (when (pos? k)
                                       #?(:clj (text/file-window path (atom {:chunks [] :done? false}) 0 k)
                                          :cljs nil))]
-                            (when (and hw (= k (count (:lines hw))) (not (:eof? hw)))
-                                  (note-extent! ed path (:lines hw) (:stream-start hw) (:stream-end hw)))
+                            #?(:clj (when (and hw (= k (count (:lines hw))) (not (:eof? hw)))
+                                          (note-extent! ed path (:lines hw) (:stream-start hw) (:stream-end hw))))
                             (swap! materializing conj path)
                             (start-load! ed path id)
                             (start-scan! path)))))))
