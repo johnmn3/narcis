@@ -28,7 +28,7 @@
       text buffers); eve.deftype values require the Eve arm —
       narcis.buffer says so when opened on a file store.
       App code cannot tell the difference except via (:impl store)."
-    (:require [clojure.edn :as edn]
+    (:require #?(:clj [clojure.edn :as edn])
               [clojure.string :as str]))
 
 (defn- sanitize [s] (str/replace s #"[^a-zA-Z0-9._-]" "_"))

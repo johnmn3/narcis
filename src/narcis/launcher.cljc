@@ -16,13 +16,13 @@
    (store-impl, buffer-text-ok, served, ...) and NARCIS-S3 lines for
    the editor gates."
     (:require #?(:clj [clojure.java.io :as io])
+              #?(:clj [narcis.menus :as menus])
+              #?(:clj [narcis.store :as store])
               [clojure.edn :as edn]
               [clojure.string :as str]
               [narcis.buffer :as buffer]
               [narcis.interactions :as interactions]
-              [narcis.menus :as menus]
               [narcis.ops :as ops]
-              [narcis.store :as store]
               [narcis.text :as text]
               [narcis.theme :as theme]
               [narcis.view :as view])
