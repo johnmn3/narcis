@@ -92,7 +92,7 @@
                        (is (< (count t) 120) t)
                        (is (str/ends-with? t "...)") t)))
          (testing "a long string is cut to 100 characters"
-                  (let [t (debugger/value-text (apply str (repeat 500 "a")))]
+                  (let [t (debugger/value-text (clojure.string/join (repeat 500 "a")))]
                        (is (= 101 (count t)))
                        (is (str/ends-with? t "…"))))
          (testing "a value whose printing throws"

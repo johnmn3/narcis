@@ -27,7 +27,7 @@
                    :else (do (Thread/sleep 100) (recur (inc n))))))
 
 (defn- transcript [con]
-       (apply str (map second (:entries (interactions/read-from con 0)))))
+       (clojure.string/join (map second (:entries (interactions/read-from con 0)))))
 
 (def ^:private program
      "(defn f [x]\n  (let [y (+ x 1)]\n    (* y 2)))\n(println (f 41))\n")

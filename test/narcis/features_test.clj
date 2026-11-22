@@ -100,7 +100,7 @@
   ;; a buffer over the whole-text analysis limit: find reads it in slices
            (let [p "big.clj"
                  n 12000
-                 content (apply str (map (fn [i] (str "(defn fn-" i " [x] (+ x " i ")) ;; comment " i "\n")) (range n)))
+                 content (clojure.string/join (map (fn [i] (str "(defn fn-" i " [x] (+ x " i ")) ;; comment " i "\n")) (range n)))
                  ed (editor-with p content)]
                 (t/is (> (count content) view/exact-limit))
                 (let [res (ops/apply-op ed {:op :find-next :path p :query "fn-11999 "})]
@@ -178,7 +178,7 @@
                   (if (and (not= "idle" (interactions/status con)) (< (System/currentTimeMillis) deadline))
                       (do (Thread/sleep 20) (recur))
                       (do (Thread/sleep 60)
-                          (apply str (map second (:entries (interactions/read-from con 0)))))))))
+                          (clojure.string/join (map second (:entries (interactions/read-from con 0)))))))))
 
 (t/deftest console-run-prompt-stop
            (let [st (fresh-store)
@@ -248,7 +248,7 @@
                                 (settle con 10000)
                                 (let [r (interactions/read-from con end)]
                                      (t/is (= end (:from r)))
-                                     (t/is (str/ends-with? (apply str (map second (:entries r))) "=> \"ab\"\n")))))))
+                                     (t/is (str/ends-with? (clojure.string/join (map second (:entries r))) "=> \"ab\"\n")))))))
 
 (t/deftest menus-are-jonquils-narrowed
            (let [menus (narcis.menus/menus (slurp (clojure.java.io/resource "narcis/menus.edn")))

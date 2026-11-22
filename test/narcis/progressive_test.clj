@@ -29,7 +29,7 @@
             (.getCanonicalPath f)))
 
 (defn- numbered [lines]
-       (apply str (map (fn [i] (str "line-" i " lorem ipsum dolor sit amet\n")) (range lines))))
+       (clojure.string/join (map (fn [i] (str "line-" i " lorem ipsum dolor sit amet\n")) (range lines))))
 
 (defn- await-whole [ed path]
        (loop [n 0]
@@ -66,7 +66,7 @@
 
 (t/deftest crlf-seams-match-the-whole-text
            (let [ed (fresh-editor)
-                 content (str (apply str (repeat 3000 "abc\r\n")) "tail-without-ending")
+                 content (str (clojure.string/join (repeat 3000 "abc\r\n")) "tail-without-ending")
                  path (temp-file content)]
                 (buffer/open-file! ed path {:head 100})
                 (t/is (await-whole ed path))

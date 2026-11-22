@@ -57,7 +57,7 @@
                   (let [rng (atom 4242)
                         rnd (fn [n] (let [s (swap! rng (fn [x] (mod (+ (* x 1103515245) 12345) 2147483648)))] (if (zero? n) 0 (mod s n))))]
                        (dotimes [i 60]
-                                (let [text (apply str (repeatedly (+ 5 (rnd 30)) #(char (+ 97 (rnd 26)))))
+                                (let [text (clojure.string/join (repeatedly (+ 5 (rnd 30)) #(char (+ 97 (rnd 26)))))
                                       k (inc (rnd 4))
                                       cuts (sort (repeatedly (* 2 k) #(rnd (inc (count text)))))
                                       edits (mapv (fn [[a b]] [a (max a b) (str "X" i)]) (partition 2 cuts))

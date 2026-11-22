@@ -21,7 +21,7 @@
                    (recur (inc n)))))
 
 (defn- transcript [con]
-       (apply str (map second (:entries (interactions/read-from con 0)))))
+       (clojure.string/join (map second (:entries (interactions/read-from con 0)))))
 
 (deftest debugger-on-a-jolt-without-jolt-debug
          (let [st (store/open-store {:dir (temp-dir) :name store/store-name})

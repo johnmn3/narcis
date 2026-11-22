@@ -39,7 +39,7 @@
          (testing "no newline: cut exactly"
                   (is (= 3 (console/trim-length "abcdefgh" 5))))
          (testing "result fits the cap"
-                  (let [t (apply str (repeat 1000 "line\n"))
+                  (let [t (clojure.string/join (repeat 1000 "line\n"))
                         k (console/trim-length t 100)]
                        (is (<= (- (count t) k) 100))
                        (is (= \newline (nth t (dec k)))))))

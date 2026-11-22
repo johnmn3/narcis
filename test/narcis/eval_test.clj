@@ -50,7 +50,7 @@
                                    {:on-status-change (fn [s] (swap! statuses conj s))} 3000)]
               (is (= :ok (:status res)))
               (is (= 35 (:value res)))
-              (is (str/includes? (apply str (map second @out)) "Calculating..."))
+              (is (str/includes? (clojure.string/join (map second @out)) "Calculating..."))
     ;; DEVIATION: upstream used Java .contains on a vector.
               (is (some #{:running} @statuses))
               (is (some #{:idle} @statuses))))
@@ -363,16 +363,16 @@
                   (let [out (atom [])
                         w (sut/create-writer (fn [s] (swap! out conj s)))]
                        (.write w (char-array "hi"))
-                       (is (= "hi" (apply str @out)))))
+                       (is (= "hi" (clojure.string/join @out)))))
          (testing "3-arg write with a char array slice"
                   (let [out (atom [])
                         w (sut/create-writer (fn [s] (swap! out conj s)))]
                        (.write w (char-array "hello") 1 3)
-                       (is (= "ell" (apply str @out)))))
+                       (is (= "ell" (clojure.string/join @out)))))
          (testing "through eval-async, *out* is bound to the capture writer"
                   (let [[r out] (run-sync (sut/make-eval-context) "(.write *out* (char-array \"hi\\n\"))")]
                        (is (= :ok (:status r)))
-                       (is (str/includes? (apply str (map second @out)) "hi")))))
+                       (is (str/includes? (clojure.string/join (map second @out)) "hi")))))
 
 (deftest printed-realizes-under-binding-and-truncates
          (testing "side effects of realizing :value arrive through on-output, :printed matches"
@@ -380,8 +380,8 @@
                                           "(map (fn [x] (println :side x) x) [1 2])")]
                        (is (= :ok (:status r)))
                        (is (= "(1 2)" (:printed r)))
-                       (is (str/includes? (apply str (map second @out)) ":side 1"))
-                       (is (str/includes? (apply str (map second @out)) ":side 2"))))
+                       (is (str/includes? (clojure.string/join (map second @out)) ":side 1"))
+                       (is (str/includes? (clojure.string/join (map second @out)) ":side 2"))))
          (testing "an infinite seq truncates via *print-length* instead of hanging"
                   (let [[r _] (run-sync (sut/make-eval-context) "(range)" {} 5000)]
                        (is (= :ok (:status r)))
@@ -391,7 +391,7 @@
 (deftest doc-referred-and-honours-bound-out
          (let [[r out] (run-sync (sut/make-eval-context) "(doc inc)")]
               (is (= :ok (:status r)))
-              (is (str/includes? (apply str (map second @out)) "inc"))))
+              (is (str/includes? (clojure.string/join (map second @out)) "inc"))))
 
 (deftest history-vars-shift-after-each-value
          (let [ctx (sut/make-eval-context)]

@@ -54,7 +54,7 @@
 ;; pieces of a string being built: a transient vector, joined once
 (defn sb [] (transient []))
 (defn sb-add! [acc piece] (conj! acc piece))
-(defn sb-str [acc] (apply str (persistent! acc)))
+(defn sb-str [acc] (clojure.string/join (persistent! acc)))
 
 (defn- same-run? [l src j]
        (and (not (string? l)) (identical? (nth l 0) src) (== (nth l 1) j)))

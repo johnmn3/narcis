@@ -98,7 +98,7 @@
                         (check (str "file " label " round trip") content (slurp g)))))
   ;; a file larger than one read: lines intact across the chunk boundary
        (let [f (tmp "big") g (tmp "big-out")
-             content (apply str (map (fn [i] (str "(defn fn-" i " [x] (+ x " i ")) ;; comment " i "\r\n")) (range 40000)))]
+             content (clojure.string/join (map (fn [i] (str "(defn fn-" i " [x] (+ x " i ")) ;; comment " i "\r\n")) (range 40000)))]
             (spit f content)
             (let [{:keys [doc eol]} (text/ingest-file f)]
                  (check "big file eol" "\r\n" eol)
@@ -117,8 +117,8 @@
                    [[1 120 ""]
                     [2 120 "a"]
                     [3 150 "(ns demo)\n\n(defn f [x]\n  (inc x))\n"]
-                    [4 150 (apply str (map (fn [i] (str "line " i "\n")) (range 40)))]
-                    [5 120 (apply str (map (fn [i] (str "(def v" i " " i ")\n")) (range 700)))]]]
+                    [4 150 (clojure.string/join (map (fn [i] (str "line " i "\n")) (range 40)))]
+                    [5 120 (clojure.string/join (map (fn [i] (str "(def v" i " " i ")\n")) (range 700)))]]]
                   (model-edits! seed steps start))
            (println "TEXT-TEST PASS: 5 seeded walks (660 edits) vs the string model")
            (file-door!)

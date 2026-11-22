@@ -424,14 +424,14 @@
                 (neg? unclosed)
                 (let [dedent-spaces (* 2 (- unclosed))
                       target (max 0 (- base-len dedent-spaces))]
-                     (apply str (repeat target " ")))
+                     (clojure.string/join (repeat target " ")))
 
         ;; 2. Inserting immediately before closing bracket(s), prefix didn't open forms,
         ;; AND entire document prefix has no unclosed brackets: Auto-dedent
                 (and (pos? leading-suffix-close) (<= unclosed 0) (not (prefix-unclosed? text pos)))
                 (let [dedent-spaces (* 2 leading-suffix-close)
                       target (max 0 (- base-len dedent-spaces))]
-                     (apply str (repeat target " ")))
+                     (clojure.string/join (repeat target " ")))
 
         ;; 3. Line-prefix opened unclosed brackets: Auto-indent (+2 spaces)
                 (pos? unclosed)
@@ -1072,7 +1072,7 @@
                                            :else
                                            (let [trimmed (str/triml line)
                                                  clean (str/replace trimmed #"[ \t]+$" "")]
-                                                (str (apply str (repeat indent " ")) clean))))
+                                                (str (clojure.string/join (repeat indent " ")) clean))))
                                       lines
                                       indents)]
                (str/join "\n" formatted-lines))))
@@ -1108,7 +1108,7 @@
                                                :else
                                                (let [trimmed (str/triml line)
                                                      clean (str/replace trimmed #"[ \t]+$" "")]
-                                                    (str (apply str (repeat indent " ")) clean))))
+                                                    (str (clojure.string/join (repeat indent " ")) clean))))
                                          line))
                                  lines)]
                (str/join "\n" formatted-lines))))

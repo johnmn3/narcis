@@ -113,7 +113,7 @@
                                       (if (< i n)
                                           (let [k (min n (+ i 20000))]
                                                (recur k (eve.text/text-builder-add
-                                                         b (apply str (map (fn [j] (str "(defn f" j " [x] (+ x " j "))\n")) (range i k))))))
+                                                         b (clojure.string/join (map (fn [j] (str "(defn f" j " [x] (+ x " j "))\n")) (range i k))))))
                                           (eve.text/text-builder-text b)))]
                            [(view/window doc {:start (quot n 2) :count 60 :caret nil}) (text/lines doc)])))
                  payload (pr-str win)]

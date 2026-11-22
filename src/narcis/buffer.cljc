@@ -498,7 +498,7 @@
    as the file holds them. Built where documents are built: in
    the store domain's context — a swap on an atom of the domain."
        [lines]
-       (text/from-string (apply str (map (fn [l] (str (:text l) "\n")) lines))))
+       (text/from-string (clojure.string/join (map (fn [l] (str (:text l) "\n")) lines))))
 
 (defn- assoc-extent
        "app with extent e at line a in [:extents path]: unchanged

@@ -339,7 +339,7 @@
                  warm? [false true]]
     ;; cold: the cache holds other text, so it scans; warm: the cache holds
     ;; an equal but distinct string, as the painter's does for a snapshot
-                (syntax/compute-brackets (if warm? (apply str t) "x"))
+                (syntax/compute-brackets (if warm? (clojure.string/join t) "x"))
                 (doseq [pos (range (inc (count t)))]
                        (is (= (boolean (seq (:unmatched (#'syntax/compute-brackets* (subs t 0 pos)))))
                               (#'syntax/prefix-unclosed? t pos))
