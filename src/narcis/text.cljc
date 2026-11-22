@@ -338,9 +338,9 @@
       callers hold it out and prepend it there)."
          [^String s]
          (let [l (.length s)
-               ncount (- l (.length (clojure.string/replace s "\n" "" )))
-               rcount (- l (.length (clojure.string/replace s "\r" "" )))
-               pairs (quot (- l (.length (clojure.string/replace s "\r\n" "" ))) 2)]
+               ncount (- l (.length (clojure.string/replace s "\n" "")))
+               rcount (- l (.length (clojure.string/replace s "\r" "")))
+               pairs (quot (- l (.length (clojure.string/replace s "\r\n" ""))) 2)]
               {:breaks (+ ncount rcount (- pairs)) :pairs pairs :units l})))
 
 #?(:clj
