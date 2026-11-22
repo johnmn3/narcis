@@ -122,6 +122,10 @@
   {:doc "apply the fleet formatting"
    :task (shell "cljfmt fix src test")}
 
+  lint-docs
+  {:doc "dprint check over docs/config (config: dprint.json)"
+   :task (shell "dprint check")}
+
   lint
   {:doc "the whole gate"
-   :depends [lint-kondo lint-splint carve-report fmt-check]}}}
+   :depends [lint-kondo lint-splint carve-report fmt-check lint-docs]}}}
