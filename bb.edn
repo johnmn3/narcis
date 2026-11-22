@@ -100,8 +100,7 @@
   splint
   {:doc "Run the Splint linter (fleet pin 1.25.0): bb splint [paths]"
    :extra-deps {io.github.noahtheduke/splint {:mvn/version "1.25.0"}}
-   :task (apply (requiring-resolve (quote noahtheduke.splint/-main))
-                *command-line-args*)}
+   :task noahtheduke.splint/-main}
 
   lint-kondo
   {:doc "clj-kondo at the default fail level — warnings fail"
